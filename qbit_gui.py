@@ -6,6 +6,9 @@ import os
 import json
 import threading
 import re
+import zipfile
+import time
+import io
 
 # Default Configuration (New Structure)
 DEFAULT_CONFIG = {
@@ -28,6 +31,71 @@ DEFAULT_CONFIG = {
 }
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
+CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rutracker_categories.json")
+
+class CategoryManager:
+    def __init__(self, log_func):
+        self.log = log_func
+        self.cache = self.load_cache()
+
+    def load_cache(self):
+        if os.path.exists(CATEGORY_CACHE_FILE):
+            try:
+                with open(CATEGORY_CACHE_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except:
+                pass
+        return {"last_updated": 0, "categories": {}}
+
+    def save_cache(self):
+        try:
+            with open(CATEGORY_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.cache, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            self.log(f"Error saving category cache: {e}")
+
+    def get_category_name(self, cat_id):
+        # Check TTL (24 hours = 86400 seconds)
+        if (time.time() - self.cache.get("last_updated", 0)) > 86400:
+            self.refresh_cache()
+        
+        cat_name = self.cache["categories"].get(str(cat_id))
+        if not cat_name:
+            # Try forcing refresh if not found and cache wasn't just refreshed
+            if (time.time() - self.cache.get("last_updated", 0)) > 60: 
+                self.refresh_cache()
+                cat_name = self.cache["categories"].get(str(cat_id))
+        
+        return cat_name if cat_name else f"Unknown_Cat_{cat_id}"
+
+    def refresh_cache(self):
+        self.log("Refreshing Rutracker category cache...")
+        try:
+            # Fake headers to look like a browser
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            resp = requests.get("https://rutracker.org/forum/index.php", headers=headers, timeout=30)
+            
+            # fix encoding for russian characters
+            if resp.encoding == 'ISO-8859-1':
+                resp.encoding = 'cp1251'
+            
+            # Parse links like <a href="viewforum.php?f=123">Category Name</a>
+            # Regex: href="viewforum\.php\?f=(\d+)"[^>]*>([^<]+)</a>
+            matches = re.findall(r'href="viewforum\.php\?f=(\d+)"[^>]*>([^<]+)</a>', resp.text)
+            
+            count = 0
+            for cat_id, name in matches:
+                self.cache["categories"][str(cat_id)] = name.strip()
+                count += 1
+            
+            self.cache["last_updated"] = time.time()
+            self.save_cache()
+            self.log(f"Category cache updated. Found {count} categories.")
+            
+        except Exception as e:
+            self.log(f"Failed to refresh category cache: {e}")
 
 class QBitAdderApp:
     def __init__(self, root):
@@ -58,6 +126,9 @@ class QBitAdderApp:
         self.create_settings_ui()
         
         self.is_initializing = False
+        
+        # Initialize Category Manager (delayed to avoid UI lag on startup if we were doing async stuff, but it's just file io)
+        self.cat_manager = CategoryManager(self.log)
 
     def log(self, message):
         if hasattr(self, 'log_area'):
@@ -291,7 +362,7 @@ class QBitAdderApp:
         
         btn_frame = tk.Frame(sel_frame)
         btn_frame.pack(pady=5)
-        tk.Button(btn_frame, text="Select Torrent File", command=self.select_file).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="Select Torrent/ZIP File", command=self.select_file).pack(side="left", padx=5)
         tk.Button(btn_frame, text="Select Folder", command=self.select_folder).pack(side="left", padx=5)
 
         # Actions
@@ -326,7 +397,7 @@ class QBitAdderApp:
 
     # --- Shared Actions (Select File/Folder) ---
     def select_file(self):
-        filepath = filedialog.askopenfilename(filetypes=[("Torrent files", "*.torrent"), ("All files", "*.*")])
+        filepath = filedialog.askopenfilename(filetypes=[("Torrent/ZIP", "*.torrent *.zip"), ("All files", "*.*")])
         if filepath:
             self.selected_file_path = filepath
             self.selected_folder_path = None
@@ -350,7 +421,7 @@ class QBitAdderApp:
     # --- Logic ---
     def process_torrent(self):
         if not self.selected_file_path and not self.selected_folder_path:
-            messagebox.showwarning("Warning", "Please select a torrent file or folder first.")
+            messagebox.showwarning("Warning", "Please select a torrent/zip file or folder first.")
             return
 
         # Save selected client index
@@ -399,33 +470,59 @@ class QBitAdderApp:
             self.reset_buttons()
             return
 
-        # Determine files
-        files_to_process = []
+        # Prepare workload
+        # Structure: list of items to process. Item = {'type': 'file'|'zip_entry', 'path': ..., 'content': bytes, 'category_subpath': str}
+        work_items = []
+
         if self.selected_file_path:
-            files_to_process.append(self.selected_file_path)
+            if self.selected_file_path.lower().endswith('.zip'):
+                # Handle Single ZIP
+                items = self._parse_zip_file(self.selected_file_path)
+                work_items.extend(items)
+            else:
+                # Normal Torrent
+                work_items.append({'type': 'file', 'path': self.selected_file_path, 'content': None, 'category_subpath': ''})
+
         elif self.selected_folder_path:
             try:
                 for f in os.listdir(self.selected_folder_path):
+                    full_path = os.path.join(self.selected_folder_path, f)
                     if f.lower().endswith(".torrent"):
-                        files_to_process.append(os.path.join(self.selected_folder_path, f))
+                        work_items.append({'type': 'file', 'path': full_path, 'content': None, 'category_subpath': ''})
+                    # Optional: Handle ZIPs inside folder? User didn't explicitly ask, but good robustness.
+                    # elif f.lower().endswith(".zip"): ...
             except Exception as e:
                 self.log(f"Error reading folder: {e}")
                 self.reset_buttons()
                 return
 
-        if not files_to_process:
-            self.log("No torrents found.")
+        if not work_items:
+            self.log("No torrents found to process.")
             self.reset_buttons()
             return
             
-        total_ops = len(files_to_process) * len(target_clients)
-        self.log(f"Starting job: {len(files_to_process)} file(s) on {len(target_clients)} client(s)...")
+        total_ops = len(work_items) * len(target_clients)
+        self.log(f"Starting job: {len(work_items)} item(s) on {len(target_clients)} client(s)...")
 
         # Processing Loop
-        for torrent_path in files_to_process:
-            # Try to extract ID from torrent file
-            extracted_id = self.extract_id_from_torrent(torrent_path)
-            
+        for item in work_items:
+            # Extract content if needed
+            torrent_content = item.get('content')
+            torrent_path = item.get('path')
+            category_subpath = item.get('category_subpath', '')
+
+            # Read file content if not already in memory (from ZIP)
+            if not torrent_content and torrent_path:
+                try:
+                    with open(torrent_path, 'rb') as f:
+                        torrent_content = f.read()
+                except Exception as e:
+                    self.log(f"Failed to read {os.path.basename(torrent_path)}: {e}")
+                    continue
+
+            # Check ID from content
+            extracted_id = self.extract_id_from_bytes(torrent_content, os.path.basename(torrent_path))
+
             for client in target_clients:
                 # Flow Control
                 if self.stop_event.is_set(): break
@@ -435,7 +532,7 @@ class QBitAdderApp:
                     if self.stop_event.is_set(): break
                     self.log("Resuming...")
 
-                self._add_torrent_to_client(torrent_path, client, extracted_id)
+                self._add_torrent_content_to_client(client, torrent_content, torrent_path, category_subpath, extracted_id)
 
             if self.stop_event.is_set(): 
                 self.log("Stopped by user.")
@@ -446,23 +543,59 @@ class QBitAdderApp:
         
         self.reset_buttons()
 
-    def extract_id_from_torrent(self, torrent_path):
+    def _parse_zip_file(self, zip_path):
+        items = []
+        filename = os.path.basename(zip_path)
+        
+        # Parse Filename: torrents_UID_CID_[Count].zip
+        # Regex: torrents_\d+_(\d+)_
+        match = re.search(r'torrents_\d+_(\d+)_', filename)
+        category_subpath = ""
+        
+        if match:
+            cat_id = match.group(1)
+            cat_name = self.cat_manager.get_category_name(cat_id)
+            # Remove characters invalid for Windows paths
+            cat_name = re.sub(r'[<>:"/\\|?*]', '_', cat_name)
+            category_subpath = cat_name
+            self.log(f"ZIP Detected: Category ID {cat_id} -> '{cat_name}'")
+        else:
+            self.log(f"ZIP Detected: Could not parse category from filename. Using default path.")
+
         try:
-            with open(torrent_path, 'rb') as f:
-                content = f.read()
-                # Look for 'viewtopic.php?t=12345' pattern in bytes
-                # The user mentioned rutracker.org/forum/viewtopic.php?t=6765252
-                match = re.search(b'viewtopic\.php\?t=(\d+)', content)
-                if match:
-                    return match.group(1).decode('utf-8')
+            with zipfile.ZipFile(zip_path, 'r') as z:
+                for name in z.namelist():
+                    if name.lower().endswith('.torrent'):
+                        content = z.read(name)
+                        items.append({
+                            'type': 'zip_entry',
+                            'path': name, # just the name inside zip
+                            'content': content,
+                            'category_subpath': category_subpath
+                        })
+            self.log(f"Extracted {len(items)} torrents from ZIP.")
         except Exception as e:
-            self.log(f"Error reading {os.path.basename(torrent_path)}: {e}")
+            self.log(f"Error reading ZIP: {e}")
+        
+        return items
+
+    def extract_id_from_bytes(self, content, filename_for_log):
+        try:
+            match = re.search(rb'viewforum\.php\?t=(\d+)', content) # Classic rutracker link? 
+            # User said viewtopic.php?t=...
+            if not match:
+                match = re.search(rb'viewtopic\.php\?t=(\d+)', content)
+                
+            if match:
+                return match.group(1).decode('utf-8')
+        except Exception as e:
+            pass # Silent fail
         return None
 
-    def _add_torrent_to_client(self, torrent_path, client, extracted_id=None):
+    def _add_torrent_content_to_client(self, client, content, filename_display, category_subpath, extracted_id):
         name = client["name"]
         url = client["url"]
-        path = client["base_save_path"]
+        base_path = client["base_save_path"]
         
         # Auth Resolution
         if client["use_global_auth"] and self.config["global_auth"]["enabled"]:
@@ -472,13 +605,11 @@ class QBitAdderApp:
             user = client["username"]
             pw = client["password"]
             
-        filename = os.path.basename(torrent_path)
+        display_name = os.path.basename(filename_display)
+        if extracted_id:
+            display_name = f"{display_name} (ID:{extracted_id})"
         
         try:
-            display_name = filename
-            if extracted_id:
-                display_name = f"{filename} (ID: {extracted_id})"
-            
             self.log(f"[{name}] Adding: {display_name}")
             
             session = requests.Session()
@@ -494,16 +625,22 @@ class QBitAdderApp:
                 self.log(f"[{name}] Connection Error: {e}")
                 return
 
-            # Calc Path
-            # Priority: extracted_id > filename (minus extension)
+            # Construct Path
+            # Structure: Base / [CategoryName] / [TorrentID or Name]
+            final_path_list = [base_path]
+            if category_subpath:
+                final_path_list.append(category_subpath)
+            
             if extracted_id:
-                name_part = extracted_id
+                final_path_list.append(extracted_id)
             else:
-                name_part = os.path.splitext(filename)[0]
+                # Fallback to filename without extension
+                fname = os.path.basename(filename_display)
+                final_path_list.append(os.path.splitext(fname)[0])
                 
-            save_path = os.path.join(path, name_part).replace("\\", "/")
+            save_path = os.path.join(*final_path_list).replace("\\", "/")
 
-            files = {'torrents': open(torrent_path, 'rb')}
+            files = {'torrents': (os.path.basename(filename_display), content)}
             data = {'savepath': save_path, 'paused': 'false', 'root_folder': 'true'}
             
             resp = session.post(f"{url}/api/v2/torrents/add", files=files, data=data, timeout=30)
@@ -525,4 +662,3 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = QBitAdderApp(root)
     root.mainloop()
-

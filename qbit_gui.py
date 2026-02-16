@@ -5,6 +5,7 @@ import requests
 import os
 import json
 import threading
+import re
 
 # Default Configuration (New Structure)
 DEFAULT_CONFIG = {
@@ -422,6 +423,9 @@ class QBitAdderApp:
 
         # Processing Loop
         for torrent_path in files_to_process:
+            # Try to extract ID from torrent file
+            extracted_id = self.extract_id_from_torrent(torrent_path)
+            
             for client in target_clients:
                 # Flow Control
                 if self.stop_event.is_set(): break
@@ -431,7 +435,7 @@ class QBitAdderApp:
                     if self.stop_event.is_set(): break
                     self.log("Resuming...")
 
-                self._add_torrent_to_client(torrent_path, client)
+                self._add_torrent_to_client(torrent_path, client, extracted_id)
 
             if self.stop_event.is_set(): 
                 self.log("Stopped by user.")
@@ -441,13 +445,21 @@ class QBitAdderApp:
         messagebox.showinfo("Done", "Processing complete.")
         
         self.reset_buttons()
-        # Clear selection if successful? Optional.
-        # if not self.stop_event.is_set():
-        #    self.selected_file_path = None
-        #    self.selected_folder_path = None
-        #    self.file_label.config(text="No selection")
 
-    def _add_torrent_to_client(self, torrent_path, client):
+    def extract_id_from_torrent(self, torrent_path):
+        try:
+            with open(torrent_path, 'rb') as f:
+                content = f.read()
+                # Look for 'viewtopic.php?t=12345' pattern in bytes
+                # The user mentioned rutracker.org/forum/viewtopic.php?t=6765252
+                match = re.search(b'viewtopic\.php\?t=(\d+)', content)
+                if match:
+                    return match.group(1).decode('utf-8')
+        except Exception as e:
+            self.log(f"Error reading {os.path.basename(torrent_path)}: {e}")
+        return None
+
+    def _add_torrent_to_client(self, torrent_path, client, extracted_id=None):
         name = client["name"]
         url = client["url"]
         path = client["base_save_path"]
@@ -463,7 +475,11 @@ class QBitAdderApp:
         filename = os.path.basename(torrent_path)
         
         try:
-            self.log(f"[{name}] Adding: {filename}")
+            display_name = filename
+            if extracted_id:
+                display_name = f"{filename} (ID: {extracted_id})"
+            
+            self.log(f"[{name}] Adding: {display_name}")
             
             session = requests.Session()
             # Auth
@@ -478,8 +494,13 @@ class QBitAdderApp:
                 self.log(f"[{name}] Connection Error: {e}")
                 return
 
-            # Calc Path same as before
-            name_part = os.path.splitext(filename)[0]
+            # Calc Path
+            # Priority: extracted_id > filename (minus extension)
+            if extracted_id:
+                name_part = extracted_id
+            else:
+                name_part = os.path.splitext(filename)[0]
+                
             save_path = os.path.join(path, name_part).replace("\\", "/")
 
             files = {'torrents': open(torrent_path, 'rb')}
@@ -488,7 +509,7 @@ class QBitAdderApp:
             resp = session.post(f"{url}/api/v2/torrents/add", files=files, data=data, timeout=30)
             
             if resp.status_code == 200 and resp.text == "Ok.":
-                self.log(f"[{name}] Success.")
+                self.log(f"[{name}] Success -> {save_path}")
             else:
                 self.log(f"[{name}] Failed: {resp.text}")
 

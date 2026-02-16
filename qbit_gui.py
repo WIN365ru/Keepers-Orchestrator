@@ -70,6 +70,7 @@ class QBitAdderApp:
         btn_frame.pack(pady=5)
         
         tk.Button(btn_frame, text="Select Torrent File", command=self.select_file).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="Select Folder", command=self.select_folder).pack(side="left", padx=5)
         tk.Button(btn_frame, text="Add to qBittorrent", command=self.process_torrent, bg="#dddddd").pack(side="left", padx=5)
 
         # Log Section
@@ -80,6 +81,7 @@ class QBitAdderApp:
         self.log_area.pack(fill="both", expand=True)
 
         self.selected_file_path = None
+        self.selected_folder_path = None
 
     def log(self, message):
         self.log_area.config(state="normal")
@@ -117,12 +119,21 @@ class QBitAdderApp:
         filepath = filedialog.askopenfilename(filetypes=[("Torrent files", "*.torrent"), ("All files", "*.*")])
         if filepath:
             self.selected_file_path = filepath
-            self.file_label.config(text=os.path.basename(filepath), fg="black")
+            self.selected_folder_path = None
+            self.file_label.config(text=f"File: {os.path.basename(filepath)}", fg="black")
             self.log(f"Selected file: {filepath}")
 
+    def select_folder(self):
+        folderpath = filedialog.askdirectory()
+        if folderpath:
+            self.selected_folder_path = folderpath
+            self.selected_file_path = None
+            self.file_label.config(text=f"Folder: {folderpath}", fg="black")
+            self.log(f"Selected folder: {folderpath}")
+
     def process_torrent(self):
-        if not self.selected_file_path:
-            messagebox.showwarning("Warning", "Please select a torrent file first.")
+        if not self.selected_file_path and not self.selected_folder_path:
+            messagebox.showwarning("Warning", "Please select a torrent file or folder first.")
             return
 
         # Disable UI during processing
@@ -134,7 +145,23 @@ class QBitAdderApp:
         user = self.config["qbit_user"]
         password = self.config["qbit_pass"]
         base_path = self.config["base_save_path"]
-        torrent_path = self.selected_file_path
+        
+        # Determine list of files to process
+        torrents_to_process = []
+        if self.selected_file_path:
+            torrents_to_process.append(self.selected_file_path)
+        elif self.selected_folder_path:
+            try:
+                for file in os.listdir(self.selected_folder_path):
+                    if file.lower().endswith(".torrent"):
+                        torrents_to_process.append(os.path.join(self.selected_folder_path, file))
+            except Exception as e:
+                self.log(f"Error accessing folder: {e}")
+                return
+
+        if not torrents_to_process:
+            self.log("No .torrent files found to process.")
+            return
 
         try:
             session = requests.Session()
@@ -156,32 +183,42 @@ class QBitAdderApp:
                  messagebox.showerror("Error", f"Could not connect to {url}")
                  return
 
-            # Construct Save Path
-            filename = os.path.basename(torrent_path)
-            name_part = os.path.splitext(filename)[0]
-            save_path = os.path.join(base_path, name_part).replace("\\", "/")
+            success_count = 0
             
-            self.log(f"Adding: {filename}")
-            self.log(f"Target Save Path: {save_path}")
+            for torrent_path in torrents_to_process:
+                try:
+                    # Construct Save Path
+                    filename = os.path.basename(torrent_path)
+                    name_part = os.path.splitext(filename)[0]
+                    save_path = os.path.join(base_path, name_part).replace("\\", "/")
+                    
+                    self.log(f"Adding: {filename}")
+                    
+                    # Add Torrent
+                    files = {'torrents': open(torrent_path, 'rb')}
+                    data = {
+                        'savepath': save_path,
+                        'paused': 'false',
+                        'root_folder': 'true'
+                    }
+                    
+                    resp = session.post(f"{url}/api/v2/torrents/add", files=files, data=data, timeout=30)
+                    
+                    if resp.status_code == 200 and resp.text == "Ok.":
+                        self.log(f"Success: {filename}")
+                        success_count += 1
+                    else:
+                        self.log(f"Error adding {filename}: {resp.status_code} - {resp.text}")
+                except Exception as inner_e:
+                     self.log(f"Failed to process {filename}: {inner_e}")
 
-            # Add Torrent
-            files = {'torrents': open(torrent_path, 'rb')}
-            data = {
-                'savepath': save_path,
-                'paused': 'false',
-                'root_folder': 'true'
-            }
-            
-            resp = session.post(f"{url}/api/v2/torrents/add", files=files, data=data, timeout=30)
-            
-            if resp.status_code == 200 and resp.text == "Ok.":
-                self.log("Success: Torrent added!")
-                messagebox.showinfo("Success", f"Torrent added to: {save_path}")
+            self.log(f"Batch processing complete. Added {success_count}/{len(torrents_to_process)} torrents.")
+            messagebox.showinfo("Complete", f"Processed {len(torrents_to_process)} files.\nSuccessfully added: {success_count}")
+
+            if success_count == len(torrents_to_process):
                 self.selected_file_path = None
-                self.file_label.config(text="No file selected", fg="gray")
-            else:
-                self.log(f"Error adding torrent: {resp.status_code} - {resp.text}")
-                messagebox.showerror("Error", f"Failed to add torrent: {resp.text}")
+                self.selected_folder_path = None
+                self.file_label.config(text="No file/folder selected", fg="gray")
 
         except Exception as e:
             self.log(f"Exception: {e}")

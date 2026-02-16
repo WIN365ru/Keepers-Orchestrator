@@ -71,7 +71,10 @@ class QBitAdderApp:
         
         tk.Button(btn_frame, text="Select Torrent File", command=self.select_file).pack(side="left", padx=5)
         tk.Button(btn_frame, text="Select Folder", command=self.select_folder).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="Add to qBittorrent", command=self.process_torrent, bg="#dddddd").pack(side="left", padx=5)
+        self.add_btn = tk.Button(btn_frame, text="Add to qBittorrent", command=self.process_torrent, bg="#dddddd")
+        self.add_btn.pack(side="left", padx=5)
+        self.stop_btn = tk.Button(btn_frame, text="Stop", command=self.stop_processing, state="disabled", fg="red")
+        self.stop_btn.pack(side="left", padx=5)
 
         # Log Section
         log_frame = tk.LabelFrame(self.root, text="Log", padx=10, pady=10)
@@ -82,6 +85,7 @@ class QBitAdderApp:
 
         self.selected_file_path = None
         self.selected_folder_path = None
+        self.stop_event = threading.Event()
 
     def log(self, message):
         self.log_area.config(state="normal")
@@ -136,9 +140,19 @@ class QBitAdderApp:
             messagebox.showwarning("Warning", "Please select a torrent file or folder first.")
             return
 
+        self.stop_event.clear()
+        self.add_btn.config(state="disabled")
+        self.stop_btn.config(state="normal")
+
         # Disable UI during processing
         # Use threading to keep GUI responsive
         threading.Thread(target=self._process_torrent_thread).start()
+
+    def stop_processing(self):
+        if messagebox.askyesno("Stop", "Are you sure you want to stop processing?"):
+            self.stop_event.set()
+            self.log("Stopping processing...")
+            self.stop_btn.config(state="disabled")
 
     def _process_torrent_thread(self):
         url = self.config["qbit_url"]
@@ -157,10 +171,12 @@ class QBitAdderApp:
                         torrents_to_process.append(os.path.join(self.selected_folder_path, file))
             except Exception as e:
                 self.log(f"Error accessing folder: {e}")
+                self.reset_buttons()
                 return
 
         if not torrents_to_process:
             self.log("No .torrent files found to process.")
+            self.reset_buttons()
             return
 
         try:
@@ -177,22 +193,28 @@ class QBitAdderApp:
                     if resp.status_code != 200 or resp.text != "Ok.":
                         self.log("Error: Authentication failed.")
                         messagebox.showerror("Error", "Authentication failed. Check logs.")
+                        self.reset_buttons()
                         return
             except requests.ConnectionError:
                  self.log(f"Error: Could not connect to {url}")
                  messagebox.showerror("Error", f"Could not connect to {url}")
+                 self.reset_buttons()
                  return
 
             success_count = 0
             
-            for torrent_path in torrents_to_process:
+            for i, torrent_path in enumerate(torrents_to_process):
+                if self.stop_event.is_set():
+                    self.log("Processing stopped by user.")
+                    break
+
                 try:
                     # Construct Save Path
                     filename = os.path.basename(torrent_path)
                     name_part = os.path.splitext(filename)[0]
                     save_path = os.path.join(base_path, name_part).replace("\\", "/")
                     
-                    self.log(f"Adding: {filename}")
+                    self.log(f"Adding ({i+1}/{len(torrents_to_process)}): {filename}")
                     
                     # Add Torrent
                     files = {'torrents': open(torrent_path, 'rb')}
@@ -215,7 +237,7 @@ class QBitAdderApp:
             self.log(f"Batch processing complete. Added {success_count}/{len(torrents_to_process)} torrents.")
             messagebox.showinfo("Complete", f"Processed {len(torrents_to_process)} files.\nSuccessfully added: {success_count}")
 
-            if success_count == len(torrents_to_process):
+            if success_count == len(torrents_to_process) and not self.stop_event.is_set():
                 self.selected_file_path = None
                 self.selected_folder_path = None
                 self.file_label.config(text="No file/folder selected", fg="gray")
@@ -223,6 +245,12 @@ class QBitAdderApp:
         except Exception as e:
             self.log(f"Exception: {e}")
             messagebox.showerror("Exception", str(e))
+        
+        self.reset_buttons()
+
+    def reset_buttons(self):
+        self.add_btn.config(state="normal")
+        self.stop_btn.config(state="disabled")
 
 if __name__ == "__main__":
     root = tk.Tk()

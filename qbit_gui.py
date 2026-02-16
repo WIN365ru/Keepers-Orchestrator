@@ -73,6 +73,8 @@ class QBitAdderApp:
         tk.Button(btn_frame, text="Select Folder", command=self.select_folder).pack(side="left", padx=5)
         self.add_btn = tk.Button(btn_frame, text="Add to qBittorrent", command=self.process_torrent, bg="#dddddd")
         self.add_btn.pack(side="left", padx=5)
+        self.pause_btn = tk.Button(btn_frame, text="Pause", command=self.toggle_pause, state="disabled")
+        self.pause_btn.pack(side="left", padx=5)
         self.stop_btn = tk.Button(btn_frame, text="Stop", command=self.stop_processing, state="disabled", fg="red")
         self.stop_btn.pack(side="left", padx=5)
 
@@ -86,6 +88,8 @@ class QBitAdderApp:
         self.selected_file_path = None
         self.selected_folder_path = None
         self.stop_event = threading.Event()
+        self.running_event = threading.Event()
+        self.running_event.set()
 
     def log(self, message):
         self.log_area.config(state="normal")
@@ -141,8 +145,10 @@ class QBitAdderApp:
             return
 
         self.stop_event.clear()
+        self.running_event.set()
         self.add_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
+        self.pause_btn.config(state="normal", text="Pause")
 
         # Disable UI during processing
         # Use threading to keep GUI responsive
@@ -151,8 +157,20 @@ class QBitAdderApp:
     def stop_processing(self):
         if messagebox.askyesno("Stop", "Are you sure you want to stop processing?"):
             self.stop_event.set()
+            self.running_event.set() # Unpause if paused so thread can exit
             self.log("Stopping processing...")
             self.stop_btn.config(state="disabled")
+            self.pause_btn.config(state="disabled")
+
+    def toggle_pause(self):
+        if self.running_event.is_set():
+            self.running_event.clear()
+            self.pause_btn.config(text="Resume")
+            self.log("Pausing... (will finish current file)")
+        else:
+            self.running_event.set()
+            self.pause_btn.config(text="Pause")
+            self.log("Resuming...")
 
     def _process_torrent_thread(self):
         url = self.config["qbit_url"]
@@ -208,6 +226,14 @@ class QBitAdderApp:
                     self.log("Processing stopped by user.")
                     break
 
+                if not self.running_event.is_set():
+                    self.log("Paused. Waiting to resume...")
+                    self.running_event.wait()
+                    if self.stop_event.is_set():
+                        self.log("Processing stopped by user.")
+                        break
+                    self.log("Resuming processing...")
+
                 try:
                     # Construct Save Path
                     filename = os.path.basename(torrent_path)
@@ -251,6 +277,7 @@ class QBitAdderApp:
     def reset_buttons(self):
         self.add_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
+        self.pause_btn.config(state="disabled", text="Pause")
 
 if __name__ == "__main__":
     root = tk.Tk()

@@ -41,6 +41,8 @@ class QBitAdderApp:
         self.running_event = threading.Event()
         self.running_event.set()
 
+        self.is_initializing = True
+
         # UI Setup
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=5, pady=5)
@@ -51,14 +53,19 @@ class QBitAdderApp:
         self.notebook.add(self.adder_tab, text="Add Torrents")
         self.notebook.add(self.settings_tab, text="Settings")
 
-        self.create_settings_ui()
         self.create_adder_ui()
+        self.create_settings_ui()
+        
+        self.is_initializing = False
 
     def log(self, message):
-        self.log_area.config(state="normal")
-        self.log_area.insert(tk.END, message + "\n")
-        self.log_area.see(tk.END)
-        self.log_area.config(state="disabled")
+        if hasattr(self, 'log_area'):
+            self.log_area.config(state="normal")
+            self.log_area.insert(tk.END, message + "\n")
+            self.log_area.see(tk.END)
+            self.log_area.config(state="disabled")
+        else:
+            print(message)
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -211,6 +218,7 @@ class QBitAdderApp:
         self.save_current_client_details()
 
     def update_settings_model(self, event=None):
+        if self.is_initializing: return
         self.config["global_auth"]["enabled"] = self.use_global_var.get()
         self.config["global_auth"]["username"] = self.global_user_entry.get()
         self.config["global_auth"]["password"] = self.global_pass_entry.get()
@@ -218,6 +226,7 @@ class QBitAdderApp:
 
     def save_current_client_details(self, event=None):
         if self.current_client_index < 0: return
+        if self.is_initializing: return
         
         idx = self.current_client_index
         self.config["clients"][idx]["name"] = self.c_name.get()
@@ -328,8 +337,14 @@ class QBitAdderApp:
         if folderpath:
             self.selected_folder_path = folderpath
             self.selected_file_path = None
-            self.file_label.config(text=f"Folder: {folderpath}", fg="black")
-            self.log(f"Selected folder: {folderpath}")
+            
+            try:
+                count = sum(1 for f in os.listdir(folderpath) if f.lower().endswith('.torrent'))
+                self.file_label.config(text=f"Folder: {folderpath}\n({count} .torrent files found)", fg="black")
+                self.log(f"Selected folder: {folderpath} ({count} torrents)")
+            except Exception as e:
+                self.file_label.config(text=f"Folder: {folderpath} (Error reading)", fg="red")
+                self.log(f"Error reading folder: {e}")
 
     # --- Logic ---
     def process_torrent(self):

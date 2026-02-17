@@ -528,7 +528,7 @@ class QBitAdderApp:
     def __init__(self, root):
         self.root = root
         self.root.title("qBittorrent Auto-Adder")
-        self.root.geometry("600x650")
+        self.root.geometry("800x825")
         
         self.config = self.load_config()
         self.selected_files = [] # List of file paths

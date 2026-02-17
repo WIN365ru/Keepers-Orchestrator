@@ -244,26 +244,62 @@ class CategoryManager:
         
         return cat_name if cat_name else f"Unknown_Cat_{cat_id}"
 
+    def _build_breadcrumb_path(self, forum_id):
+        """Reconstruct breadcrumb path from cached tree. Returns {"category": name, "full_path": "A > B > C"} or None."""
+        tree = self.cache.get("tree", {})
+        cats = self.cache.get("categories", {})
+        fid = int(forum_id)
+
+        for sec_id, sec_tree in tree.items():
+            sec_name = cats.get(f"c{sec_id}", "")
+            for parent_id, children in sec_tree.items():
+                parent_name = cats.get(str(parent_id), "")
+                if int(parent_id) == fid:
+                    # forum_id is a parent-level forum
+                    parts = [p for p in [sec_name, parent_name] if p]
+                    return {"category": parent_name, "full_path": " > ".join(parts)} if parts else None
+                if fid in children:
+                    # forum_id is a child forum
+                    child_name = cats.get(str(fid), "")
+                    parts = [p for p in [sec_name, parent_name, child_name] if p]
+                    return {"category": child_name, "full_path": " > ".join(parts)} if parts else None
+        return None
+
     def fetch_single_category(self, cat_id):
-        """Fetch a single category name directly from its forum page (for sub-forums not on index)."""
+        """Fetch a single category name via Rutracker API, with HTML scraping fallback."""
         try:
-            self.log(f"Fetching sub-forum name for category {cat_id}...")
+            self.log(f"Fetching forum name for category {cat_id} via API...")
+            resp = requests.get(
+                "https://api.rutracker.cc/v1/get_forum_name",
+                params={"by": "forum_id", "val": str(cat_id)},
+                timeout=15
+            )
+            if resp.status_code == 200:
+                result = resp.json().get("result", {})
+                name = result.get(str(cat_id))
+                if name:
+                    name = html.unescape(name)
+                    self.log(f"  Found via API: {cat_id} = {name}")
+                    self.cache["categories"][str(cat_id)] = name
+                    self.save_cache()
+                    return name
+        except Exception as e:
+            self.log(f"  API lookup failed for category {cat_id}: {e}")
+
+        # Fallback: scrape the forum page directly
+        try:
+            self.log(f"  Falling back to HTML scrape for category {cat_id}...")
             resp = self.session.get(f"https://rutracker.org/forum/viewforum.php?f={cat_id}", timeout=15)
             if resp.encoding == 'ISO-8859-1':
                 resp.encoding = 'cp1251'
-            
-            # Extract forum name from maintitle or <title>
             match = re.search(r'<a\s+href="viewforum\.php\?f=' + str(cat_id) + r'"[^>]*>([^<]+)</a>', resp.text, re.IGNORECASE)
             if match:
                 name = match.group(1).strip()
                 if name:
-                    self.log(f"  Found: {cat_id} = {name}")
-                    # Save to cache
+                    self.log(f"  Found via HTML: {cat_id} = {name}")
                     self.cache["categories"][str(cat_id)] = name
                     self.save_cache()
                     return name
-            
-            # Fallback: try <title> tag (format: "Forum Name [page N] :: Category :: RuTracker.org")
             title_match = re.search(r'<title>(.*?)\s*(?:\[.*?\])?\s*::', resp.text, re.IGNORECASE)
             if title_match:
                 name = title_match.group(1).strip()
@@ -272,15 +308,14 @@ class CategoryManager:
                     self.cache["categories"][str(cat_id)] = name
                     self.save_cache()
                     return name
-                    
         except Exception as e:
-            self.log(f"  Error fetching category {cat_id}: {e}")
+            self.log(f"  HTML fallback also failed for category {cat_id}: {e}")
         return None
 
     def get_category_for_topic(self, topic_id):
-        """Given a Rutracker topic ID, fetch the topic page and extract its forum breadcrumb.
+        """Given a Rutracker topic ID, resolve its category via API + cached tree.
         Returns a dict: {"category": "deepest name", "full_path": "Parent > Child > Deepest"}
-        or None on failure. Uses cached topic→category mapping when forum is unavailable."""
+        or None on failure."""
         topic_key = str(topic_id)
 
         # Check topic cache first
@@ -289,79 +324,63 @@ class CategoryManager:
 
         try:
             self.log(f"Looking up category for topic {topic_id}...")
-            resp = self.session.get(f"https://rutracker.org/forum/viewtopic.php?t={topic_id}", timeout=15)
-            if resp.encoding == 'ISO-8859-1':
-                resp.encoding = 'cp1251'
 
-            text = resp.text
+            # Use Rutracker API to get forum_id for this topic
+            resp = requests.get(
+                "https://api.rutracker.cc/v1/get_tor_topic_data",
+                params={"by": "topic_id", "val": str(topic_id)},
+                timeout=15)
 
-            # Check if the forum returned a maintenance/error page (no forum links at all)
-            if 'viewforum' not in text and 'name="f"' not in text:
+            if resp.status_code != 200:
+                raise Exception(f"API returned HTTP {resp.status_code}")
+
+            result = resp.json().get("result", {})
+            topic_data = result.get(str(topic_id))
+
+            if not topic_data:
+                self.log(f"  Topic {topic_id} not found in API")
                 if cached_cat:
-                    self.log(f"  Forum unavailable, using cached: {cached_cat}")
                     return {"category": cached_cat, "full_path": cached_cat}
-                self.log(f"  Forum unavailable and no cached data for topic {topic_id}")
                 return None
 
-            # Extract breadcrumb links (both index.php?c= and viewforum.php?f=) with names
-            all_nav = re.findall(
-                r'href=["\']((?:index\.php\?c|viewforum\.php\?f)=(\d+))["\'][^>]*>(.*?)</a>',
-                text, re.DOTALL
-            )
-            seen_urls = set()
-            breadcrumb = []  # list of (url, type, id, name)
-            for full_url, nav_id, raw_name in all_nav:
-                if full_url in seen_urls:
-                    break  # second occurrence = end of breadcrumb
-                seen_urls.add(full_url)
-                clean_name = html.unescape(re.sub(r'<[^>]+>', '', raw_name).strip())
-                link_type = 'c' if 'index.php' in full_url else 'f'
-                breadcrumb.append((link_type, nav_id, clean_name))
+            forum_id = topic_data.get("forum_id")
+            if not forum_id:
+                self.log(f"  No forum_id for topic {topic_id}")
+                if cached_cat:
+                    return {"category": cached_cat, "full_path": cached_cat}
+                return None
 
-            # Extract forum IDs only (viewforum links) for category resolution
-            breadcrumb_ids = [nav_id for lt, nav_id, _ in breadcrumb if lt == 'f']
+            # Reconstruct breadcrumb from cached tree
+            breadcrumb = self._build_breadcrumb_path(forum_id)
+            if breadcrumb:
+                cat_name = breadcrumb["category"]
+                full_path = breadcrumb["full_path"]
+                self.log(f"  Topic {topic_id} -> Forum {forum_id}: {full_path}")
 
-            forum_id = None
+                # Cache topic → category mapping
+                if "topics" not in self.cache:
+                    self.cache["topics"] = {}
+                self.cache["topics"][topic_key] = cat_name
+                self.save_cache()
+                return breadcrumb
 
-            # Strategy 1: Look for hidden form field with forum ID
-            m = re.search(r'name=["\']f["\'][^>]*value=["\'](\d+)["\']', text)
-            if not m:
-                m = re.search(r'value=["\'](\d+)["\'][^>]*name=["\']f["\']', text)
-            if m:
-                forum_id = m.group(1)
+            # Tree lookup failed — try flat cache
+            cat_name = self.cache["categories"].get(str(forum_id))
+            if not cat_name:
+                cat_name = self.fetch_single_category(forum_id)
+            if cat_name:
+                self.log(f"  Topic {topic_id} -> Forum {forum_id}: {cat_name}")
+                if "topics" not in self.cache:
+                    self.cache["topics"] = {}
+                self.cache["topics"][topic_key] = cat_name
+                self.save_cache()
+                return {"category": cat_name, "full_path": cat_name}
 
-            # Strategy 2: Use last breadcrumb forum ID
-            if not forum_id and breadcrumb_ids:
-                forum_id = breadcrumb_ids[-1]
-
-            if forum_id:
-                cat_name = self.cache["categories"].get(str(forum_id))
-
-                if not cat_name:
-                    cat_name = self.fetch_single_category(forum_id)
-
-                if cat_name:
-                    # Build full breadcrumb path from extracted names
-                    path_parts = [name for _, _, name in breadcrumb if name]
-                    full_path = " > ".join(path_parts) if path_parts else cat_name
-
-                    self.log(f"  Topic {topic_id} -> Forum {forum_id}: {cat_name}")
-                    # Cache topic → category mapping
-                    if "topics" not in self.cache:
-                        self.cache["topics"] = {}
-                    self.cache["topics"][topic_key] = cat_name
-                    self.save_cache()
-                    return {"category": cat_name, "full_path": full_path}
-                else:
-                    self.log(f"  Topic {topic_id} -> Forum {forum_id} (name unknown)")
-                    fallback = f"Forum_{forum_id}"
-                    return {"category": fallback, "full_path": fallback}
-            else:
-                self.log(f"  Could not find forum for topic {topic_id}")
+            fallback = f"Forum_{forum_id}"
+            return {"category": fallback, "full_path": fallback}
 
         except Exception as e:
             self.log(f"  Error looking up topic {topic_id}: {e}")
-            # Network error — fall back to cached topic data
             if cached_cat:
                 self.log(f"  Using cached category: {cached_cat}")
                 return {"category": cached_cat, "full_path": cached_cat}
@@ -393,88 +412,44 @@ class CategoryManager:
             return False
 
     def refresh_cache(self, username=None, password=None, progress_callback=None):
-        """Refresh the category cache. progress_callback(current, total) is called during crawling."""
-        self.log("Refreshing Rutracker category cache...")
-
-        if username and password:
-            self.login(username, password)
+        """Refresh the category cache via Rutracker API."""
+        self.log("Refreshing Rutracker category cache via API...")
 
         try:
-            # Use session
-            resp = self.session.get("https://rutracker.org/forum/index.php", timeout=30)
-
-            # fix encoding for russian characters
-            if resp.encoding == 'ISO-8859-1':
-                resp.encoding = 'cp1251'
-
-            # Parse top-level sections (index.php?c=) - these are section headers like "Спорт", "Кино"
-            temp_sections = {}
-            section_matches = re.findall(r'href=["\'](?:.*?)index\.php\?c=(\d+)["\'][^>]*>(.*?)</a>', resp.text, re.IGNORECASE | re.DOTALL)
-            for sec_id, raw_name in section_matches:
-                clean_name = re.sub(r'<[^>]+>', '', raw_name).strip()
-                if clean_name:
-                    clean_name = html.unescape(clean_name)
-                    temp_sections[f"c{sec_id}"] = clean_name
-
-            # Parse forum categories (viewforum.php?f=)
-            matches = re.findall(r'href=["\'](?:.*?)viewforum\.php\?f=(\d+)["\'][^>]*>(.*?)</a>', resp.text, re.IGNORECASE | re.DOTALL)
-
-            # Use int keys for sorting, then convert back to str for JSON
-            temp_cats = {}
-            for cat_id, raw_name in matches:
-                clean_name = re.sub(r'<[^>]+>', '', raw_name).strip()
-                if clean_name:
-                    clean_name = html.unescape(clean_name)
-                    temp_cats[int(cat_id)] = clean_name
-
-            top_level_count = len(temp_cats)
-            self.log(f"Found {len(temp_sections)} sections, {top_level_count} top-level categories. Crawling sub-categories...")
-
-            # Crawl each top-level category for sub-forums
-            top_ids = list(temp_cats.keys())
-            for i, forum_id in enumerate(top_ids):
-                if progress_callback:
-                    progress_callback(i, top_level_count)
-                try:
-                    sub_resp = self.session.get(f"https://rutracker.org/forum/viewforum.php?f={forum_id}", timeout=15)
-                    if sub_resp.encoding == 'ISO-8859-1':
-                        sub_resp.encoding = 'cp1251'
-
-                    sub_matches = re.findall(r'href=["\'](?:.*?)viewforum\.php\?f=(\d+)["\'][^>]*>(.*?)</a>', sub_resp.text, re.IGNORECASE | re.DOTALL)
-                    for sub_id, sub_name in sub_matches:
-                        sub_id_int = int(sub_id)
-                        if sub_id_int not in temp_cats:
-                            clean = re.sub(r'<[^>]+>', '', sub_name).strip()
-                            if clean:
-                                clean = html.unescape(clean)
-                                temp_cats[sub_id_int] = clean
-
-                    # Log progress every 50 categories
-                    if (i + 1) % 50 == 0:
-                        self.log(f"  Crawled {i+1}/{top_level_count} categories ({len(temp_cats)} total found)...")
-
-                except Exception as e:
-                    pass  # Skip failed sub-category pages silently
-
             if progress_callback:
-                progress_callback(top_level_count, top_level_count)
+                progress_callback(0, 1)
 
-            # Sort by ID (numeric)
+            resp = requests.get("https://api.rutracker.cc/v1/static/cat_forum_tree", timeout=30)
+            if resp.status_code != 200:
+                raise Exception(f"API returned HTTP {resp.status_code}")
+
+            data = resp.json().get("result", {})
+            sections = data.get("c", {})   # {"28": "Спорт", ...}
+            forums = data.get("f", {})     # {"1987": "Еврокубки 2011-2024", ...}
+            tree = data.get("tree", {})    # {"28": {"1608": [1987, ...], ...}}
+
+            # Build flat categories dict (same format as before)
             sorted_cats = {}
-            for cid in sorted(temp_cats.keys()):
-                sorted_cats[str(cid)] = temp_cats[cid]
+            for fid in sorted(forums.keys(), key=lambda x: int(x)):
+                sorted_cats[fid] = html.unescape(forums[fid])
 
-            # Add top-level sections with "c" prefix to distinguish from forum IDs
-            for sec_key, sec_name in temp_sections.items():
-                sorted_cats[sec_key] = sec_name
+            # Add sections with "c" prefix
+            for sid, sname in sections.items():
+                sorted_cats[f"c{sid}"] = html.unescape(sname)
 
+            # Store tree for breadcrumb reconstruction
             self.cache["categories"] = sorted_cats
+            self.cache["tree"] = tree
             self.cache["last_updated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.save_cache()
-            self.log(f"Category cache updated. Found {len(sorted_cats)} categories ({len(temp_sections)} sections + {top_level_count} top-level + {len(sorted_cats) - top_level_count - len(temp_sections)} sub-categories).")
+
+            if progress_callback:
+                progress_callback(1, 1)
+
+            self.log(f"Category cache updated via API. {len(sections)} sections, {len(forums)} forums loaded.")
 
         except Exception as e:
-            self.log(f"Failed to refresh category cache: {e}")
+            self.log(f"API refresh failed: {e}")
 
 
 

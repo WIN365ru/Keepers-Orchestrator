@@ -47,7 +47,7 @@ CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "
 DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_data.db")
 
 # App Version & Update Info
-APP_VERSION = "0.7.0-alpha4"
+APP_VERSION = "0.7.0-beta1"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -244,7 +244,7 @@ class DatabaseManager:
                     INSERT OR REPLACE INTO kept_torrents 
                     (topic_id, info_hash, name, size, seeds_snapshot, leechers_snapshot, added_date, category_id)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (topic_id, info_hash, name, size, seeds, leechers, datetime.datetime.now(), cat_id))
+                """, (topic_id, info_hash, name, size, seeds, leechers, datetime.datetime.now().isoformat(), cat_id))
         except Exception as e:
             print(f"DB Error (add_kept): {e}")
 
@@ -288,7 +288,7 @@ class DatabaseManager:
                 conn.execute("""
                     INSERT INTO scan_history (timestamp, category_id, torrents_scanned, torrents_added, found_low_seeds)
                     VALUES (?, ?, ?, ?, ?)
-                """, (datetime.datetime.now(), cat_id, scanned, added, low_seeds))
+                """, (datetime.datetime.now().isoformat(), cat_id, scanned, added, low_seeds))
         except Exception as e:
             print(f"DB Error (log_scan): {e}")
 

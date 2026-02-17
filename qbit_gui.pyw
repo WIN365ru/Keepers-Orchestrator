@@ -678,6 +678,8 @@ class QBitAdderApp:
                 if "clients" not in data: data["clients"] = DEFAULT_CONFIG["clients"]
                 if "global_auth" not in data: data["global_auth"] = DEFAULT_CONFIG["global_auth"]
                 if "rutracker_auth" not in data: data["rutracker_auth"] = DEFAULT_CONFIG["rutracker_auth"]
+                if "auto_update_enabled" not in data: data["auto_update_enabled"] = False
+                if "auto_update_interval_min" not in data: data["auto_update_interval_min"] = 60
                 
                 return data
             except Exception as e:
@@ -820,6 +822,23 @@ class QBitAdderApp:
 
         tk.Button(rt_frame, text="Save Rutracker Settings", command=self.save_rutracker_settings).pack(pady=5)
 
+        # 3.5 Auto-Update Settings
+        au_frame = tk.LabelFrame(self.settings_tab, text="Auto-Update Behavior", padx=10, pady=10)
+        au_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.auto_update_var = tk.BooleanVar(value=self.config.get("auto_update_enabled", False))
+        tk.Checkbutton(au_frame, text="Auto-update torrent list when switching tabs", 
+                      variable=self.auto_update_var).pack(anchor="w", padx=5)
+
+        au_ttl_frame = tk.Frame(au_frame)
+        au_ttl_frame.pack(fill="x", padx=20, pady=2)
+        tk.Label(au_ttl_frame, text="Update Interval (min):").pack(side="left")
+        self.entry_au_interval = tk.Entry(au_ttl_frame, width=5)
+        self.entry_au_interval.pack(side="left", padx=5)
+        self.entry_au_interval.insert(0, str(self.config.get("auto_update_interval_min", 60)))
+        
+        tk.Button(au_frame, text="Save Auto-Update Settings", command=self.save_auto_update_settings).pack(pady=5)
+
         # 4. Data Sources Section
         data_frame = tk.LabelFrame(self.settings_tab, text="Data Sources")
         data_frame.pack(fill="x", padx=10, pady=5)
@@ -959,6 +978,39 @@ class QBitAdderApp:
         self.config["global_auth"]["password"] = self.entry_global_pass.get()
         self.save_config()
         messagebox.showinfo("Saved", "Global settings saved.")
+
+    def save_rutracker_settings(self):
+        user = self.entry_rt_user.get()
+        pwd = self.entry_rt_pass.get()
+        ttl_str = self.entry_cat_ttl.get()
+        
+        try:
+            ttl = int(ttl_str)
+        except ValueError:
+            messagebox.showerror("Error", "TTL must be an integer.")
+            return
+
+        self.config["rutracker_auth"]["username"] = user
+        self.config["rutracker_auth"]["password"] = pwd
+        self.config["category_ttl_hours"] = ttl
+        self.save_config()
+        messagebox.showinfo("Success", "Rutracker settings saved.")
+
+    def save_auto_update_settings(self):
+        enabled = self.auto_update_var.get()
+        interval_str = self.entry_au_interval.get()
+        
+        try:
+            interval = int(interval_str)
+            if interval < 0: raise ValueError
+        except ValueError:
+            messagebox.showerror("Error", "Interval must be a positive integer.")
+            return
+
+        self.config["auto_update_enabled"] = enabled
+        self.config["auto_update_interval_min"] = interval
+        self.save_config()
+        messagebox.showinfo("Success", "Auto-update settings saved.")
 
     def save_rutracker_settings(self):
         if "rutracker_auth" not in self.config:
@@ -1917,10 +1969,36 @@ class QBitAdderApp:
     def _on_tab_changed(self, event):
         if self.is_initializing:
             return
-        current_tab = self.notebook.index(self.notebook.select())
-        # Update Torrents tab is index 1
-        if current_tab == 1 and not self.updater_scanning:
-            self.updater_start_scan()
+        current_tab_index = self.notebook.index(self.notebook.select())
+        if current_tab_index == 1: # Update Torrents tab
+            # Check auto-update logic
+            auto_enabled = self.config.get("auto_update_enabled", False)
+            interval_min = self.config.get("auto_update_interval_min", 60)
+            
+            should_scan = False
+            now = time.time()
+            
+            if not getattr(self, 'has_initial_scan_done', False):
+                # Always scan on first visit if user wants it, OR if we want manual only initially?
+                # User asked "disable it by default". So first visit shouldn't scan if disabled.
+                self.has_initial_scan_done = True
+                if auto_enabled:
+                    should_scan = True
+            elif auto_enabled:
+                 last_scan = getattr(self, 'last_update_scan_time', 0)
+                 if (now - last_scan) > (interval_min * 60):
+                     should_scan = True
+
+            if should_scan:
+                self.last_update_scan_time = now
+                self.updater_start_scan() # Changed from scan_for_updates to updater_start_scan
+            else:
+                 # Just update dropdowns if not scanning
+                 self.update_updater_client_dropdown()
+
+        if current_tab_index == 2: # Repair tab
+            # No specific action for repair tab yet, but placeholder is good.
+            pass
 
     def update_updater_client_dropdown(self):
         if hasattr(self, 'updater_client_selector'):

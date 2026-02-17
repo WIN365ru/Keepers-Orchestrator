@@ -477,7 +477,7 @@ class QBitAdderApp:
         self.repair_tab = tk.Frame(self.notebook)
         self.settings_tab = tk.Frame(self.notebook)
 
-        self.notebook.add(self.adder_tab, text="Add Torrents")
+        self.notebook.add(self.adder_tab, text="Add Torrents from file")
         self.notebook.add(self.updater_tab, text="Update Torrents")
         self.notebook.add(self.repair_tab, text="Repair Categories")
         self.notebook.add(self.settings_tab, text="Settings")
@@ -953,6 +953,29 @@ class QBitAdderApp:
         self.info_btn.pack(side="left", padx=5)
         self._current_torrent_info = None
 
+        # Custom Options
+        custom_frame = tk.LabelFrame(self.adder_tab, text="Custom Options", padx=10, pady=5)
+        custom_frame.pack(fill="x", padx=10, pady=5)
+
+        self.use_custom_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(custom_frame, text="Use Custom Category & Path", variable=self.use_custom_var, command=self.toggle_custom_options).pack(anchor="w")
+
+        opts_frame = tk.Frame(custom_frame)
+        opts_frame.pack(fill="x", padx=20, pady=5)
+
+        tk.Label(opts_frame, text="Category:").grid(row=0, column=0, sticky="w")
+        self.custom_cat_entry = tk.Entry(opts_frame, width=30)
+        self.custom_cat_entry.grid(row=0, column=1, padx=5, pady=2)
+
+        tk.Label(opts_frame, text="Save Path:").grid(row=1, column=0, sticky="w")
+        self.custom_path_entry = tk.Entry(opts_frame, width=30)
+        self.custom_path_entry.grid(row=1, column=1, padx=5, pady=2)
+        
+        self.browse_custom_path_btn = tk.Button(opts_frame, text="Browse...", command=self.browse_custom_path, width=10)
+        self.browse_custom_path_btn.grid(row=1, column=2, padx=5)
+
+        self.toggle_custom_options() # Initialize state
+
         # Actions
         action_frame = tk.Frame(self.adder_tab)
         action_frame.pack(fill="x", padx=10, pady=5)
@@ -982,6 +1005,18 @@ class QBitAdderApp:
         idx = self.config.get("last_selected_client_index", 0)
         if idx >= len(names): idx = 0
         self.client_selector.current(idx)
+
+    def toggle_custom_options(self):
+        state = "normal" if self.use_custom_var.get() else "disabled"
+        self.custom_cat_entry.config(state=state)
+        self.custom_path_entry.config(state=state)
+        self.browse_custom_path_btn.config(state=state)
+
+    def browse_custom_path(self):
+        path = filedialog.askdirectory()
+        if path:
+            self.custom_path_entry.delete(0, tk.END)
+            self.custom_path_entry.insert(0, path)
 
     # --- Shared Actions (Select File/Folder) ---
     def select_file(self):
@@ -1169,7 +1204,14 @@ class QBitAdderApp:
         self.stop_btn.config(state="normal")
         self.pause_btn.config(state="normal", text="Pause")
 
-        threading.Thread(target=self._process_thread).start()
+        self.pause_btn.config(state="normal", text="Pause")
+
+        # Capture Custom Options
+        use_custom = self.use_custom_var.get()
+        custom_cat = self.custom_cat_entry.get().strip()
+        custom_path = self.custom_path_entry.get().strip()
+
+        threading.Thread(target=self._process_thread, args=(use_custom, custom_cat, custom_path)).start()
 
     def stop_processing(self):
         if messagebox.askyesno("Stop", "Are you sure you want to stop processing?"):
@@ -1242,7 +1284,7 @@ class QBitAdderApp:
             updated_text = base_info_text.replace("Total size: calculating...", "Total size: error")
             self.root.after(0, lambda: self.file_label.config(text=updated_text))
 
-    def _process_thread(self):
+    def _process_thread(self, use_custom, custom_cat, custom_path):
         # Determine targets
         selected_idx = self.client_selector.current()
         num_options = len(self.client_selector['values'])
@@ -1332,7 +1374,7 @@ class QBitAdderApp:
                     if self.stop_event.is_set(): break
                     self.log("Resuming...")
 
-                ok = self._add_torrent_content_to_client(client, torrent_content, torrent_path, category_subpath, extracted_id)
+                ok = self._add_torrent_content_to_client(client, torrent_content, torrent_path, category_subpath, extracted_id, use_custom, custom_cat, custom_path)
                 if ok:
                     success_count += 1
                 else:
@@ -1405,7 +1447,7 @@ class QBitAdderApp:
             pass
         return None
 
-    def _add_torrent_content_to_client(self, client, content, filename_display, category_subpath, extracted_id):
+    def _add_torrent_content_to_client(self, client, content, filename_display, category_subpath, extracted_id, use_custom, custom_cat, custom_path):
         name = client["name"]
         url = client["url"]
         base_path = client["base_save_path"]
@@ -1439,26 +1481,50 @@ class QBitAdderApp:
                 return
 
             # Construct Path
-            # Structure: Base / [CategoryName] / [TorrentID or Name]
-            final_path_list = [base_path]
-            if category_subpath:
-                final_path_list.append(category_subpath)
-            
-            if extracted_id:
-                final_path_list.append(extracted_id)
-            else:
-                # Fallback to filename without extension
-                fname = os.path.basename(filename_display)
-                final_path_list.append(os.path.splitext(fname)[0])
+            save_path = ""
+            final_cat = ""
+
+            if use_custom:
+                # Custom Override Logic
+                if custom_path:
+                    save_path = custom_path.replace("\\", "/")
+                else:
+                    # If custom path is empty, maybe fallback to base path? 
+                    # For now, let's use client base path if custom is empty but checked
+                    save_path = base_path.replace("\\", "/")
                 
-            save_path = os.path.join(*final_path_list).replace("\\", "/")
+                if custom_cat:
+                    final_cat = custom_cat
+                else:
+                    # If custom cat is empty but checked, maybe no category or keep detected?
+                    # Let's keep detected if custom content is empty
+                    final_cat = category_subpath
+                
+                self.log(f"  -> Using Custom Path: {save_path}")
+                self.log(f"  -> Using Custom Cat: {final_cat}")
+
+            else:
+                # Standard Logic
+                final_path_list = [base_path]
+                if category_subpath:
+                    final_path_list.append(category_subpath)
+                
+                if extracted_id:
+                    final_path_list.append(extracted_id)
+                else:
+                    # Fallback to filename without extension
+                    fname = os.path.basename(filename_display)
+                    final_path_list.append(os.path.splitext(fname)[0])
+                    
+                save_path = os.path.join(*final_path_list).replace("\\", "/")
+                final_cat = category_subpath
 
             files = {'torrents': (os.path.basename(filename_display), content)}
             data = {'savepath': save_path, 'paused': 'false', 'root_folder': 'true'}
             
-            # Set qBittorrent category from Rutracker category name
-            if category_subpath:
-                data['category'] = category_subpath
+            # Set qBittorrent category
+            if final_cat:
+                data['category'] = final_cat
             
             resp = session.post(f"{url}/api/v2/torrents/add", files=files, data=data, timeout=30)
             

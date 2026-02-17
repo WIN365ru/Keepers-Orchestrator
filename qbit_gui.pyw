@@ -1227,8 +1227,9 @@ class QBitAdderApp:
                 })
                 
                 if resp.status_code == 200:
+                    self._cache_invalidate(client_conf["name"])  # Invalidate stale cache
                     self.root.after(0, lambda: self.remover_status.config(text=f"Removed {len(hashes)} torrents.", fg="green"))
-                    self.root.after(0, self.remover_load_torrents) # Refresh
+                    self.root.after(0, lambda: self.remover_load_torrents(force=True))  # Force refresh
                 else:
                     self.root.after(0, lambda: self.remover_status.config(text=f"Delete failed: {resp.status_code}", fg="red"))
                     
@@ -3603,6 +3604,10 @@ class QBitAdderApp:
                 fail += 1
                 self.updater_log(f"Error processing {t_name[:60]}: {e}")
 
+        # Invalidate cache since torrents were re-added
+        if success > 0:
+            self._cache_invalidate(client["name"])
+
         summary = f"Done: {success} succeeded, {fail} failed"
         self.updater_log(summary)
         self.root.after(0, lambda: messagebox.showinfo("Done", summary))
@@ -4172,6 +4177,10 @@ class QBitAdderApp:
                 fail += 1
                 self.repair_log(f"  Error: {e}")
                 self.root.after(0, lambda h=t_hash: self.repair_tree.item(h, tags=("error",)))
+
+        # Invalidate cache since torrents were modified
+        if success > 0:
+            self._cache_invalidate(client["name"])
 
         elapsed = time.time() - repair_start
         summary = f"Done: {success} repaired, {fail} failed (Elapsed: {elapsed:.1f}s)"
@@ -4751,6 +4760,10 @@ class QBitAdderApp:
                 fail += 1
                 self.mover_log(f"  [{i+1}/{len(torrents)}] Error: {e}")
 
+        # Invalidate cache since torrent paths changed
+        if success > 0:
+            self._cache_invalidate(self.mover_selected_client["name"])
+
         elapsed = time.time() - start_time
         summary = f"Category move done: {success} moved, {fail} failed (Elapsed: {elapsed:.1f}s)"
         self.mover_log(summary)
@@ -5100,6 +5113,10 @@ class QBitAdderApp:
                 fail += 1
                 self.root.after(0, lambda h=t_hash: self.mover_preview_tree.item(h, tags=("error",)))
                 self.mover_log(f"  [{i+1}/{len(plan)}] Error: {e}")
+
+        # Invalidate cache since torrent paths changed
+        if success > 0:
+            self._cache_invalidate(self.mover_selected_client["name"])
 
         elapsed = time.time() - start_time
         summary = f"Balance done: {success} moved, {fail} failed (Elapsed: {elapsed:.1f}s)"

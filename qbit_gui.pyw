@@ -192,8 +192,9 @@ def parse_torrent_info(file_path_or_bytes):
         return {'name': '', 'comment': '', 'topic_id': None, 'total_size': 0, 'file_count': 0, 'created_by': '', 'creation_date': '', 'tracker': '', 'piece_size': 0, 'private': False, 'source': '', 'files': [], 'error': str(e)}
 
 class CategoryManager:
-    def __init__(self, log_func):
+    def __init__(self, log_func, keys_callback=None):
         self.log = log_func
+        self.keys_callback = keys_callback
         self.cache = self.load_cache()
         self.session = requests.Session()
         self.session.headers.update({
@@ -467,8 +468,11 @@ class CategoryManager:
                     api_match = re.search(r'api:\s*(?:<[^>]+>)?\s*([a-zA-Z0-9]+)', resp_prof.text, re.IGNORECASE)
                     if api_match: keys_found['api'] = api_match.group(1)
 
-                self.cache['user_keys'] = keys_found
-                self.save_cache()
+                if self.keys_callback:
+                    self.keys_callback(keys_found)
+                else:
+                    self.cache['user_keys'] = keys_found
+                    self.save_cache()
                 
                 log_msg = "  Keys found: "
                 if 'bt' in keys_found: log_msg += "BT "
@@ -552,7 +556,11 @@ class QBitAdderApp:
         self.create_adder_ui()
 
         # Initialize Category Manager (needs log from adder_ui)
-        self.cat_manager = CategoryManager(self.log)
+        # Pass callback to save keys to main config
+        self.cat_manager = CategoryManager(self.log, self.save_user_keys)
+        
+        # KEY MIGRATION: Check if keys exist in cache and move them to config
+        self.migrate_keys_from_cache()
 
         # Updater tab state
         self.updater_scanning = False
@@ -591,6 +599,28 @@ class QBitAdderApp:
 
         # Start Category Manager (Auto-fetch if needed)
         threading.Thread(target=self._initial_category_fetch, daemon=True).start()
+
+    def save_user_keys(self, keys):
+        """Callback to save user keys to global config."""
+        self.config["user_keys"] = keys
+        self.save_config()
+        # Also update UI elements
+        self.update_cats_ui()
+
+    def migrate_keys_from_cache(self):
+        """Move keys from rutracker_categories.json to q_adder_config.json if found."""
+        cache_keys = self.cat_manager.cache.get("user_keys")
+        if cache_keys:
+            self.log("Migrating user keys from category cache to main config...")
+            # Only overwrite if config keys are empty or force? 
+            # Let's overwrite / set if they exist in cache.
+            self.config["user_keys"] = cache_keys.copy()
+            self.save_config()
+            
+            # Remove from cache and save cache
+            del self.cat_manager.cache["user_keys"]
+            self.cat_manager.save_cache()
+            self.log("Keys migrated and removed from cache.")
 
     def _get_rutracker_creds(self):
         rt_auth = self.config.get("rutracker_auth", {})
@@ -768,7 +798,7 @@ class QBitAdderApp:
             tk.Label(parent, text=label).pack(side="left")
             e = tk.Entry(parent, width=15, state="readonly")
             e.pack(side="left", padx=2)
-            val = self.cat_manager.cache.get("user_keys", {}).get(key, "")
+            val = self.config.get("user_keys", {}).get(key, "")
             e.config(state="normal")
             e.insert(0, val)
             e.config(state="readonly")
@@ -868,7 +898,7 @@ class QBitAdderApp:
         self.cats_progress_label.pack_forget()
         
         # Update Keys Display
-        keys = self.cat_manager.cache.get("user_keys", {})
+        keys = self.config.get("user_keys", {})
         if hasattr(self, 'entry_key_id'):
             self.entry_key_id.config(state="normal")
             self.entry_key_id.delete(0, tk.END)

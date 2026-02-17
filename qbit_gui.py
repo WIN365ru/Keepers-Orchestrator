@@ -403,6 +403,7 @@ class CategoryManager:
             # Check for session cookie which confirms successful login
             if 'bb_session' in self.session.cookies.get_dict():
                  self.log("Logged in successfully.")
+                 self._scrape_keys()
                  return True
             else:
                  self.log(f"Login failed (no session cookie). Response len: {len(resp.text)}")
@@ -410,6 +411,72 @@ class CategoryManager:
         except Exception as e:
             self.log(f"Login error: {e}")
             return False
+
+    def _scrape_keys(self):
+        """Scrape user ID, BT key, and API key from profile/index."""
+        try:
+            self.log("Scraping user keys...")
+            # 1. Get User ID from index
+            resp = self.session.get("https://rutracker.org/forum/index.php", timeout=15)
+            if resp.encoding == 'ISO-8859-1': resp.encoding = 'cp1251'
+            
+            uid_match = re.search(r'profile\.php\?mode=viewprofile&amp;u=(\d+)', resp.text)
+            if not uid_match:
+                uid_match = re.search(r'profile\.php\?mode=viewprofile&u=(\d+)', resp.text)
+            
+            if uid_match:
+                uid = uid_match.group(1)
+                self.log(f"  Found User ID: {uid}")
+                
+                # 2. Get Profile for BT/API keys
+                # Usually found in "editprofile" or similar?
+                # Let's check "profile.php?mode=viewprofile&u={uid}" first
+                prof_url = f"https://rutracker.org/forum/profile.php?mode=viewprofile&u={uid}"
+                resp_prof = self.session.get(prof_url, timeout=15)
+                if resp_prof.encoding == 'ISO-8859-1': resp_prof.encoding = 'cp1251'
+                
+                # Check for "bt:" and "api:" and "id:" patterns as requested
+                # The user said "we can get bt: ... api: ... id: ... keys from there"
+                # This implies they are visible text.
+                # Common pattern in some modified profiles or specific layouts.
+                # Let's try standard patterns first.
+                
+                # BitTorrent Passkey often in: <span class="editable">...</span> or raw text
+                # "bt: " might be a label.
+                
+                keys_found = {}
+                keys_found['id'] = uid
+                
+                # Regex for "bt: <b>VALUE</b>" as seen in screenshot
+                # We try a few patterns to be safe.
+                
+                # 1. Try strict HTML pattern from screenshot
+                bt_match = re.search(r'bt:\s*<b>\s*([^<]+)\s*</b>', resp_prof.text, re.IGNORECASE)
+                if bt_match:
+                     keys_found['bt'] = bt_match.group(1)
+                else:
+                     # 2. Try looser pattern (no closing tag check)
+                     bt_match = re.search(r'bt:\s*(?:<[^>]+>)?\s*([a-zA-Z0-9]+)', resp_prof.text, re.IGNORECASE)
+                     if bt_match: keys_found['bt'] = bt_match.group(1)
+
+                # API Key
+                api_match = re.search(r'api:\s*<b>\s*([^<]+)\s*</b>', resp_prof.text, re.IGNORECASE)
+                if api_match:
+                    keys_found['api'] = api_match.group(1)
+                else:
+                    api_match = re.search(r'api:\s*(?:<[^>]+>)?\s*([a-zA-Z0-9]+)', resp_prof.text, re.IGNORECASE)
+                    if api_match: keys_found['api'] = api_match.group(1)
+
+                self.cache['user_keys'] = keys_found
+                self.save_cache()
+                
+                log_msg = "  Keys found: "
+                if 'bt' in keys_found: log_msg += "BT "
+                if 'api' in keys_found: log_msg += "API "
+                self.log(log_msg)
+                
+        except Exception as e:
+            self.log(f"Error scraping keys: {e}")
 
     def refresh_cache(self, username=None, password=None, progress_callback=None):
         """Refresh the category cache via Rutracker API."""
@@ -460,7 +527,7 @@ class QBitAdderApp:
         self.root.geometry("600x650")
         
         self.config = self.load_config()
-        self.selected_file_path = None
+        self.selected_files = [] # List of file paths
         self.selected_folder_path = None
         self.stop_event = threading.Event()
         self.running_event = threading.Event()
@@ -503,6 +570,16 @@ class QBitAdderApp:
         self.create_repair_ui()
 
         self.create_settings_ui()
+        
+        # Search Tab (New)
+        self.search_tab = tk.Frame(self.notebook)
+        self.notebook.add(self.search_tab, text="Search Torrents")
+        self.create_search_ui()
+        
+        # Temp directory for downloads
+        self.temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_torrents")
+        if not os.path.exists(self.temp_dir):
+            os.makedirs(self.temp_dir)
 
         self.is_initializing = False
 
@@ -679,7 +756,29 @@ class QBitAdderApp:
         tk.Label(rt_auth_frame, text="Password:").pack(side="left")
         self.entry_rt_pass = tk.Entry(rt_auth_frame, show="*", width=20)
         self.entry_rt_pass.pack(side="left", padx=5)
+        self.entry_rt_pass.pack(side="left", padx=5)
         self.entry_rt_pass.insert(0, self.config.get("rutracker_auth", {}).get("password", ""))
+
+        # Extracted Keys Display
+        keys_frame = tk.Frame(rt_frame)
+        keys_frame.pack(fill="x", padx=5, pady=5)
+        
+        # Helper to add read-only field
+        def add_ro_field(parent, label, key):
+            tk.Label(parent, text=label).pack(side="left")
+            e = tk.Entry(parent, width=15, state="readonly")
+            e.pack(side="left", padx=2)
+            val = self.cat_manager.cache.get("user_keys", {}).get(key, "")
+            e.config(state="normal")
+            e.insert(0, val)
+            e.config(state="readonly")
+            return e
+
+        self.entry_key_id = add_ro_field(keys_frame, "ID:", "id")
+        self.entry_key_bt = add_ro_field(keys_frame, "BT:", "bt")
+        self.entry_key_api = add_ro_field(keys_frame, "API:", "api")
+        
+        tk.Button(keys_frame, text="Update Keys", command=self.update_keys_action).pack(side="left", padx=10)
 
         rt_ttl_frame = tk.Frame(rt_frame)
         rt_ttl_frame.pack(fill="x", padx=5, pady=2)
@@ -767,6 +866,52 @@ class QBitAdderApp:
         self.cats_status_label.config(text=self.get_cats_status_text())
         self.cats_progress.pack_forget()
         self.cats_progress_label.pack_forget()
+        
+        # Update Keys Display
+        keys = self.cat_manager.cache.get("user_keys", {})
+        if hasattr(self, 'entry_key_id'):
+            self.entry_key_id.config(state="normal")
+            self.entry_key_id.delete(0, tk.END)
+            self.entry_key_id.insert(0, keys.get("id", ""))
+            self.entry_key_id.config(state="readonly")
+            
+        if hasattr(self, 'entry_key_bt'):
+            self.entry_key_bt.config(state="normal")
+            self.entry_key_bt.delete(0, tk.END)
+            self.entry_key_bt.insert(0, keys.get("bt", ""))
+            self.entry_key_bt.config(state="readonly")
+
+        if hasattr(self, 'entry_key_api'):
+            self.entry_key_api.config(state="normal")
+            self.entry_key_api.delete(0, tk.END)
+            self.entry_key_api.insert(0, keys.get("api", ""))
+            self.entry_key_api.config(state="readonly")
+
+    def update_keys_action(self):
+        """Independently update keys without full category refresh."""
+        user = self.entry_rt_user.get()
+        pwd = self.entry_rt_pass.get()
+        
+        if not user or not pwd:
+            messagebox.showwarning("Missing Credentials", "Please enter Rutracker username and password first.")
+            return
+
+        def _thread():
+            try:
+                # Login if needed
+                if 'bb_session' not in self.cat_manager.session.cookies:
+                    if not self.cat_manager.login(user, pwd):
+                        self.root.after(0, lambda: messagebox.showerror("Error", "Login failed."))
+                        return
+                
+                # Scrape
+                self.cat_manager._scrape_keys()
+                self.root.after(0, lambda: messagebox.showinfo("Success", "Keys updated successfully."))
+                self.root.after(0, self.update_cats_ui) # Refresh UI fields
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Key update failed: {e}"))
+
+        threading.Thread(target=_thread, daemon=True).start()
 
     def toggle_global_auth(self):
         enabled = self.global_auth_var.get()
@@ -1020,83 +1165,176 @@ class QBitAdderApp:
 
     # --- Shared Actions (Select File/Folder) ---
     def select_file(self):
-        filepath = filedialog.askopenfilename(filetypes=[("Torrent/ZIP", "*.torrent *.zip"), ("All files", "*.*")])
-        if filepath:
-            self.selected_file_path = filepath
+        filepaths = filedialog.askopenfilenames(filetypes=[("Torrent/ZIP", "*.torrent *.zip"), ("All files", "*.*")])
+        if filepaths:
+            self.selected_files = list(filepaths)
             self.selected_folder_path = None
             
-            filename = os.path.basename(filepath)
-            
-            if filepath.lower().endswith('.zip'):
-                cat_name, cat_id, count = self._extract_zip_info(filename)
+            # Reset UI
+            self._current_link = None
+            self.link_label.config(text="")
+            self._current_torrent_info = None
+            self.info_btn.config(state="disabled")
 
-                info_text = f"ZIP: {filename}\nCategory: {cat_name} (ID: {cat_id})\nTorrents: {count}\nTotal size: calculating..."
-                self.file_label.config(text=info_text, fg="black")
-                self._current_link = None
-                self.link_label.config(text="")
-                self.log(f"Selected ZIP: {filepath}")
-                self.log(f" -> Category: {cat_name}, Count: {count}")
-                self._current_torrent_info = None
-                self.info_btn.config(state="disabled")
-                # Calculate total download size in background
-                threading.Thread(target=self._calc_zip_size, args=(filepath, info_text), daemon=True).start()
-            else:
-                # Parse torrent metadata
-                info = parse_torrent_info(filepath)
-                torrent_name = info.get('name', '') or filename
-                comment = info.get('comment', '')
-                topic_id = info.get('topic_id')
+            count = len(self.selected_files)
+            if count == 1:
+                # Single file logic (keep existing detail view)
+                filepath = self.selected_files[0]
+                filename = os.path.basename(filepath)
                 
-                # Build display text (without link - that goes in link_label)
-                total_size = info.get('total_size', 0)
-                file_count = info.get('file_count', 0)
-                
-                lines = [f"Name: {torrent_name}"]
-                if total_size > 0:
-                    size_str = format_size(total_size)
-                    lines.append(f"Size: {size_str} ({file_count} file{'s' if file_count != 1 else ''})")
-                if topic_id:
-                    lines.append(f"Topic ID: {topic_id}")
-                    lines.append("Category: Loading...")
-                
-                self.file_label.config(text="\n".join(lines), fg="black")
-                
-                # Store full info for Additional Info button
-                self._current_torrent_info = info
-                self.info_btn.config(state="normal")
-                
-                # Set clickable link
-                if comment:
-                    self._current_link = comment
-                    self.link_label.config(text=comment, font=("TkDefaultFont", 9, "underline"))
+                if filepath.lower().endswith('.zip'):
+                    self._handle_single_zip(filepath)
                 else:
-                    self._current_link = None
-                    self.link_label.config(text="", font=("TkDefaultFont", 9))
-                
-                self.log(f"Selected file: {filepath}")
-                if torrent_name:
-                    self.log(f"  Name: {torrent_name}")
-                if comment:
-                    self.log(f"  Link: {comment}")
-                
-                # Look up category in background
-                if topic_id:
-                    threading.Thread(target=self._lookup_torrent_category, args=(topic_id, lines), daemon=True).start()
+                    self._handle_single_torrent(filepath)
+            else:
+                # Multiple files selected
+                self.file_label.config(text=f"Selected {count} files\nCalculating details...", fg="black")
+                self.log(f"Selected {count} files. Analyzing...")
+                threading.Thread(target=self._analyze_multiselect_thread, args=(self.selected_files,), daemon=True).start()
+
+    def _analyze_multiselect_thread(self, filepaths, label_prefix=None):
+        total_size = 0
+        categories = set()
+        
+        for fp in filepaths:
+            try:
+                if fp.lower().endswith('.zip'):
+                    # Handle ZIP
+                    # 1. Size
+                    with zipfile.ZipFile(fp, 'r') as z:
+                        for name in z.namelist():
+                            if name.lower().endswith('.torrent'):
+                                try:
+                                    info = parse_torrent_info(z.read(name))
+                                    total_size += info.get('total_size', 0)
+                                except: pass
+                    
+                    # 2. Category (from filename)
+                    cat_name, cat_id, _ = self._extract_zip_info(os.path.basename(fp))
+                    if cat_name != "Unknown":
+                        categories.add(cat_name)
+                    else:
+                        categories.add("Unknown (ZIP)")
+                        
+                else:
+                    # Handle Torrent
+                    info = parse_torrent_info(fp)
+                    total_size += info.get('total_size', 0)
+                    
+                    tid = info.get('topic_id')
+                    if tid:
+                        res = self.cat_manager.get_category_for_topic(tid)
+                        if res:
+                            categories.add(res['full_path'])
+                        else:
+                             categories.add("Unknown")
+                    else:
+                        categories.add("Unknown")
+            except Exception as e:
+                print(f"Error analyzing {fp}: {e}")
+
+        # Update UI
+        size_str = format_size(total_size)
+        if label_prefix:
+            lines = [label_prefix, f"Total Size: {size_str}"]
+        else:
+            lines = [f"Selected {len(filepaths)} files", f"Total Size: {size_str}"]
+        
+        if len(categories) > 1:
+            lines.append("Categories:")
+            # Sort and limit
+            sorted_cats = sorted(list(categories))
+            if len(sorted_cats) > 5:
+                lines.extend([f" - {c}" for c in sorted_cats[:5]])
+                lines.append(f" ... and {len(sorted_cats)-5} more")
+            else:
+                lines.extend([f" - {c}" for c in sorted_cats])
+        elif len(categories) == 1:
+            lines.append(f"Category: {list(categories)[0]}")
+        else:
+            lines.append("Category: Unknown")
+
+        self.root.after(0, lambda: self.file_label.config(text="\n".join(lines)))
+        self.root.after(0, lambda: self.log(f"Analysis complete. Size: {size_str}, Cats: {len(categories)}"))
+
+    def _handle_single_zip(self, filepath):
+        filename = os.path.basename(filepath)
+        cat_name, cat_id, count = self._extract_zip_info(filename)
+
+        info_text = f"ZIP: {filename}\nCategory: {cat_name} (ID: {cat_id})\nTorrents: {count}\nTotal size: calculating..."
+        self.file_label.config(text=info_text, fg="black")
+        self.log(f"Selected ZIP: {filepath}")
+        self.log(f" -> Category: {cat_name}, Count: {count}")
+
+        # Calculate total download size in background
+        threading.Thread(target=self._calc_zip_size, args=(filepath, info_text), daemon=True).start()
+
+    def _handle_single_torrent(self, filepath):
+        # Parse torrent metadata
+        filename = os.path.basename(filepath)
+        info = parse_torrent_info(filepath)
+        torrent_name = info.get('name', '') or filename
+        comment = info.get('comment', '')
+        topic_id = info.get('topic_id')
+        
+        # Build display text (without link - that goes in link_label)
+        total_size = info.get('total_size', 0)
+        file_count = info.get('file_count', 0)
+        
+        lines = [f"Name: {torrent_name}"]
+        if total_size > 0:
+            size_str = format_size(total_size)
+            lines.append(f"Size: {size_str} ({file_count} file{'s' if file_count != 1 else ''})")
+        if topic_id:
+            lines.append(f"Topic ID: {topic_id}")
+            lines.append("Category: Loading...")
+        
+        self.file_label.config(text="\n".join(lines), fg="black")
+        
+        # Store full info for Additional Info button
+        self._current_torrent_info = info
+        self.info_btn.config(state="normal")
+        
+        # Set clickable link
+        if comment:
+            self._current_link = comment
+            self.link_label.config(text=comment, font=("TkDefaultFont", 9, "underline"))
+        else:
+            self._current_link = None
+            self.link_label.config(text="", font=("TkDefaultFont", 9))
+        
+        self.log(f"Selected file: {filepath}")
+        if torrent_name:
+            self.log(f"  Name: {torrent_name}")
+        
+        # Look up category in background
+        if topic_id:
+            threading.Thread(target=self._lookup_torrent_category, args=(topic_id, lines), daemon=True).start()
 
     def select_folder(self):
         folderpath = filedialog.askdirectory()
         if folderpath:
             self.selected_folder_path = folderpath
-            self.selected_file_path = None
             self._current_link = None
             self.link_label.config(text="")
             self._current_torrent_info = None
             self.info_btn.config(state="disabled")
             
             try:
-                count = sum(1 for f in os.listdir(folderpath) if f.lower().endswith('.torrent'))
-                self.file_label.config(text=f"Folder: {folderpath}\n({count} .torrent files found)", fg="black")
-                self.log(f"Selected folder: {folderpath} ({count} torrents)")
+                # Find all torrents
+                files = []
+                for f in os.listdir(folderpath):
+                    if f.lower().endswith('.torrent'):
+                        files.append(os.path.join(folderpath, f))
+                
+                self.selected_files = files
+                prefix = f"Folder: {folderpath}\nFound {len(files)} files"
+                
+                self.file_label.config(text=f"{prefix}\nCalculating details...", fg="black")
+                self.log(f"Selected folder: {folderpath} ({len(files)} torrents)")
+                
+                threading.Thread(target=self._analyze_multiselect_thread, args=(files, prefix), daemon=True).start()
+
             except Exception as e:
                 self.file_label.config(text=f"Folder: {folderpath} (Error reading)", fg="red")
                 self.log(f"Error reading folder: {e}")
@@ -1190,8 +1428,8 @@ class QBitAdderApp:
     # --- Logic ---
     # --- Logic ---
     def process_torrent(self):
-        if not self.selected_file_path and not self.selected_folder_path:
-            messagebox.showwarning("Warning", "Please select a torrent/zip file or folder first.")
+        if not self.selected_files and not self.selected_folder_path:
+            messagebox.showwarning("Warning", "Please select a torrent/zip file(s) or folder first.")
             return
 
         # Save selected client index
@@ -1304,14 +1542,16 @@ class QBitAdderApp:
         # Structure: list of items to process. Item = {'type': 'file'|'zip_entry', 'path': ..., 'content': bytes, 'category_subpath': str}
         work_items = []
 
-        if self.selected_file_path:
-            if self.selected_file_path.lower().endswith('.zip'):
-                # Handle Single ZIP - Updated to use helper
-                items = self._parse_zip_file(self.selected_file_path)
-                work_items.extend(items)
-            else:
-                # Normal Torrent
-                work_items.append({'type': 'file', 'path': self.selected_file_path, 'content': None, 'category_subpath': ''})
+        if self.selected_files:
+            # Handle multiple selected files
+            for fpath in self.selected_files:
+                if fpath.lower().endswith('.zip'):
+                    # Handle Single ZIP - Updated to use helper
+                    items = self._parse_zip_file(fpath)
+                    work_items.extend(items)
+                else:
+                    # Normal Torrent
+                    work_items.append({'type': 'file', 'path': fpath, 'content': None, 'category_subpath': ''})
 
         elif self.selected_folder_path:
             try:
@@ -1664,8 +1904,340 @@ class QBitAdderApp:
 
     def _updater_set_action_buttons(self, state):
         self.updater_readd_keep_btn.config(state=state)
-        self.updater_readd_redown_btn.config(state=state)
-        self.updater_skip_btn.config(state=state)
+        # Add other buttons if needed
+
+    # ===================================================================
+    # SEARCH TAB
+    # ===================================================================
+
+    def create_search_ui(self):
+        # Controls
+        ctrl_frame = tk.LabelFrame(self.search_tab, text="Search", padx=10, pady=5)
+        ctrl_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Label(ctrl_frame, text="Query:").pack(side="left")
+        self.search_entry = tk.Entry(ctrl_frame, width=40)
+        self.search_entry.pack(side="left", padx=5)
+        self.search_entry.bind("<Return>", lambda e: self.perform_search())
+        
+        self.search_entry.bind("<Return>", lambda e: self.perform_search())
+        
+        tk.Label(ctrl_frame, text="Type:").pack(side="left")
+        self.search_type_combo = ttk.Combobox(ctrl_frame, state="readonly", width=15)
+        self.search_type_combo['values'] = ["Name (Scrape)", "Topic ID (API)", "Hash (API)"]
+        self.search_type_combo.current(0)
+        self.search_type_combo.pack(side="left", padx=5)
+        
+        self.search_btn = tk.Button(ctrl_frame, text="Search", command=self.perform_search)
+        self.search_btn.pack(side="left", padx=10)
+
+        # Results
+        res_frame = tk.LabelFrame(self.search_tab, text="Results", padx=5, pady=5)
+        res_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        cols = ("id", "name", "size", "seeds", "leech", "category")
+        self.search_tree = ttk.Treeview(res_frame, columns=cols, show="headings", selectmode="browse")
+        
+        self.search_tree.heading("id", text="ID")
+        self.search_tree.heading("name", text="Name")
+        self.search_tree.heading("size", text="Size")
+        self.search_tree.heading("seeds", text="S")
+        self.search_tree.heading("leech", text="L")
+        self.search_tree.heading("category", text="Category")
+        
+        self.search_tree.column("id", width=60, stretch=False)
+        self.search_tree.column("name", width=400)
+        self.search_tree.column("size", width=80, stretch=False)
+        self.search_tree.column("seeds", width=40, stretch=False)
+        self.search_tree.column("leech", width=40, stretch=False)
+        self.search_tree.column("category", width=150)
+        
+        scroll = ttk.Scrollbar(res_frame, orient="vertical", command=self.search_tree.yview)
+        self.search_tree.configure(yscrollcommand=scroll.set)
+        
+        self.search_tree.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        
+        # Actions
+        act_frame = tk.Frame(self.search_tab)
+        act_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Button(act_frame, text="Download", command=self.download_selected_torrent).pack(side="left", padx=5)
+        tk.Button(act_frame, text="Download & Add", command=self.download_and_add_torrent).pack(side="left", padx=5)
+        
+        self.search_status = tk.Label(act_frame, text="", fg="gray")
+        self.search_status.pack(side="left", padx=10)
+
+    def perform_search(self):
+        query = self.search_entry.get().strip()
+        if not query: return
+        
+        # Map combobox value to internal type
+        combo_val = self.search_type_combo.get()
+        s_type = "name"
+        if "Topic ID" in combo_val: s_type = "id"
+        elif "Hash" in combo_val: s_type = "hash"
+
+        self.search_status.config(text="Searching...", fg="blue")
+        self.search_tree.delete(*self.search_tree.get_children())
+        
+        threading.Thread(target=self._search_thread, args=(query, s_type)).start()
+
+    def _search_thread(self, query, s_type):
+        results = []
+        try:
+            if s_type == "name":
+                results = self._search_by_name_scrape(query)
+            else:
+                results = self._search_by_api(query, s_type)
+            
+            self.root.after(0, lambda: self._update_search_results(results))
+        except Exception as e:
+            self.root.after(0, lambda: self.search_status.config(text=f"Error: {e}", fg="red"))
+            print(f"Search error: {e}")
+
+    def _update_search_results(self, results):
+        for r in results:
+            self.search_tree.insert("", "end", values=(
+                r['id'], r['name'], r['size'], r['seeds'], r['leech'], r['category']
+            ))
+        self.search_status.config(text=f"Found {len(results)} results.", fg="green")
+
+    def _search_by_api(self, query, s_type):
+        # s_type: 'id' or 'hash'
+        # Endpoint: get_tor_topic_data?by=topic_id&val=... or by=hash&val=...
+        
+        # Clean query: split by commas/spaces/newlines and join with comma
+        # This supports "id1, id2 id3" -> "id1,id2,id3"
+        raw_vals = re.split(r'[,\s\n]+', query)
+        val = ",".join(v for v in raw_vals if v)
+        
+        by = "topic_id" if s_type == "id" else "hash"
+        
+        url = "https://api.rutracker.cc/v1/get_tor_topic_data"
+        params = {"by": by, "val": val}
+        
+        resp = requests.get(url, params=params, timeout=15)
+        if resp.status_code != 200:
+            raise Exception(f"API HTTP {resp.status_code}")
+            
+        data = resp.json().get("result", {})
+        results = []
+        
+        # Data format: { "ID": { ... } }
+        for tid, info in data.items():
+            if not info: continue
+            
+            # Resolve category name
+            cat_id = info.get("forum_id")
+            cat_name = self.cat_manager.get_category_name(cat_id) if cat_id else "?"
+            
+            results.append({
+                "id": tid,
+                "name": info.get("topic_title", "Unknown"),
+                "size": format_size(info.get("size", 0)),
+                "seeds": info.get("seeders", "?"),
+                "leech": 0, # API doesn't seem to return leechers in topic_data?
+                "category": cat_name
+            })
+            
+        return results
+
+    def _search_by_name_scrape(self, query):
+        # Requires Login
+        # url = https://rutracker.org/forum/tracker.php
+        # POST data: nm=query
+        
+        user, pwd = self._get_rutracker_creds()
+        if not user or not pwd:
+            raise Exception("Login credentials required for Name search")
+            
+        # Ensure logged in
+        if 'bb_session' not in self.cat_manager.session.cookies:
+            self.cat_manager.login(user, pwd)
+            
+        url = "https://rutracker.org/forum/tracker.php"
+        data = {"nm": query}
+        
+        resp = self.cat_manager.session.post(url, data=data, timeout=30)
+        # Parse HTML (Regex for speed/simplicity without bs4)
+        # Row format: <tr class="tCenter"> ... </tr>
+        # ID: viewtopic.php?t=(\d+)
+        # Name: <a data-topic_id="..." ...>(.*?)</a>
+        # Size: <div class="small">...</div> (might be tricky with regex)
+        # Category: <a href="viewforum.php?f=...">...</a>
+        
+        results = []
+        # Find all rows (approximate)
+        # Pattern to capture main fields. 
+        # This is fragile. Ideally use BeautifulSoup, but we stick to stdlib/requests per constraints unless bs4 is available? 
+        # User environment likely has standard libs. Regex is safer to keep deps low if not requested.
+        
+        # Let's try a row-by-row split
+        rows = resp.text.split('<tr class="tCenter">')
+        for row in rows[1:]: # Skip header
+             try:
+                 # ID & Name
+                 # viewtopic.php?t=6562095
+                 id_match = re.search(r'viewtopic\.php\?t=(\d+)', row)
+                 if not id_match: continue
+                 tid = id_match.group(1)
+                 
+                 name_match = re.search(r'data-topic_id="' + tid + r'">([^<]+)</a>', row)
+                 name = name_match.group(1) if name_match else "Unknown"
+                 
+                 # Category
+                 cat_match = re.search(r'viewforum\.php\?f=(\d+)"[^>]*>([^<]+)</a>', row)
+                 cat = cat_match.group(2) if cat_match else "?"
+                 
+                 # Seeds
+                 seed_match = re.search(r'<b class="seedmed">(\d+)</b>', row)
+                 seeds = seed_match.group(1) if seed_match else "0"
+
+                 # Leech
+                 leech_match = re.search(r'<span class="leechmed">(\d+)</span>', row)
+                 leeches = leech_match.group(1) if leech_match else "0"
+                 
+                 # Size
+                 # <td class="tor-size"...><a>...</a></td> -> inner text
+                 # Simple regex for size (usually format: 2.5 GB)
+                 size_match = re.search(r'class="tor-size"[^>]*>.*?data-ts_text="(\d+)"', row) # timestamp? no.
+                 # The raw html for size is often like: <div class="small">2.34 GB</div> inside the td
+                 # Actually check raw source pattern...
+                 # <td class="tor-size" data-ts_text="1723456789">...</td>
+                 # Let's try finding the cell content.
+                 
+                 # Simplified size extraction (look for pattern like Number Unit)
+                 size_val = "?"
+                 size_cell = re.search(r'<td class="tor-size"[^>]*>(.*?)</td>', row, re.DOTALL)
+                 if size_cell:
+                     # Strip tags
+                     txt = re.sub(r'<[^>]+>', '', size_cell.group(1)).strip()
+                     size_val = txt
+                 
+                 results.append({
+                     "id": tid,
+                     "name": name,
+                     "size": size_val,
+                     "seeds": seeds,
+                     "leech": leeches,
+                     "category": cat
+                 })
+             except:
+                 continue
+                 
+        return results
+
+    def download_selected_torrent(self):
+        sel = self.search_tree.selection()
+        if not sel: return None
+        
+        item = self.search_tree.item(sel[0])
+        tid = item['values'][0]
+        
+        # URL: https://rutracker.org/forum/dl.php?t=...
+        url = f"https://rutracker.org/forum/dl.php?t={tid}"
+        
+        user, pwd = self._get_rutracker_creds()
+        if 'bb_session' not in self.cat_manager.session.cookies:
+            self.cat_manager.login(user, pwd)
+            
+        try:
+            # Helper to attempt download
+            def _attempt_dl():
+                resp = self.cat_manager.session.get(url, timeout=30)
+                ct = resp.headers.get('Content-Type', '').lower()
+                if 'application/x-bittorrent' in ct:
+                    return resp
+                return None
+
+            resp = _attempt_dl()
+            
+            # If failed, try re-login and retry
+            if not resp:
+                 print(f"DL failed (Content-Type: {self.cat_manager.session.get(url, stream=True).headers.get('Content-Type')}), retrying login...")
+                 if self.cat_manager.login(user, pwd):
+                     resp = _attempt_dl()
+
+            if resp:
+                # Save to temp
+                fname = f"{tid}.torrent"
+                # Try to get real name from header?
+                if 'Content-Disposition' in resp.headers:
+                    cd = resp.headers['Content-Disposition']
+                    # filename="name.torrent"
+                    m = re.search(r'filename="([^"]+)"', cd)
+                    if m: fname = m.group(1)
+                
+                # Sanitize
+                fname = re.sub(r'[<>:"/\\|?*]', '_', fname)
+                path = os.path.join(self.temp_dir, fname)
+                
+                with open(path, "wb") as f:
+                    f.write(resp.content)
+                
+                self.search_status.config(text=f"Downloaded: {fname}", fg="green")
+                return path
+            else:
+                 # Debugging aid: Log what we got
+                 fail_resp = self.cat_manager.session.get(url, timeout=10)
+                 ct = fail_resp.headers.get('Content-Type', 'Unknown')
+                 len_ = len(fail_resp.content)
+                 print(f"Failed DL. Type: {ct}, Len: {len_}")
+                 self.search_status.config(text=f"Error: Not a torrent (Type: {ct})", fg="red")
+                 return None
+        except Exception as e:
+            self.search_status.config(text=f"DL Error: {e}", fg="red")
+            return None
+
+    def download_and_add_torrent(self):
+        path = self.download_selected_torrent()
+        if path:
+            # Switch to Add tab
+            self.notebook.select(self.adder_tab)
+            
+            # Pre-select file
+            self.selected_files = [path]
+            self.selected_folder_path = None
+            
+            # Trigger logic similar to select_file
+            info = parse_torrent_info(path)
+            
+            filename = os.path.basename(path)
+            torrent_name = info.get('name', '') or filename
+            comment = info.get('comment', '')
+            topic_id = info.get('topic_id')
+            
+            # Build display text
+            total_size = info.get('total_size', 0)
+            file_count = info.get('file_count', 0)
+            
+            lines = [f"Name: {torrent_name}"]
+            if total_size > 0:
+                size_str = format_size(total_size)
+                lines.append(f"Size: {size_str} ({file_count} file{'s' if file_count != 1 else ''})")
+            if topic_id:
+                lines.append(f"Topic ID: {topic_id}")
+                lines.append("Category: Loading...")
+            
+            self.file_label.config(text="\n".join(lines), fg="black")
+            
+            # Store full info for Additional Info button
+            self._current_torrent_info = info
+            self.info_btn.config(state="normal")
+            
+            # Set clickable link
+            if comment:
+                self._current_link = comment
+                self.link_label.config(text=comment, font=("TkDefaultFont", 9, "underline"))
+            else:
+                self._current_link = None
+                self.link_label.config(text="", font=("TkDefaultFont", 9))
+            
+            self.log(f"Auto-selected downloaded torrent: {path}")
+            if topic_id:
+                # Look up category in background
+                threading.Thread(target=self._lookup_torrent_category, args=(topic_id, lines), daemon=True).start()
 
     def _updater_update_progress(self, current, total, phase):
         pct = int(current / total * 100) if total > 0 else 0

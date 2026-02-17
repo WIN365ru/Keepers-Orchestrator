@@ -44,7 +44,7 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_
 CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rutracker_categories.json")
 
 # App Version & Update Info
-APP_VERSION = "0.6.1"
+APP_VERSION = "0.6.2"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -3981,18 +3981,31 @@ class QBitAdderApp:
 
         limit_frame = tk.Frame(bal_frame)
         limit_frame.pack(fill="x", pady=2)
-        tk.Label(limit_frame, text="Limit moves (0=all):").pack(side="left")
+        tk.Label(limit_frame, text="Max torrents to move (0 = all):").pack(side="left")
         self.mover_bal_limit_var = tk.IntVar(value=0)
         tk.Spinbox(limit_frame, from_=0, to=99999, textvariable=self.mover_bal_limit_var, width=8).pack(side="left", padx=5)
 
-        bal_opts_frame = tk.Frame(bal_frame)
-        bal_opts_frame.pack(fill="x", pady=2)
+        # Folder structure options
+        bal_opts_label = tk.Label(bal_frame, text="Folder structure:", font=("", 9, "bold"))
+        bal_opts_label.pack(anchor="w", pady=(5, 0))
+
+        bal_opts1 = tk.Frame(bal_frame)
+        bal_opts1.pack(fill="x", pady=1)
+        tk.Label(bal_opts1, text="Category folder:").pack(side="left")
         self.mover_bal_keep_cat_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(bal_opts_frame, text="Preserve category subfolder", variable=self.mover_bal_keep_cat_var).pack(side="left")
-        self.mover_bal_keep_id_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(bal_opts_frame, text="Preserve ID folder", variable=self.mover_bal_keep_id_var).pack(side="left", padx=15)
-        self.mover_bal_strip_id_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(bal_opts_frame, text="Remove ID folder (flatten)", variable=self.mover_bal_strip_id_var).pack(side="left", padx=15)
+        tk.Checkbutton(bal_opts1, text="Preserve /Category/ subfolder in target path",
+            variable=self.mover_bal_keep_cat_var).pack(side="left", padx=5)
+
+        bal_opts2 = tk.Frame(bal_frame)
+        bal_opts2.pack(fill="x", pady=1)
+        tk.Label(bal_opts2, text="ID folder:").pack(side="left")
+        self.mover_bal_id_action = tk.StringVar(value="keep")
+        tk.Radiobutton(bal_opts2, text="Keep existing /ID/ folder",
+            variable=self.mover_bal_id_action, value="keep").pack(side="left", padx=5)
+        tk.Radiobutton(bal_opts2, text="Create /ID/ folder (if missing)",
+            variable=self.mover_bal_id_action, value="create").pack(side="left", padx=5)
+        tk.Radiobutton(bal_opts2, text="Remove /ID/ folder (flatten)",
+            variable=self.mover_bal_id_action, value="strip").pack(side="left", padx=5)
 
         bal_btn_frame = tk.Frame(bal_frame)
         bal_btn_frame.pack(fill="x", pady=3)
@@ -4145,12 +4158,15 @@ class QBitAdderApp:
         rest = "/".join(rest_parts) if rest_parts else ""
         return bp, cat_part, id_part, rest
 
-    def _mover_build_path(self, base, category, id_part, rest, create_cat, keep_id, strip_id):
+    def _mover_build_path(self, base, category, id_part, rest, create_cat, keep_id, strip_id,
+                          create_id=False, topic_id=None):
         """Build a new path from parts based on folder structure options.
 
         create_cat: include category subfolder
-        keep_id: include ID subfolder
+        keep_id: keep existing ID subfolder (if present)
         strip_id: remove ID subfolder (flatten contents up)
+        create_id: force-create an /ID/ folder even if not present in original path
+        topic_id: the topic ID to use when create_id=True and id_part is empty
         """
         parts = [base]
         if create_cat and category:
@@ -4160,6 +4176,11 @@ class QBitAdderApp:
             pass
         elif keep_id and id_part:
             parts.append(id_part)
+        elif create_id:
+            # Create ID folder: use existing id_part or fallback to topic_id
+            folder_id = id_part or (str(topic_id) if topic_id else "")
+            if folder_id:
+                parts.append(folder_id)
         if rest:
             parts.append(rest)
         return "/".join(parts)
@@ -4287,8 +4308,10 @@ class QBitAdderApp:
 
         # Read folder structure options
         create_cat = self.mover_cat_create_cat_var.get()
-        keep_id = self.mover_cat_keep_id_var.get()
-        strip_id = self.mover_cat_strip_id_var.get()
+        id_action = self.mover_cat_id_action.get()  # "keep", "create", "strip"
+        keep_id = id_action in ("keep", "create")
+        strip_id = id_action == "strip"
+        create_id = id_action == "create"
 
         self.mover_busy = True
         self.mover_cat_move_btn.config(state="disabled")
@@ -4296,9 +4319,9 @@ class QBitAdderApp:
         self._mover_show_progress()
 
         threading.Thread(target=self._mover_category_thread,
-            args=(cat_torrents, new_path, cat_name, create_cat, keep_id, strip_id), daemon=True).start()
+            args=(cat_torrents, new_path, cat_name, create_cat, keep_id, strip_id, create_id), daemon=True).start()
 
-    def _mover_category_thread(self, torrents, new_root, cat_name, create_cat, keep_id, strip_id):
+    def _mover_category_thread(self, torrents, new_root, cat_name, create_cat, keep_id, strip_id, create_id):
         start_time = time.time()
         s = self._get_qbit_session(self.mover_selected_client)
         if not s:
@@ -4333,7 +4356,8 @@ class QBitAdderApp:
             # Parse current path to extract category/ID parts
             _, old_cat, old_id, rest = self._mover_parse_path_parts(old_path, base_save_path)
             # Build new location based on options
-            new_location = self._mover_build_path(new_root, cat_name, old_id, rest, create_cat, keep_id, strip_id)
+            new_location = self._mover_build_path(new_root, cat_name, old_id, rest,
+                create_cat, keep_id, strip_id, create_id=create_id, topic_id=old_id)
 
             try:
                 resp = s.post(f"{url}/api/v2/torrents/setLocation",
@@ -4544,8 +4568,10 @@ class QBitAdderApp:
 
         # Read folder structure options
         keep_cat = self.mover_bal_keep_cat_var.get()
-        keep_id = self.mover_bal_keep_id_var.get()
-        strip_id = self.mover_bal_strip_id_var.get()
+        bal_id_action = self.mover_bal_id_action.get()  # "keep", "create", "strip"
+        keep_id = bal_id_action in ("keep", "create")
+        strip_id = bal_id_action == "strip"
+        create_id = bal_id_action == "create"
 
         # Build move plan (only torrents that need to move)
         plan = []
@@ -4569,7 +4595,8 @@ class QBitAdderApp:
             rest = "/".join(rest_parts)
 
             new_path = self._mover_build_path(target_disk.rstrip("/"), cat_part, id_part, rest,
-                                               keep_cat, keep_id, strip_id)
+                                               keep_cat, keep_id, strip_id,
+                                               create_id=create_id, topic_id=id_part)
 
             plan.append({
                 "hash": t["hash"],

@@ -10,6 +10,8 @@ import zipfile
 import time
 import io
 import datetime
+import html
+import webbrowser
 
 # Default Configuration (New Structure)
 DEFAULT_CONFIG = {
@@ -22,6 +24,7 @@ DEFAULT_CONFIG = {
         "username": "",
         "password": ""
     },
+    "category_ttl_hours": 24,
     "clients": [
         {
             "name": "Localhost",
@@ -37,6 +40,79 @@ DEFAULT_CONFIG = {
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
 CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rutracker_categories.json")
+
+# --- Simple Bencode Decoder ---
+def bdecode(data, idx=0):
+    """Minimal bencode decoder. Returns (decoded_value, next_index)."""
+    if data[idx:idx+1] == b'd':
+        idx += 1
+        d = {}
+        while data[idx:idx+1] != b'e':
+            key, idx = bdecode(data, idx)
+            val, idx = bdecode(data, idx)
+            if isinstance(key, bytes):
+                key = key.decode('utf-8', errors='replace')
+            d[key] = val
+        return d, idx + 1
+    elif data[idx:idx+1] == b'l':
+        idx += 1
+        lst = []
+        while data[idx:idx+1] != b'e':
+            val, idx = bdecode(data, idx)
+            lst.append(val)
+        return lst, idx + 1
+    elif data[idx:idx+1] == b'i':
+        end = data.index(b'e', idx)
+        return int(data[idx+1:end]), end + 1
+    elif data[idx:idx+1].isdigit():
+        colon = data.index(b':', idx)
+        length = int(data[idx:colon])
+        start = colon + 1
+        return data[start:start+length], start + length
+    else:
+        raise ValueError(f"Invalid bencode at index {idx}")
+
+def parse_torrent_info(file_path_or_bytes):
+    """Parse a .torrent file and return dict with name, comment, topic_id."""
+    try:
+        if isinstance(file_path_or_bytes, bytes):
+            data = file_path_or_bytes
+        else:
+            with open(file_path_or_bytes, 'rb') as f:
+                data = f.read()
+        
+        torrent, _ = bdecode(data)
+        
+        result = {}
+        
+        # Get name from info dict
+        info = torrent.get('info', {})
+        name = info.get('name', b'')
+        if isinstance(name, bytes):
+            try:
+                name = name.decode('utf-8')
+            except UnicodeDecodeError:
+                name = name.decode('cp1251', errors='replace')
+        result['name'] = name
+        
+        # Get comment (usually contains rutracker URL)
+        comment = torrent.get('comment', b'')
+        if isinstance(comment, bytes):
+            try:
+                comment = comment.decode('utf-8')
+            except UnicodeDecodeError:
+                comment = comment.decode('cp1251', errors='replace')
+        result['comment'] = comment
+        
+        # Extract topic ID from comment
+        topic_match = re.search(r'viewtopic\.php\?t=(\d+)', comment)
+        if not topic_match:
+            topic_match = re.search(r'rutracker\.org/forum/.*?t=(\d+)', comment)
+        result['topic_id'] = topic_match.group(1) if topic_match else None
+        
+        return result
+    except Exception as e:
+        return {'name': '', 'comment': '', 'topic_id': None, 'error': str(e)}
 
 class CategoryManager:
     def __init__(self, log_func):
@@ -73,9 +149,9 @@ class CategoryManager:
         except:
             return float('inf')
 
-    def get_category_name(self, cat_id):
-        # Check TTL (24 hours = 86400 seconds)
-        if self._get_cache_age_seconds() > 86400:
+    def get_category_name(self, cat_id, ttl_seconds=86400):
+        # Check TTL
+        if self._get_cache_age_seconds() > ttl_seconds:
             self.refresh_cache()
         
         cat_name = self.cache["categories"].get(str(cat_id))
@@ -124,6 +200,40 @@ class CategoryManager:
             self.log(f"  Error fetching category {cat_id}: {e}")
         return None
 
+    def get_category_for_topic(self, topic_id):
+        """Given a Rutracker topic ID, fetch the topic page and extract its forum category."""
+        try:
+            self.log(f"Looking up category for topic {topic_id}...")
+            resp = self.session.get(f"https://rutracker.org/forum/viewtopic.php?t={topic_id}", timeout=15)
+            if resp.encoding == 'ISO-8859-1':
+                resp.encoding = 'cp1251'
+            
+            # Extract forum IDs from breadcrumb navigation links
+            # The breadcrumb contains parent forums in order; first match is the direct parent category
+            breadcrumb = re.findall(r'href="viewforum\.php\?f=(\d+)"[^>]*>([^<]+)', resp.text)
+            
+            if breadcrumb:
+                # Use the first breadcrumb forum link (direct parent category)
+                forum_id = breadcrumb[0][0]
+                raw_name = breadcrumb[0][1].strip()
+                # Clean HTML entities
+                cat_name = html.unescape(raw_name)
+                
+                self.log(f"  Topic {topic_id} -> Forum {forum_id}: {cat_name}")
+                
+                # Cache it
+                if cat_name:
+                    self.cache["categories"][forum_id] = cat_name
+                    self.save_cache()
+                
+                return cat_name
+            else:
+                self.log(f"  Could not find forum for topic {topic_id}")
+                
+        except Exception as e:
+            self.log(f"  Error looking up topic {topic_id}: {e}")
+        return None
+
     def login(self, username, password):
         try:
             self.log(f"Logging in to Rutracker as {username}...")
@@ -164,29 +274,52 @@ class CategoryManager:
                 resp.encoding = 'cp1251'
             
             # Parse links like <a href="viewforum.php?f=123">Category Name</a>
-            # Improved regex: catch href="viewforum.php?f=123" anywhere in <a> tag, and handle potential tags inside name
-            # Also handle potentially quoted hrefs differently
             matches = re.findall(r'href=["\'](?:.*?)viewforum\.php\?f=(\d+)["\'][^>]*>(.*?)</a>', resp.text, re.IGNORECASE | re.DOTALL)
             
-            count = 0
             # Use int keys for sorting, then convert back to str for JSON
             temp_cats = {}
             for cat_id, raw_name in matches:
-                # Clean name (remove HTML tags if any)
                 clean_name = re.sub(r'<[^>]+>', '', raw_name).strip()
                 if clean_name:
+                    clean_name = html.unescape(clean_name)
                     temp_cats[int(cat_id)] = clean_name
+            
+            top_level_count = len(temp_cats)
+            self.log(f"Found {top_level_count} top-level categories. Crawling sub-categories...")
+            
+            # Crawl each top-level category for sub-forums
+            top_ids = list(temp_cats.keys())
+            for i, forum_id in enumerate(top_ids):
+                try:
+                    sub_resp = self.session.get(f"https://rutracker.org/forum/viewforum.php?f={forum_id}", timeout=15)
+                    if sub_resp.encoding == 'ISO-8859-1':
+                        sub_resp.encoding = 'cp1251'
+                    
+                    sub_matches = re.findall(r'href=["\'](?:.*?)viewforum\.php\?f=(\d+)["\'][^>]*>(.*?)</a>', sub_resp.text, re.IGNORECASE | re.DOTALL)
+                    for sub_id, sub_name in sub_matches:
+                        sub_id_int = int(sub_id)
+                        if sub_id_int not in temp_cats:
+                            clean = re.sub(r'<[^>]+>', '', sub_name).strip()
+                            if clean:
+                                clean = html.unescape(clean)
+                                temp_cats[sub_id_int] = clean
+                    
+                    # Log progress every 50 categories
+                    if (i + 1) % 50 == 0:
+                        self.log(f"  Crawled {i+1}/{top_level_count} categories ({len(temp_cats)} total found)...")
+                        
+                except Exception as e:
+                    pass  # Skip failed sub-category pages silently
             
             # Sort by ID (numeric)
             sorted_cats = {}
             for cid in sorted(temp_cats.keys()):
                 sorted_cats[str(cid)] = temp_cats[cid]
-                count += 1
             
             self.cache["categories"] = sorted_cats
             self.cache["last_updated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.save_cache()
-            self.log(f"Category cache updated. Found {count} categories.")
+            self.log(f"Category cache updated. Found {len(sorted_cats)} categories ({top_level_count} top-level + {len(sorted_cats) - top_level_count} sub-categories).")
             
         except Exception as e:
             self.log(f"Failed to refresh category cache: {e}")
@@ -399,7 +532,15 @@ class QBitAdderApp:
         self.entry_rt_pass.pack(side="left", padx=5)
         self.entry_rt_pass.insert(0, self.config.get("rutracker_auth", {}).get("password", ""))
 
-        tk.Button(rt_frame, text="Save Rutracker Credentials", command=self.save_rutracker_settings).pack(pady=5)
+        rt_ttl_frame = tk.Frame(rt_frame)
+        rt_ttl_frame.pack(fill="x", padx=5, pady=2)
+
+        tk.Label(rt_ttl_frame, text="Category cache TTL (hours):").pack(side="left")
+        self.entry_cat_ttl = tk.Entry(rt_ttl_frame, width=5)
+        self.entry_cat_ttl.pack(side="left", padx=5)
+        self.entry_cat_ttl.insert(0, str(self.config.get("category_ttl_hours", 24)))
+
+        tk.Button(rt_frame, text="Save Rutracker Settings", command=self.save_rutracker_settings).pack(pady=5)
 
         # 4. Data Sources Section
         data_frame = tk.LabelFrame(self.settings_tab, text="Data Sources")
@@ -473,8 +614,12 @@ class QBitAdderApp:
             self.config["rutracker_auth"] = {}
         self.config["rutracker_auth"]["username"] = self.entry_rt_user.get()
         self.config["rutracker_auth"]["password"] = self.entry_rt_pass.get()
+        try:
+            self.config["category_ttl_hours"] = max(1, int(self.entry_cat_ttl.get()))
+        except ValueError:
+            self.config["category_ttl_hours"] = 24
         self.save_config()
-        self.log("Rutracker credentials saved.")
+        self.log(f"Rutracker settings saved. TTL: {self.config['category_ttl_hours']}h")
 
     def refresh_client_list(self):
         self.client_listbox.delete(0, tk.END)
@@ -616,8 +761,13 @@ class QBitAdderApp:
         sel_frame = tk.LabelFrame(self.adder_tab, text="Selection", padx=10, pady=10)
         sel_frame.pack(fill="x", padx=10, pady=5)
         
-        self.file_label = tk.Label(sel_frame, text="No file/folder selected", fg="gray", wraplength=500)
+        self.file_label = tk.Label(sel_frame, text="No file/folder selected", fg="gray", wraplength=500, justify="left")
         self.file_label.pack(pady=5)
+        
+        self.link_label = tk.Label(sel_frame, text="", fg="blue", cursor="hand2", wraplength=500, justify="left")
+        self.link_label.pack(pady=(0, 5))
+        self.link_label.bind("<Button-1>", self._open_link)
+        self._current_link = None
         
         btn_frame = tk.Frame(sel_frame)
         btn_frame.pack(pady=5)
@@ -668,17 +818,50 @@ class QBitAdderApp:
                 
                 info_text = f"ZIP: {filename}\nCategory: {cat_name} (ID: {cat_id})\nTorrents: {count}"
                 self.file_label.config(text=info_text, fg="black")
+                self._current_link = None
+                self.link_label.config(text="")
                 self.log(f"Selected ZIP: {filepath}")
                 self.log(f" -> Category: {cat_name}, Count: {count}")
             else:
-                self.file_label.config(text=f"File: {filename}", fg="black")
+                # Parse torrent metadata
+                info = parse_torrent_info(filepath)
+                torrent_name = info.get('name', '') or filename
+                comment = info.get('comment', '')
+                topic_id = info.get('topic_id')
+                
+                # Build display text (without link - that goes in link_label)
+                lines = [f"Name: {torrent_name}"]
+                if topic_id:
+                    lines.append(f"Topic ID: {topic_id}")
+                    lines.append("Category: Loading...")
+                
+                self.file_label.config(text="\n".join(lines), fg="black")
+                
+                # Set clickable link
+                if comment:
+                    self._current_link = comment
+                    self.link_label.config(text=comment, font=("TkDefaultFont", 9, "underline"))
+                else:
+                    self._current_link = None
+                    self.link_label.config(text="", font=("TkDefaultFont", 9))
+                
                 self.log(f"Selected file: {filepath}")
+                if torrent_name:
+                    self.log(f"  Name: {torrent_name}")
+                if comment:
+                    self.log(f"  Link: {comment}")
+                
+                # Look up category in background
+                if topic_id:
+                    threading.Thread(target=self._lookup_torrent_category, args=(topic_id, lines), daemon=True).start()
 
     def select_folder(self):
         folderpath = filedialog.askdirectory()
         if folderpath:
             self.selected_folder_path = folderpath
             self.selected_file_path = None
+            self._current_link = None
+            self.link_label.config(text="")
             
             try:
                 count = sum(1 for f in os.listdir(folderpath) if f.lower().endswith('.torrent'))
@@ -687,6 +870,39 @@ class QBitAdderApp:
             except Exception as e:
                 self.file_label.config(text=f"Folder: {folderpath} (Error reading)", fg="red")
                 self.log(f"Error reading folder: {e}")
+
+    def _open_link(self, event=None):
+        """Open the current link in the default browser."""
+        if self._current_link:
+            webbrowser.open(self._current_link)
+
+    def _lookup_torrent_category(self, topic_id, display_lines):
+        """Background thread: look up category for a topic ID and update the file label."""
+        try:
+            cat_name = self.cat_manager.get_category_for_topic(topic_id)
+            if cat_name:
+                # Replace the "Category: Loading..." line
+                for i, line in enumerate(display_lines):
+                    if line.startswith("Category:"):
+                        display_lines[i] = f"Category: {cat_name}"
+                        break
+                else:
+                    display_lines.append(f"Category: {cat_name}")
+                self.log(f"  Category: {cat_name}")
+            else:
+                for i, line in enumerate(display_lines):
+                    if line.startswith("Category:"):
+                        display_lines[i] = "Category: Unknown"
+                        break
+        except Exception as e:
+            self.log(f"  Category lookup error: {e}")
+            for i, line in enumerate(display_lines):
+                if line.startswith("Category:"):
+                    display_lines[i] = "Category: Error"
+                    break
+        
+        # Update label on main thread
+        self.root.after(0, lambda: self.file_label.config(text="\n".join(display_lines)))
 
     # --- Logic ---
     # --- Logic ---
@@ -819,6 +1035,15 @@ class QBitAdderApp:
 
             # Check ID from content
             extracted_id = self.extract_id_from_bytes(torrent_content, os.path.basename(torrent_path))
+
+            # If no category yet (individual file / folder), look it up from the topic
+            if not category_subpath and extracted_id:
+                try:
+                    cat_name = self.cat_manager.get_category_for_topic(extracted_id)
+                    if cat_name:
+                        category_subpath = cat_name
+                except Exception as e:
+                    self.log(f"Could not resolve category for topic {extracted_id}: {e}")
 
             for client in target_clients:
                 # Flow Control

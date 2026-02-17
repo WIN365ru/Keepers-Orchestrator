@@ -18,6 +18,10 @@ DEFAULT_CONFIG = {
         "username": "admin",
         "password": "adminadmin"
     },
+    "rutracker_auth": {
+        "username": "",
+        "password": ""
+    },
     "clients": [
         {
             "name": "Localhost",
@@ -38,6 +42,10 @@ class CategoryManager:
     def __init__(self, log_func):
         self.log = log_func
         self.cache = self.load_cache()
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        })
 
     def load_cache(self):
         if os.path.exists(CATEGORY_CACHE_FILE):
@@ -46,7 +54,7 @@ class CategoryManager:
                     return json.load(f)
             except:
                 pass
-        return {"last_updated": 0, "categories": {}}
+        return {"last_updated": "", "categories": {}}
 
     def save_cache(self):
         try:
@@ -55,48 +63,135 @@ class CategoryManager:
         except Exception as e:
             self.log(f"Error saving category cache: {e}")
 
+    def _get_cache_age_seconds(self):
+        last = self.cache.get("last_updated", "")
+        if not last:
+            return float('inf')
+        try:
+            dt = datetime.datetime.fromisoformat(last)
+            return (datetime.datetime.now() - dt).total_seconds()
+        except:
+            return float('inf')
+
     def get_category_name(self, cat_id):
         # Check TTL (24 hours = 86400 seconds)
-        if (time.time() - self.cache.get("last_updated", 0)) > 86400:
+        if self._get_cache_age_seconds() > 86400:
             self.refresh_cache()
         
         cat_name = self.cache["categories"].get(str(cat_id))
         if not cat_name:
-            # Try forcing refresh if not found and cache wasn't just refreshed
-            if (time.time() - self.cache.get("last_updated", 0)) > 60: 
+            # Try forcing full refresh if cache wasn't just refreshed
+            if self._get_cache_age_seconds() > 60:
                 self.refresh_cache()
                 cat_name = self.cache["categories"].get(str(cat_id))
+            
+            # Still not found? It's a sub-forum — fetch it directly
+            if not cat_name:
+                cat_name = self.fetch_single_category(cat_id)
         
         return cat_name if cat_name else f"Unknown_Cat_{cat_id}"
 
-    def refresh_cache(self):
-        self.log("Refreshing Rutracker category cache...")
+    def fetch_single_category(self, cat_id):
+        """Fetch a single category name directly from its forum page (for sub-forums not on index)."""
         try:
-            # Fake headers to look like a browser
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            self.log(f"Fetching sub-forum name for category {cat_id}...")
+            resp = self.session.get(f"https://rutracker.org/forum/viewforum.php?f={cat_id}", timeout=15)
+            if resp.encoding == 'ISO-8859-1':
+                resp.encoding = 'cp1251'
+            
+            # Extract forum name from maintitle or <title>
+            match = re.search(r'<a\s+href="viewforum\.php\?f=' + str(cat_id) + r'"[^>]*>([^<]+)</a>', resp.text, re.IGNORECASE)
+            if match:
+                name = match.group(1).strip()
+                if name:
+                    self.log(f"  Found: {cat_id} = {name}")
+                    # Save to cache
+                    self.cache["categories"][str(cat_id)] = name
+                    self.save_cache()
+                    return name
+            
+            # Fallback: try <title> tag (format: "Forum Name [page N] :: Category :: RuTracker.org")
+            title_match = re.search(r'<title>(.*?)\s*(?:\[.*?\])?\s*::', resp.text, re.IGNORECASE)
+            if title_match:
+                name = title_match.group(1).strip()
+                if name:
+                    self.log(f"  Found from title: {cat_id} = {name}")
+                    self.cache["categories"][str(cat_id)] = name
+                    self.save_cache()
+                    return name
+                    
+        except Exception as e:
+            self.log(f"  Error fetching category {cat_id}: {e}")
+        return None
+
+    def login(self, username, password):
+        try:
+            self.log(f"Logging in to Rutracker as {username}...")
+            # First GET the login page to collect any hidden fields/cookies
+            login_page = self.session.get("https://rutracker.org/forum/login.php", timeout=15)
+            
+            url = "https://rutracker.org/forum/login.php"
+            data = {
+                "login_username": username,
+                "login_password": password,
+                "login": "Вход",
+                "redirect": "index.php"
             }
-            resp = requests.get("https://rutracker.org/forum/index.php", headers=headers, timeout=30)
+            resp = self.session.post(url, data=data, timeout=30)
+            # Check for session cookie which confirms successful login
+            if 'bb_session' in self.session.cookies.get_dict():
+                 self.log("Logged in successfully.")
+                 return True
+            else:
+                 self.log(f"Login failed (no session cookie). Response len: {len(resp.text)}")
+                 return False
+        except Exception as e:
+            self.log(f"Login error: {e}")
+            return False
+
+    def refresh_cache(self, username=None, password=None):
+        self.log("Refreshing Rutracker category cache...")
+        
+        if username and password:
+            self.login(username, password)
+            
+        try:
+            # Use session
+            resp = self.session.get("https://rutracker.org/forum/index.php", timeout=30)
             
             # fix encoding for russian characters
             if resp.encoding == 'ISO-8859-1':
                 resp.encoding = 'cp1251'
             
             # Parse links like <a href="viewforum.php?f=123">Category Name</a>
-            # Regex: href="viewforum\.php\?f=(\d+)"[^>]*>([^<]+)</a>
-            matches = re.findall(r'href="viewforum\.php\?f=(\d+)"[^>]*>([^<]+)</a>', resp.text)
+            # Improved regex: catch href="viewforum.php?f=123" anywhere in <a> tag, and handle potential tags inside name
+            # Also handle potentially quoted hrefs differently
+            matches = re.findall(r'href=["\'](?:.*?)viewforum\.php\?f=(\d+)["\'][^>]*>(.*?)</a>', resp.text, re.IGNORECASE | re.DOTALL)
             
             count = 0
-            for cat_id, name in matches:
-                self.cache["categories"][str(cat_id)] = name.strip()
+            # Use int keys for sorting, then convert back to str for JSON
+            temp_cats = {}
+            for cat_id, raw_name in matches:
+                # Clean name (remove HTML tags if any)
+                clean_name = re.sub(r'<[^>]+>', '', raw_name).strip()
+                if clean_name:
+                    temp_cats[int(cat_id)] = clean_name
+            
+            # Sort by ID (numeric)
+            sorted_cats = {}
+            for cid in sorted(temp_cats.keys()):
+                sorted_cats[str(cid)] = temp_cats[cid]
                 count += 1
             
-            self.cache["last_updated"] = time.time()
+            self.cache["categories"] = sorted_cats
+            self.cache["last_updated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.save_cache()
             self.log(f"Category cache updated. Found {count} categories.")
             
         except Exception as e:
             self.log(f"Failed to refresh category cache: {e}")
+
+
 
 class QBitAdderApp:
     def __init__(self, root):
@@ -138,12 +233,21 @@ class QBitAdderApp:
         # Start Category Manager (Auto-fetch if needed)
         threading.Thread(target=self._initial_category_fetch, daemon=True).start()
 
+    def _get_rutracker_creds(self):
+        rt_auth = self.config.get("rutracker_auth", {})
+        user = rt_auth.get("username", "")
+        pwd = rt_auth.get("password", "")
+        if user and pwd:
+            return user, pwd
+        return None, None
+
     def _initial_category_fetch(self):
         # If cache is empty or never updated, try to fetch
-        if self.cat_manager.cache.get('last_updated', 0) == 0:
+        if not self.cat_manager.cache.get('last_updated', ''):
             self.log("First run detected: Fetching Rutracker categories...")
             try:
-                self.cat_manager.refresh_cache()
+                user, pwd = self._get_rutracker_creds()
+                self.cat_manager.refresh_cache(username=user, password=pwd)
                 self.log("Categories fetched successfully.")
             except Exception as e:
                 self.log(f"Failed to fetch initial categories: {e}")
@@ -184,6 +288,7 @@ class QBitAdderApp:
                 # Ensure keys exist (basic validation)
                 if "clients" not in data: data["clients"] = DEFAULT_CONFIG["clients"]
                 if "global_auth" not in data: data["global_auth"] = DEFAULT_CONFIG["global_auth"]
+                if "rutracker_auth" not in data: data["rutracker_auth"] = DEFAULT_CONFIG["rutracker_auth"]
                 
                 return data
             except Exception as e:
@@ -277,7 +382,26 @@ class QBitAdderApp:
         tk.Button(details_frame, text="Save Client Details", command=self.save_current_client).grid(row=7, column=1, sticky="e", pady=10)
 
 
-        # Data Sources Section
+        # 3. Rutracker Auth Section
+        rt_frame = tk.LabelFrame(self.settings_tab, text="Rutracker Forum Login (for category fetching)", padx=10, pady=10)
+        rt_frame.pack(fill="x", padx=10, pady=5)
+
+        rt_auth_frame = tk.Frame(rt_frame)
+        rt_auth_frame.pack(fill="x", padx=5, pady=2)
+
+        tk.Label(rt_auth_frame, text="Username:").pack(side="left")
+        self.entry_rt_user = tk.Entry(rt_auth_frame, width=20)
+        self.entry_rt_user.pack(side="left", padx=5)
+        self.entry_rt_user.insert(0, self.config.get("rutracker_auth", {}).get("username", ""))
+
+        tk.Label(rt_auth_frame, text="Password:").pack(side="left")
+        self.entry_rt_pass = tk.Entry(rt_auth_frame, show="*", width=20)
+        self.entry_rt_pass.pack(side="left", padx=5)
+        self.entry_rt_pass.insert(0, self.config.get("rutracker_auth", {}).get("password", ""))
+
+        tk.Button(rt_frame, text="Save Rutracker Credentials", command=self.save_rutracker_settings).pack(pady=5)
+
+        # 4. Data Sources Section
         data_frame = tk.LabelFrame(self.settings_tab, text="Data Sources")
         data_frame.pack(fill="x", padx=10, pady=5)
 
@@ -303,12 +427,11 @@ class QBitAdderApp:
                  self.client_selector.current(0)
 
     def get_cats_status_text(self):
-        last_updated = self.cat_manager.cache.get('last_updated', 0)
+        last_updated = self.cat_manager.cache.get('last_updated', '')
         count = len(self.cat_manager.cache.get('categories', {}))
-        if last_updated == 0:
+        if not last_updated:
             return "Categories: Not loaded"
-        dt = datetime.datetime.fromtimestamp(last_updated).strftime('%Y-%m-%d %H:%M')
-        return f"Categories: {count} loaded (Updated: {dt})"
+        return f"Categories: {count} loaded (Updated: {last_updated})"
 
     def refresh_categories(self):
         self.refresh_cats_btn.config(state="disabled", text="Refreshing...")
@@ -316,7 +439,8 @@ class QBitAdderApp:
 
     def _refresh_cats_thread(self):
         try:
-            self.cat_manager.refresh_cache()
+            user, pwd = self._get_rutracker_creds()
+            self.cat_manager.refresh_cache(username=user, password=pwd)
             self.root.after(0, lambda: messagebox.showinfo("Success", "Categories refreshed successfully!"))
         except Exception as e:
             self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to refresh categories: {e}"))
@@ -343,6 +467,14 @@ class QBitAdderApp:
         self.config["global_auth"]["password"] = self.entry_global_pass.get()
         self.save_config()
         messagebox.showinfo("Saved", "Global settings saved.")
+
+    def save_rutracker_settings(self):
+        if "rutracker_auth" not in self.config:
+            self.config["rutracker_auth"] = {}
+        self.config["rutracker_auth"]["username"] = self.entry_rt_user.get()
+        self.config["rutracker_auth"]["password"] = self.entry_rt_pass.get()
+        self.save_config()
+        self.log("Rutracker credentials saved.")
 
     def refresh_client_list(self):
         self.client_listbox.delete(0, tk.END)
@@ -425,7 +557,7 @@ class QBitAdderApp:
         self.update_client_dropdown()
         if event is None: 
              self.refresh_client_list()
-             messagebox.showinfo("Saved", "Client details saved.")
+             self.log(f"Client '{self.entry_name.get()}' details saved.")
 
     def add_client(self):
         new_client = {
@@ -805,6 +937,10 @@ class QBitAdderApp:
 
             files = {'torrents': (os.path.basename(filename_display), content)}
             data = {'savepath': save_path, 'paused': 'false', 'root_folder': 'true'}
+            
+            # Set qBittorrent category from Rutracker category name
+            if category_subpath:
+                data['category'] = category_subpath
             
             resp = session.post(f"{url}/api/v2/torrents/add", files=files, data=data, timeout=30)
             

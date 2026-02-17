@@ -13,6 +13,7 @@ import datetime
 import html
 import webbrowser
 import hashlib
+import shutil
 
 # Default Configuration (New Structure)
 DEFAULT_CONFIG = {
@@ -43,7 +44,7 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_
 CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rutracker_categories.json")
 
 # App Version & Update Info
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -552,12 +553,14 @@ class QBitAdderApp:
         self.updater_tab = tk.Frame(self.notebook)
         self.remover_tab = tk.Frame(self.notebook) # New Tab
         self.repair_tab = tk.Frame(self.notebook)
+        self.mover_tab = tk.Frame(self.notebook)
         self.settings_tab = tk.Frame(self.notebook)
 
         self.notebook.add(self.adder_tab, text="Add Torrents from file")
         self.notebook.add(self.updater_tab, text="Update Torrents")
         self.notebook.add(self.remover_tab, text="Remove Torrents") # New Tab
         self.notebook.add(self.repair_tab, text="Repair Categories")
+        self.notebook.add(self.mover_tab, text="Move Torrents")
         self.notebook.add(self.settings_tab, text="Settings")
 
         self.create_adder_ui()
@@ -587,6 +590,16 @@ class QBitAdderApp:
         self.repair_selected_client = None
         self.repair_stop_event = threading.Event()
         self.create_repair_ui()
+
+        # Mover tab state
+        self.mover_all_torrents = []
+        self.mover_categories = {}  # {cat_name: [torrent_dicts]}
+        self.mover_disk_list = []   # [{path: str, free: int, total: int, current_size: int}]
+        self.mover_balance_plan = [] # [{hash, name, size, uploaded, from_path, to_path}]
+        self.mover_selected_client = None
+        self.mover_stop_event = threading.Event()
+        self.mover_busy = False
+        self.create_mover_ui()
 
         self.create_settings_ui()
         
@@ -670,7 +683,7 @@ class QBitAdderApp:
         # Try to sort as numbers if possible (e.g. Size)
         # Size format: "1.23 GB"
         # We might need custom sort key for size.
-        if col == "Size":
+        if col.lower() in ("size", "uploaded", "free space", "current load", "target load", "free", "current", "target"):
             def size_to_bytes(s):
                 if not s: return 0
                 # s = "2.11 GB"
@@ -682,7 +695,7 @@ class QBitAdderApp:
                 unit = parts[1].upper()
                 mult = {'B':1, 'KB':1024, 'MB':1024**2, 'GB':1024**3, 'TB':1024**4}
                 return val * mult.get(unit, 1)
-            
+
             l.sort(key=lambda t: size_to_bytes(t[0]), reverse=reverse)
         else:
             try:
@@ -1158,7 +1171,7 @@ class QBitAdderApp:
         self.entry_cat_ttl.pack(side="left", padx=5)
         self.entry_cat_ttl.insert(0, str(self.config.get("category_ttl_hours", 24)))
 
-        tk.Button(rt_frame, text="Save Rutracker Settings", command=self.save_rutracker_settings).pack(pady=5)
+        tk.Button(rt_frame, text="Save Settings", command=self.save_rutracker_settings).pack(pady=5)
 
         # 3.5 Auto-Update Settings
         au_frame = tk.LabelFrame(self.settings_tab, text="Auto-Update Behavior", padx=10, pady=10)
@@ -1274,7 +1287,8 @@ class QBitAdderApp:
                  self.client_selector.current(0)
         self.update_updater_client_dropdown()
         self.update_repair_client_dropdown()
-        self.update_remover_client_dropdown() # Add this line
+        self.update_remover_client_dropdown()
+        self.update_mover_client_dropdown()
 
     def get_cats_status_text(self):
         last_updated = self.cat_manager.cache.get('last_updated', '')
@@ -2428,6 +2442,7 @@ class QBitAdderApp:
 
         self.update_updater_client_dropdown()
         self.update_repair_client_dropdown()
+        self.update_mover_client_dropdown()
 
     def updater_log(self, message):
         """Log to the updater tab's own log area (thread-safe)."""
@@ -3816,6 +3831,771 @@ class QBitAdderApp:
         self.root.after(0, lambda: self._repair_set_action_buttons(
             "normal" if self.repair_scan_results else "disabled"))
         self.root.after(0, lambda: self.repair_scan_btn.config(state="normal"))
+
+
+    # ===================================================================
+    # MOVE TORRENTS TAB
+    # ===================================================================
+
+    def create_mover_ui(self):
+        # Use a canvas with scrollbar for the whole tab (lots of controls)
+        canvas = tk.Canvas(self.mover_tab, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self.mover_tab, orient="vertical", command=canvas.yview)
+        self.mover_inner = tk.Frame(canvas)
+
+        self.mover_inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=self.mover_inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Mouse wheel scrolling — only when mouse is over the canvas
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        def _bind_wheel(event):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        def _unbind_wheel(event):
+            canvas.unbind_all("<MouseWheel>")
+        canvas.bind("<Enter>", _bind_wheel)
+        canvas.bind("<Leave>", _unbind_wheel)
+
+        parent = self.mover_inner
+
+        # --- Section A: Client + Load ---
+        client_frame = tk.LabelFrame(parent, text="Client", padx=10, pady=5)
+        client_frame.pack(fill="x", padx=10, pady=5)
+
+        tk.Label(client_frame, text="Client:").pack(side="left")
+        self.mover_client_selector = ttk.Combobox(client_frame, state="readonly", width=25)
+        self.mover_client_selector.pack(side="left", padx=5)
+
+        self.mover_load_btn = tk.Button(client_frame, text="Load Torrents", command=self._mover_load_torrents)
+        self.mover_load_btn.pack(side="left", padx=5)
+
+        self.mover_load_status = tk.Label(client_frame, text="", fg="gray")
+        self.mover_load_status.pack(side="left", padx=10)
+
+        # --- Section B: Category Mover ---
+        cat_frame = tk.LabelFrame(parent, text="Move by Category", padx=10, pady=5)
+        cat_frame.pack(fill="x", padx=10, pady=5)
+
+        row1 = tk.Frame(cat_frame)
+        row1.pack(fill="x", pady=2)
+        tk.Label(row1, text="Category:").pack(side="left")
+        self.mover_cat_selector = ttk.Combobox(row1, state="readonly", width=50)
+        self.mover_cat_selector.pack(side="left", padx=5)
+        self.mover_cat_selector.bind("<<ComboboxSelected>>", self._mover_on_cat_selected)
+
+        row2 = tk.Frame(cat_frame)
+        row2.pack(fill="x", pady=2)
+        tk.Label(row2, text="New root path:").pack(side="left")
+        self.mover_new_path_var = tk.StringVar()
+        self.mover_new_path_entry = tk.Entry(row2, textvariable=self.mover_new_path_var, width=50)
+        self.mover_new_path_entry.pack(side="left", padx=5)
+        tk.Button(row2, text="Browse...", command=self._mover_browse_path).pack(side="left")
+
+        row3 = tk.Frame(cat_frame)
+        row3.pack(fill="x", pady=2)
+        tk.Label(row3, text="Limit (0=all):").pack(side="left")
+        self.mover_cat_limit_var = tk.IntVar(value=0)
+        tk.Spinbox(row3, from_=0, to=99999, textvariable=self.mover_cat_limit_var, width=8).pack(side="left", padx=5)
+
+        self.mover_cat_summary = tk.Label(cat_frame, text="Select a category to see details.", fg="gray")
+        self.mover_cat_summary.pack(anchor="w", pady=3)
+
+        self.mover_cat_move_btn = tk.Button(cat_frame, text="Move Category", state="disabled",
+            command=self._mover_start_category_move)
+        self.mover_cat_move_btn.pack(anchor="w", pady=3)
+
+        # --- Section C: Disk Auto-Balancer ---
+        bal_frame = tk.LabelFrame(parent, text="Auto-Balance Across Disks", padx=10, pady=5)
+        bal_frame.pack(fill="x", padx=10, pady=5)
+
+        # Disk list
+        disk_top = tk.Frame(bal_frame)
+        disk_top.pack(fill="x", pady=2)
+
+        disk_tree_frame = tk.Frame(disk_top)
+        disk_tree_frame.pack(side="left", fill="both", expand=True)
+
+        self.mover_disk_tree = ttk.Treeview(
+            disk_tree_frame,
+            columns=("path", "free", "current", "target"),
+            show="headings", height=4, selectmode="browse"
+        )
+        self.mover_disk_tree.heading("path", text="Disk Path")
+        self.mover_disk_tree.heading("free", text="Free Space")
+        self.mover_disk_tree.heading("current", text="Current Load")
+        self.mover_disk_tree.heading("target", text="Target Load")
+        self.mover_disk_tree.column("path", width=200, minwidth=100)
+        self.mover_disk_tree.column("free", width=100, anchor="center")
+        self.mover_disk_tree.column("current", width=100, anchor="center")
+        self.mover_disk_tree.column("target", width=100, anchor="center")
+        self.mover_disk_tree.pack(fill="both", expand=True)
+
+        disk_btn_frame = tk.Frame(disk_top)
+        disk_btn_frame.pack(side="right", padx=5, fill="y")
+
+        tk.Button(disk_btn_frame, text="Detect Disks", command=self._mover_detect_disks).pack(fill="x", pady=1)
+        tk.Button(disk_btn_frame, text="Remove", command=self._mover_remove_disk).pack(fill="x", pady=1)
+
+        disk_add_frame = tk.Frame(bal_frame)
+        disk_add_frame.pack(fill="x", pady=2)
+        tk.Label(disk_add_frame, text="Add path:").pack(side="left")
+        self.mover_add_disk_var = tk.StringVar()
+        tk.Entry(disk_add_frame, textvariable=self.mover_add_disk_var, width=40).pack(side="left", padx=5)
+        tk.Button(disk_add_frame, text="Browse...", command=self._mover_browse_disk).pack(side="left")
+        tk.Button(disk_add_frame, text="Add", command=self._mover_add_disk).pack(side="left", padx=5)
+
+        # Strategy
+        strat_frame = tk.Frame(bal_frame)
+        strat_frame.pack(fill="x", pady=5)
+        tk.Label(strat_frame, text="Strategy:").pack(side="left")
+        self.mover_strategy_var = tk.StringVar(value="both")
+        tk.Radiobutton(strat_frame, text="Balance by Size", variable=self.mover_strategy_var, value="size").pack(side="left", padx=5)
+        tk.Radiobutton(strat_frame, text="Balance by Seeded", variable=self.mover_strategy_var, value="uploaded").pack(side="left", padx=5)
+        tk.Radiobutton(strat_frame, text="Both (recommended)", variable=self.mover_strategy_var, value="both").pack(side="left", padx=5)
+
+        limit_frame = tk.Frame(bal_frame)
+        limit_frame.pack(fill="x", pady=2)
+        tk.Label(limit_frame, text="Limit moves (0=all):").pack(side="left")
+        self.mover_bal_limit_var = tk.IntVar(value=0)
+        tk.Spinbox(limit_frame, from_=0, to=99999, textvariable=self.mover_bal_limit_var, width=8).pack(side="left", padx=5)
+
+        bal_btn_frame = tk.Frame(bal_frame)
+        bal_btn_frame.pack(fill="x", pady=3)
+        self.mover_preview_btn = tk.Button(bal_btn_frame, text="Preview Balance", state="disabled",
+            command=self._mover_preview_balance)
+        self.mover_preview_btn.pack(side="left", padx=3)
+        self.mover_execute_btn = tk.Button(bal_btn_frame, text="Execute Balance", state="disabled",
+            command=self._mover_start_execute_balance)
+        self.mover_execute_btn.pack(side="left", padx=3)
+        self.mover_bal_summary = tk.Label(bal_btn_frame, text="", fg="gray")
+        self.mover_bal_summary.pack(side="left", padx=10)
+
+        # Preview treeview
+        preview_frame = tk.LabelFrame(parent, text="Balance Preview", padx=5, pady=5)
+        preview_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        prev_container = tk.Frame(preview_frame)
+        prev_container.pack(fill="both", expand=True)
+
+        self.mover_preview_tree = ttk.Treeview(
+            prev_container,
+            columns=("name", "size", "uploaded", "from", "to"),
+            show="headings", selectmode="extended", height=8
+        )
+        self.mover_preview_tree.heading("name", text="Name",
+            command=lambda: self.sort_tree(self.mover_preview_tree, "name", False))
+        self.mover_preview_tree.heading("size", text="Size",
+            command=lambda: self.sort_tree(self.mover_preview_tree, "size", False))
+        self.mover_preview_tree.heading("uploaded", text="Uploaded",
+            command=lambda: self.sort_tree(self.mover_preview_tree, "uploaded", False))
+        self.mover_preview_tree.heading("from", text="From")
+        self.mover_preview_tree.heading("to", text="To")
+        self.mover_preview_tree.column("name", width=220, minwidth=100)
+        self.mover_preview_tree.column("size", width=80, anchor="center")
+        self.mover_preview_tree.column("uploaded", width=80, anchor="center")
+        self.mover_preview_tree.column("from", width=180, minwidth=80)
+        self.mover_preview_tree.column("to", width=180, minwidth=80)
+
+        prev_scroll = ttk.Scrollbar(prev_container, orient="vertical", command=self.mover_preview_tree.yview)
+        self.mover_preview_tree.configure(yscrollcommand=prev_scroll.set)
+        self.mover_preview_tree.pack(side="left", fill="both", expand=True)
+        prev_scroll.pack(side="right", fill="y")
+
+        self.mover_preview_tree.tag_configure("moved", foreground="dark green")
+        self.mover_preview_tree.tag_configure("error", foreground="red")
+
+        # --- Progress ---
+        self.mover_prog_frame = tk.Frame(parent)
+        self.mover_progress = ttk.Progressbar(self.mover_prog_frame, mode='determinate')
+        self.mover_progress.pack(fill="x", padx=5, pady=(2, 0))
+        self.mover_progress_label = tk.Label(self.mover_prog_frame, text="", fg="gray")
+        self.mover_progress_label.pack(fill="x", padx=5, pady=(0, 2))
+
+        # --- Log ---
+        log_frame = tk.LabelFrame(parent, text="Move Log", padx=1, pady=1)
+        log_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        self.mover_log_area = scrolledtext.ScrolledText(log_frame, height=6, state="disabled")
+        self.mover_log_area.pack(fill="both", expand=True)
+
+        self.update_mover_client_dropdown()
+
+    # --- Helpers ---
+
+    def mover_log(self, message):
+        def _write():
+            self.mover_log_area.config(state="normal")
+            self.mover_log_area.insert(tk.END, message + "\n")
+            self.mover_log_area.see(tk.END)
+            self.mover_log_area.config(state="disabled")
+        self.root.after(0, _write)
+
+    def _mover_update_progress(self, current, total, phase):
+        pct = int(current / total * 100) if total > 0 else 0
+        def _update(p=pct, c=current, t=total, ph=phase):
+            self.mover_progress.configure(value=p)
+            self.mover_progress_label.config(text=f"{ph}... {c}/{t} ({p}%)")
+        self.root.after(0, _update)
+
+    def _mover_show_progress(self):
+        self.mover_prog_frame.pack(fill="x", padx=10, before=self.mover_log_area.master.master)
+        self.mover_progress['value'] = 0
+        self.mover_progress_label.config(text="")
+
+    def _mover_hide_progress(self):
+        self.root.after(0, self.mover_prog_frame.pack_forget)
+
+    def update_mover_client_dropdown(self):
+        if hasattr(self, 'mover_client_selector'):
+            names = [c["name"] for c in self.config["clients"]]
+            self.mover_client_selector['values'] = names
+            idx = self.config.get("last_selected_client_index", 0)
+            if idx >= len(names):
+                idx = 0
+            if names:
+                self.mover_client_selector.current(idx)
+
+    def _mover_browse_path(self):
+        path = filedialog.askdirectory(title="Select new root path")
+        if path:
+            self.mover_new_path_var.set(path.replace("\\", "/"))
+
+    def _mover_browse_disk(self):
+        path = filedialog.askdirectory(title="Select disk base path")
+        if path:
+            self.mover_add_disk_var.set(path.replace("\\", "/"))
+
+    def _mover_get_disk_base(self, path):
+        """Extract the drive/mount base from a path, e.g. 'D:/' from 'D:/Torrents/Sport/Cat/123'."""
+        p = path.replace("\\", "/")
+        # Windows: D:/ E:/ etc
+        if len(p) >= 3 and p[1] == ':' and p[2] == '/':
+            return p[:3]
+        # Unix: first two components like /mnt/disk1/
+        parts = p.split("/")
+        if len(parts) >= 3 and parts[0] == '':
+            return "/" + parts[1] + "/" + parts[2] + "/"
+        return p
+
+    # --- Load Torrents ---
+
+    def _mover_load_torrents(self):
+        sel = self.mover_client_selector.current()
+        if sel < 0 or sel >= len(self.config["clients"]):
+            self.mover_log("No client selected.")
+            return
+
+        self.mover_selected_client = self.config["clients"][sel]
+        self.mover_load_btn.config(state="disabled")
+        self.mover_load_status.config(text="Loading...", fg="blue")
+
+        def _thread():
+            try:
+                s = self._get_qbit_session(self.mover_selected_client)
+                if not s:
+                    self.mover_log("Connection failed.")
+                    self.root.after(0, lambda: self.mover_load_status.config(text="Failed", fg="red"))
+                    self.root.after(0, lambda: self.mover_load_btn.config(state="normal"))
+                    return
+
+                url = self.mover_selected_client["url"].rstrip("/")
+                resp = s.get(f"{url}/api/v2/torrents/info", timeout=30)
+                if resp.status_code != 200:
+                    self.mover_log(f"Failed: HTTP {resp.status_code}")
+                    self.root.after(0, lambda: self.mover_load_status.config(text="Failed", fg="red"))
+                    self.root.after(0, lambda: self.mover_load_btn.config(state="normal"))
+                    return
+
+                torrents = resp.json()
+                self.mover_all_torrents = torrents
+
+                # Group by category
+                cats = {}
+                for t in torrents:
+                    cat = t.get("category", "") or "(no category)"
+                    if cat not in cats:
+                        cats[cat] = []
+                    cats[cat].append(t)
+                self.mover_categories = cats
+
+                # Populate category dropdown
+                cat_options = []
+                for cat_name in sorted(cats.keys()):
+                    cat_torrents = cats[cat_name]
+                    total_size = sum(t.get("size", 0) for t in cat_torrents)
+                    cat_options.append(f"{cat_name} ({len(cat_torrents)} torrents, {format_size(total_size)})")
+
+                def _update_ui():
+                    self.mover_cat_selector['values'] = cat_options
+                    if cat_options:
+                        self.mover_cat_selector.current(0)
+                        self._mover_on_cat_selected(None)
+                    self.mover_load_status.config(
+                        text=f"Loaded {len(torrents)} torrents in {len(cats)} categories", fg="green")
+                    self.mover_load_btn.config(state="normal")
+                    self.mover_cat_move_btn.config(state="normal")
+                    self.mover_preview_btn.config(state="normal")
+                self.root.after(0, _update_ui)
+
+                self.mover_log(f"Loaded {len(torrents)} torrents in {len(cats)} categories.")
+
+            except Exception as e:
+                self.mover_log(f"Error loading: {e}")
+                self.root.after(0, lambda: self.mover_load_status.config(text="Error", fg="red"))
+                self.root.after(0, lambda: self.mover_load_btn.config(state="normal"))
+
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def _mover_on_cat_selected(self, event):
+        sel = self.mover_cat_selector.current()
+        if sel < 0:
+            return
+        cat_display = self.mover_cat_selector.get()
+        # Extract category name (everything before the last " (N torrents, X)")
+        cat_name = cat_display.rsplit(" (", 1)[0]
+
+        cat_torrents = self.mover_categories.get(cat_name, [])
+        total_size = sum(t.get("size", 0) for t in cat_torrents)
+        paths = set(self._mover_get_disk_base(t.get("save_path", "")) for t in cat_torrents)
+        paths_str = ", ".join(sorted(paths)) if paths else "unknown"
+
+        self.mover_cat_summary.config(
+            text=f"{len(cat_torrents)} torrents, {format_size(total_size)} total. Current disk(s): {paths_str}",
+            fg="black")
+
+    # --- Category Move ---
+
+    def _mover_start_category_move(self):
+        if self.mover_busy:
+            return
+
+        sel = self.mover_cat_selector.current()
+        if sel < 0:
+            messagebox.showwarning("No Category", "Select a category first.")
+            return
+
+        new_path = self.mover_new_path_var.get().strip().replace("\\", "/").rstrip("/")
+        if not new_path:
+            messagebox.showwarning("No Path", "Enter a new root path.")
+            return
+
+        cat_display = self.mover_cat_selector.get()
+        cat_name = cat_display.rsplit(" (", 1)[0]
+        cat_torrents = self.mover_categories.get(cat_name, [])
+
+        limit = self.mover_cat_limit_var.get()
+        if limit > 0:
+            cat_torrents = cat_torrents[:limit]
+
+        if not cat_torrents:
+            messagebox.showinfo("Nothing", "No torrents in this category.")
+            return
+
+        total_size = sum(t.get("size", 0) for t in cat_torrents)
+        if not messagebox.askyesno("Confirm Move",
+            f"Move {len(cat_torrents)} torrents ({format_size(total_size)}) "
+            f"from category '{cat_name}' to:\n{new_path}\n\n"
+            f"qBittorrent will physically move the files."):
+            return
+
+        self.mover_busy = True
+        self.mover_cat_move_btn.config(state="disabled")
+        self.mover_stop_event.clear()
+        self._mover_show_progress()
+
+        threading.Thread(target=self._mover_category_thread,
+            args=(cat_torrents, new_path, cat_name), daemon=True).start()
+
+    def _mover_category_thread(self, torrents, new_root, cat_name):
+        start_time = time.time()
+        s = self._get_qbit_session(self.mover_selected_client)
+        if not s:
+            self.mover_log("Connection failed.")
+            self.mover_busy = False
+            self._mover_hide_progress()
+            self.root.after(0, lambda: self.mover_cat_move_btn.config(state="normal"))
+            return
+
+        url = self.mover_selected_client["url"].rstrip("/")
+        new_root = new_root.rstrip("/")
+        success = 0
+        fail = 0
+
+        # Find common base of current paths for this category
+        # e.g., if all paths are D:/Torrents/Sport/CatName/..., the common base is D:/Torrents/Sport/CatName
+        # We'll replace the old base with new_root
+        self.mover_log(f"Moving {len(torrents)} torrents of '{cat_name}' to {new_root}")
+
+        for i, t in enumerate(torrents):
+            if self.mover_stop_event.is_set():
+                self.mover_log("Stopped by user.")
+                break
+
+            self._mover_update_progress(i + 1, len(torrents), "Moving")
+            t_hash = t["hash"]
+            t_name = t.get("name", "?")
+            old_path = t.get("save_path", "").replace("\\", "/").rstrip("/")
+
+            # Compute new location: new_root + relative part after the category folder
+            # Old: D:/Tors/Sport/OldCat/12345 -> new_root/12345
+            # Or simply set location to new_root (qBit keeps content in same subfolder)
+            new_location = new_root
+
+            try:
+                resp = s.post(f"{url}/api/v2/torrents/setLocation",
+                    data={"hashes": t_hash, "location": new_location}, timeout=30)
+                if resp.status_code == 200:
+                    success += 1
+                    self.mover_log(f"  [{i+1}/{len(torrents)}] Moved: {t_name[:60]}")
+                else:
+                    fail += 1
+                    self.mover_log(f"  [{i+1}/{len(torrents)}] Failed ({resp.status_code}): {t_name[:60]}")
+            except Exception as e:
+                fail += 1
+                self.mover_log(f"  [{i+1}/{len(torrents)}] Error: {e}")
+
+        elapsed = time.time() - start_time
+        summary = f"Category move done: {success} moved, {fail} failed (Elapsed: {elapsed:.1f}s)"
+        self.mover_log(summary)
+        self.mover_busy = False
+        self._mover_hide_progress()
+        self.root.after(0, lambda: self.mover_cat_move_btn.config(state="normal"))
+        self.root.after(0, lambda: messagebox.showinfo("Move Complete", summary))
+
+    # --- Disk Auto-Balancer ---
+
+    def _mover_detect_disks(self):
+        """Detect disk base paths from current torrent save_paths."""
+        if not self.mover_all_torrents:
+            messagebox.showinfo("No Data", "Load torrents first.")
+            return
+
+        bases = set()
+        for t in self.mover_all_torrents:
+            sp = t.get("save_path", "").replace("\\", "/")
+            if sp:
+                base = self._mover_get_disk_base(sp)
+                bases.add(base)
+
+        self.mover_disk_list = []
+        for base in sorted(bases):
+            try:
+                usage = shutil.disk_usage(base)
+                free = usage.free
+                total = usage.total
+            except Exception:
+                free = 0
+                total = 0
+
+            # Current load = sum of torrent sizes on this disk
+            current_size = sum(
+                t.get("size", 0) for t in self.mover_all_torrents
+                if t.get("save_path", "").replace("\\", "/").startswith(base)
+            )
+
+            self.mover_disk_list.append({
+                "path": base, "free": free, "total": total, "current_size": current_size
+            })
+
+        self._mover_refresh_disk_tree()
+        self.mover_log(f"Detected {len(self.mover_disk_list)} disk(s): {', '.join(d['path'] for d in self.mover_disk_list)}")
+
+    def _mover_add_disk(self):
+        path = self.mover_add_disk_var.get().strip().replace("\\", "/").rstrip("/")
+        if not path:
+            return
+        # Add trailing slash
+        if not path.endswith("/"):
+            path += "/"
+
+        # Check if already in list
+        for d in self.mover_disk_list:
+            if d["path"] == path:
+                messagebox.showinfo("Exists", "This path is already in the disk list.")
+                return
+
+        try:
+            usage = shutil.disk_usage(path)
+            free = usage.free
+            total = usage.total
+        except Exception:
+            free = 0
+            total = 0
+
+        current_size = sum(
+            t.get("size", 0) for t in self.mover_all_torrents
+            if t.get("save_path", "").replace("\\", "/").startswith(path)
+        )
+
+        self.mover_disk_list.append({
+            "path": path, "free": free, "total": total, "current_size": current_size
+        })
+        self._mover_refresh_disk_tree()
+        self.mover_add_disk_var.set("")
+        self.mover_log(f"Added disk: {path} (Free: {format_size(free)})")
+
+    def _mover_remove_disk(self):
+        sel = self.mover_disk_tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        self.mover_disk_list = [d for d in self.mover_disk_list if d["path"] != iid]
+        self._mover_refresh_disk_tree()
+
+    def _mover_refresh_disk_tree(self):
+        for item in self.mover_disk_tree.get_children():
+            self.mover_disk_tree.delete(item)
+        for d in self.mover_disk_list:
+            self.mover_disk_tree.insert("", "end", iid=d["path"], values=(
+                d["path"],
+                format_size(d["free"]),
+                format_size(d["current_size"]),
+                ""  # Target filled during preview
+            ))
+
+    def _mover_preview_balance(self):
+        """Compute balance plan and show in preview tree."""
+        if not self.mover_all_torrents:
+            messagebox.showinfo("No Data", "Load torrents first.")
+            return
+        if len(self.mover_disk_list) < 2:
+            messagebox.showinfo("Need Disks", "Add at least 2 disk paths to balance between.")
+            return
+
+        strategy = self.mover_strategy_var.get()
+        limit = self.mover_bal_limit_var.get()
+
+        # Map each torrent to its current disk
+        disk_paths = [d["path"] for d in self.mover_disk_list]
+        torrents_with_disk = []
+
+        for t in self.mover_all_torrents:
+            sp = t.get("save_path", "").replace("\\", "/")
+            current_disk = None
+            # Find which disk this torrent is on (longest prefix match)
+            best_len = 0
+            for dp in disk_paths:
+                if sp.startswith(dp) and len(dp) > best_len:
+                    current_disk = dp
+                    best_len = len(dp)
+
+            if current_disk is None:
+                continue  # Torrent is not on any managed disk
+
+            torrents_with_disk.append({
+                "hash": t["hash"],
+                "name": t.get("name", "?"),
+                "size": t.get("size", 0),
+                "uploaded": t.get("uploaded", 0),
+                "save_path": sp,
+                "current_disk": current_disk,
+                "category": t.get("category", ""),
+            })
+
+        if not torrents_with_disk:
+            self.mover_log("No torrents found on the managed disks.")
+            return
+
+        # Calculate scores for each torrent
+        total_size = sum(t["size"] for t in torrents_with_disk) or 1
+        total_uploaded = sum(t["uploaded"] for t in torrents_with_disk) or 1
+
+        for t in torrents_with_disk:
+            if strategy == "size":
+                t["score"] = t["size"]
+            elif strategy == "uploaded":
+                t["score"] = t["uploaded"]
+            else:  # both
+                t["score"] = 0.5 * (t["size"] / total_size) + 0.5 * (t["uploaded"] / total_uploaded)
+
+        # Target per disk
+        total_score = sum(t["score"] for t in torrents_with_disk)
+        n_disks = len(disk_paths)
+        target_per_disk = total_score / n_disks
+
+        # Get free space for each disk
+        disk_free = {}
+        for d in self.mover_disk_list:
+            disk_free[d["path"]] = d["free"]
+
+        # Greedy assignment: sort by score descending (heaviest first)
+        sorted_torrents = sorted(torrents_with_disk, key=lambda x: x["score"], reverse=True)
+
+        # Track assigned score per disk
+        disk_assigned_score = {dp: 0.0 for dp in disk_paths}
+        disk_assigned_size = {dp: 0 for dp in disk_paths}
+        assignments = {}  # hash -> target_disk
+
+        for t in sorted_torrents:
+            # Find the disk with the most remaining budget
+            best_disk = None
+            best_remaining = -float('inf')
+            for dp in disk_paths:
+                remaining = target_per_disk - disk_assigned_score[dp]
+                # Also check free space if moving to this disk
+                if dp != t["current_disk"]:
+                    if disk_free.get(dp, 0) - disk_assigned_size.get(dp, 0) < t["size"]:
+                        continue  # Not enough free space
+                if remaining > best_remaining:
+                    best_remaining = remaining
+                    best_disk = dp
+
+            if best_disk is None:
+                best_disk = t["current_disk"]  # Keep on current if no disk has space
+
+            assignments[t["hash"]] = best_disk
+            disk_assigned_score[best_disk] += t["score"]
+            if best_disk != t["current_disk"]:
+                disk_assigned_size[best_disk] += t["size"]
+
+        # Build move plan (only torrents that need to move)
+        plan = []
+        for t in sorted_torrents:
+            target_disk = assignments[t["hash"]]
+            if target_disk == t["current_disk"]:
+                continue  # No move needed
+
+            # Compute new path: swap disk prefix
+            old_disk = t["current_disk"]
+            relative = t["save_path"][len(old_disk):]
+            new_path = target_disk + relative
+
+            plan.append({
+                "hash": t["hash"],
+                "name": t["name"],
+                "size": t["size"],
+                "uploaded": t["uploaded"],
+                "from_path": t["save_path"],
+                "to_path": new_path,
+                "from_disk": old_disk,
+                "to_disk": target_disk,
+            })
+
+        # Apply limit
+        if limit > 0:
+            plan = plan[:limit]
+
+        self.mover_balance_plan = plan
+
+        # Update disk tree target column
+        for d in self.mover_disk_list:
+            dp = d["path"]
+            target_score = disk_assigned_score.get(dp, 0)
+            # Show target as size for readability
+            target_size_on_disk = sum(
+                t["size"] for t in torrents_with_disk if assignments.get(t["hash"]) == dp
+            )
+            try:
+                self.mover_disk_tree.set(dp, "target", format_size(target_size_on_disk))
+            except tk.TclError:
+                pass
+
+        # Populate preview tree
+        for item in self.mover_preview_tree.get_children():
+            self.mover_preview_tree.delete(item)
+
+        for entry in plan:
+            self.mover_preview_tree.insert("", "end", iid=entry["hash"], values=(
+                entry["name"],
+                format_size(entry["size"]),
+                format_size(entry["uploaded"]),
+                entry["from_path"],
+                entry["to_path"],
+            ))
+
+        total_move_size = sum(e["size"] for e in plan)
+        self.mover_bal_summary.config(
+            text=f"{len(plan)} torrents to move ({format_size(total_move_size)})", fg="black")
+        self.mover_execute_btn.config(state="normal" if plan else "disabled")
+
+        # Log per-disk balance info
+        self.mover_log(f"Balance preview: {len(plan)} moves planned ({format_size(total_move_size)} total)")
+        for dp in disk_paths:
+            current = sum(t["size"] for t in torrents_with_disk if t["current_disk"] == dp)
+            target = sum(t["size"] for t in torrents_with_disk if assignments.get(t["hash"]) == dp)
+            current_up = sum(t["uploaded"] for t in torrents_with_disk if t["current_disk"] == dp)
+            target_up = sum(t["uploaded"] for t in torrents_with_disk if assignments.get(t["hash"]) == dp)
+            self.mover_log(f"  {dp}: Size {format_size(current)} -> {format_size(target)} | "
+                          f"Uploaded {format_size(current_up)} -> {format_size(target_up)}")
+
+    # --- Execute Balance ---
+
+    def _mover_start_execute_balance(self):
+        if self.mover_busy:
+            return
+        if not self.mover_balance_plan:
+            messagebox.showinfo("No Plan", "Run Preview first.")
+            return
+
+        total_size = sum(e["size"] for e in self.mover_balance_plan)
+        if not messagebox.askyesno("Confirm Balance",
+            f"Move {len(self.mover_balance_plan)} torrents ({format_size(total_size)})?\n\n"
+            "qBittorrent will physically move the files. This may take a while."):
+            return
+
+        self.mover_busy = True
+        self.mover_execute_btn.config(state="disabled")
+        self.mover_preview_btn.config(state="disabled")
+        self.mover_stop_event.clear()
+        self._mover_show_progress()
+
+        threading.Thread(target=self._mover_execute_balance_thread, daemon=True).start()
+
+    def _mover_execute_balance_thread(self):
+        start_time = time.time()
+        s = self._get_qbit_session(self.mover_selected_client)
+        if not s:
+            self.mover_log("Connection failed.")
+            self.mover_busy = False
+            self._mover_hide_progress()
+            self.root.after(0, lambda: self.mover_execute_btn.config(state="normal"))
+            self.root.after(0, lambda: self.mover_preview_btn.config(state="normal"))
+            return
+
+        url = self.mover_selected_client["url"].rstrip("/")
+        plan = self.mover_balance_plan
+        success = 0
+        fail = 0
+
+        self.mover_log(f"Executing balance: {len(plan)} moves...")
+
+        for i, entry in enumerate(plan):
+            if self.mover_stop_event.is_set():
+                self.mover_log("Stopped by user.")
+                break
+
+            self._mover_update_progress(i + 1, len(plan), "Moving")
+            t_hash = entry["hash"]
+            new_path = entry["to_path"]
+
+            try:
+                resp = s.post(f"{url}/api/v2/torrents/setLocation",
+                    data={"hashes": t_hash, "location": new_path}, timeout=30)
+                if resp.status_code == 200:
+                    success += 1
+                    self.root.after(0, lambda h=t_hash: self.mover_preview_tree.item(h, tags=("moved",)))
+                    self.mover_log(f"  [{i+1}/{len(plan)}] Moved: {entry['name'][:55]} -> {entry['to_disk']}")
+                else:
+                    fail += 1
+                    self.root.after(0, lambda h=t_hash: self.mover_preview_tree.item(h, tags=("error",)))
+                    self.mover_log(f"  [{i+1}/{len(plan)}] Failed ({resp.status_code}): {entry['name'][:55]}")
+            except Exception as e:
+                fail += 1
+                self.root.after(0, lambda h=t_hash: self.mover_preview_tree.item(h, tags=("error",)))
+                self.mover_log(f"  [{i+1}/{len(plan)}] Error: {e}")
+
+        elapsed = time.time() - start_time
+        summary = f"Balance done: {success} moved, {fail} failed (Elapsed: {elapsed:.1f}s)"
+        self.mover_log(summary)
+        self.mover_busy = False
+        self._mover_hide_progress()
+        self.root.after(0, lambda: self.mover_execute_btn.config(state="disabled"))
+        self.root.after(0, lambda: self.mover_preview_btn.config(state="normal"))
+        self.root.after(0, lambda: messagebox.showinfo("Balance Complete", summary))
 
 
 if __name__ == "__main__":

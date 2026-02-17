@@ -12,6 +12,7 @@ import io
 import datetime
 import html
 import webbrowser
+import hashlib
 
 # Default Configuration (New Structure)
 DEFAULT_CONFIG = {
@@ -528,7 +529,7 @@ class QBitAdderApp:
     def __init__(self, root):
         self.root = root
         self.root.title("qBittorrent Auto-Adder")
-        self.root.geometry("800x825")
+        self.root.geometry("1000x825")
         
         self.config = self.load_config()
         self.selected_files = [] # List of file paths
@@ -545,11 +546,13 @@ class QBitAdderApp:
 
         self.adder_tab = tk.Frame(self.notebook)
         self.updater_tab = tk.Frame(self.notebook)
+        self.remover_tab = tk.Frame(self.notebook) # New Tab
         self.repair_tab = tk.Frame(self.notebook)
         self.settings_tab = tk.Frame(self.notebook)
 
         self.notebook.add(self.adder_tab, text="Add Torrents from file")
         self.notebook.add(self.updater_tab, text="Update Torrents")
+        self.notebook.add(self.remover_tab, text="Remove Torrents") # New Tab
         self.notebook.add(self.repair_tab, text="Repair Categories")
         self.notebook.add(self.settings_tab, text="Settings")
 
@@ -569,6 +572,10 @@ class QBitAdderApp:
         self.updater_selected_client = None
         self.updater_stop_event = threading.Event()
         self.create_updater_ui()
+
+        # Remover tab state (New)
+        self.remover_selected_client = None
+        self.create_remover_ui()
 
         # Repair tab state
         self.repair_scanning = False
@@ -651,6 +658,41 @@ class QBitAdderApp:
         else:
             print(message)
 
+    # --- Helper Methods ---
+    def sort_tree(self, tree, col, reverse):
+        """Sort treeview contents when a column header is clicked."""
+        l = [(tree.set(k, col), k) for k in tree.get_children('')]
+        
+        # Try to sort as numbers if possible (e.g. Size)
+        # Size format: "1.23 GB"
+        # We might need custom sort key for size.
+        if col == "Size":
+            def size_to_bytes(s):
+                if not s: return 0
+                # s = "2.11 GB"
+                parts = s.split()
+                if len(parts) != 2: return 0
+                try:
+                    val = float(parts[0])
+                except: return 0
+                unit = parts[1].upper()
+                mult = {'B':1, 'KB':1024, 'MB':1024**2, 'GB':1024**3, 'TB':1024**4}
+                return val * mult.get(unit, 1)
+            
+            l.sort(key=lambda t: size_to_bytes(t[0]), reverse=reverse)
+        else:
+            try:
+                l.sort(key=lambda t: t[0].lower(), reverse=reverse)
+            except:
+                l.sort(reverse=reverse)
+
+        # Rearrange items in sorted positions
+        for index, (val, k) in enumerate(l):
+            tree.move(k, '', index)
+
+        # Reverse sort next time
+        tree.heading(col, command=lambda: self.sort_tree(tree, col, not reverse))
+
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
             try:
@@ -697,12 +739,304 @@ class QBitAdderApp:
             self.log(f"Error saving config: {e}")
             messagebox.showerror("Error", f"Could not save config: {e}")
 
+    # --- Remover Tab UI (New) ---
+    def create_remover_ui(self):
+        # 0. State
+        self.remover_all_torrents = []
+
+        # 1. Client Selection
+        client_frame = tk.LabelFrame(self.remover_tab, text="Select Client", padx=10, pady=5)
+        client_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Label(client_frame, text="Client:").pack(side="left")
+        self.remover_client_selector = ttk.Combobox(client_frame, state="readonly", width=30)
+        self.remover_client_selector.pack(side="left", padx=5)
+        self.remover_client_selector.bind("<<ComboboxSelected>>", lambda e: self.remover_load_torrents())
+        
+        tk.Button(client_frame, text="Refresh List", command=self.remover_load_torrents).pack(side="left", padx=10)
+
+        # 2. Filter & Options
+        ctrl_frame = tk.Frame(self.remover_tab)
+        ctrl_frame.pack(fill="x", padx=10, pady=5)
+        
+        # Filter
+        tk.Label(ctrl_frame, text="Filter:").pack(side="left")
+        self.remover_filter_var = tk.StringVar()
+        self.remover_filter_var.trace("w", lambda name, index, mode, sv=self.remover_filter_var: self.remover_apply_filter())
+        entry_filter = tk.Entry(ctrl_frame, textvariable=self.remover_filter_var, width=30)
+        entry_filter.pack(side="left", padx=5)
+
+        # 3. Features
+        opts_frame = tk.LabelFrame(self.remover_tab, text="Options & Actions", padx=10, pady=5)
+        opts_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.delete_files_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(opts_frame, text="Also delete content files (DATA)", variable=self.delete_files_var, fg="red").pack(side="left")
+
+        tk.Button(opts_frame, text="Select from .torrent files...", command=self.remover_match_from_files).pack(side="right", padx=5)
+
+        # 4. Torrent List
+        list_frame = tk.Frame(self.remover_tab)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        cols = ("Name", "Size", "Category", "State", "Path", "Hash")
+        self.remover_tree = ttk.Treeview(list_frame, columns=cols, show="headings", selectmode="extended")
+        
+        self.remover_tree.heading("Name", text="Name", command=lambda: self.sort_tree(self.remover_tree, "Name", False))
+        self.remover_tree.heading("Size", text="Size", command=lambda: self.sort_tree(self.remover_tree, "Size", False))
+        self.remover_tree.heading("Category", text="Category", command=lambda: self.sort_tree(self.remover_tree, "Category", False))
+        self.remover_tree.heading("State", text="State", command=lambda: self.sort_tree(self.remover_tree, "State", False))
+        self.remover_tree.heading("Path", text="Saved Path", command=lambda: self.sort_tree(self.remover_tree, "Path", False))
+        self.remover_tree.heading("Hash", text="Hash")
+        
+        self.remover_tree.column("Name", width=250)
+        self.remover_tree.column("Size", width=80)
+        self.remover_tree.column("Category", width=120)
+        self.remover_tree.column("State", width=80)
+        self.remover_tree.column("Path", width=300)
+        self.remover_tree.column("Hash", width=0, stretch=False) # Hidden
+        
+        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=self.remover_tree.yview)
+        self.remover_tree.configure(yscrollcommand=vsb.set)
+        
+        self.remover_tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        # 5. Status & Progress
+        status_frame = tk.Frame(self.remover_tab, pady=5)
+        status_frame.pack(fill="x", padx=10)
+        
+        self.remover_status = tk.Label(status_frame, text="", fg="gray", anchor="w")
+        self.remover_status.pack(side="left", fill="x", expand=True)
+        
+        self.remover_progress = ttk.Progressbar(status_frame, mode='determinate', length=200)
+        # self.remover_progress.pack(side="right") # Pack only when busy
+        
+        # 6. Main Remove Button
+        tk.Button(self.remover_tab, text="Remove Selected Torrents", bg="#ffcccc", command=self.remover_delete_selected).pack(pady=10)
+        
+        self.update_remover_client_dropdown()
+
+    def update_remover_client_dropdown(self):
+        if hasattr(self, 'remover_client_selector'):
+            # Only single client selection makes sense here
+            options = [c["name"] for c in self.config["clients"]]
+            self.remover_client_selector['values'] = options
+            if options:
+                self.remover_client_selector.current(0)
+    
+    def remover_load_torrents(self):
+        idx = self.remover_client_selector.current()
+        if idx < 0: return
+        
+        client_conf = self.config["clients"][idx]
+        self.remover_status.config(text="Downloading list...", fg="black")
+        self.remover_progress.pack(side="right")
+        self.remover_progress.config(mode='indeterminate')
+        self.remover_progress.start(10)
+        
+        # Clear tree & data
+        self.remover_all_torrents = []
+        for item in self.remover_tree.get_children():
+            self.remover_tree.delete(item)
+            
+        def _thread():
+            try:
+                s = self._get_qbit_session(client_conf)
+                if not s:
+                    self.root.after(0, lambda: self._remover_load_done("Connection failed", "red"))
+                    return
+                    
+                resp = s.get(f"{client_conf['url'].rstrip('/')}/api/v2/torrents/info")
+                if resp.status_code == 200:
+                    torrents = resp.json()
+                    self.remover_all_torrents = torrents
+                    # Switch to determinate progress for population
+                    self.root.after(0, lambda: self._start_populate_determinate(torrents))
+                else:
+                     self.root.after(0, lambda: self._remover_load_done(f"Error: {resp.status_code}", "red"))
+            except Exception as e:
+                self.root.after(0, lambda: self._remover_load_done(f"Error: {e}", "red"))
+                
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def _start_populate_determinate(self, torrents):
+        self.remover_progress.stop()
+        self.remover_progress.config(mode='determinate', value=0, maximum=len(torrents))
+        self.remover_status.config(text=f"Processing {len(torrents)} items...", fg="blue")
+        self.root.after(0, lambda: self._remover_populate_chunk(torrents, 0))
+
+    def _remover_populate_chunk(self, torrents, idx):
+        # Process a chunk of items
+        CHUNK_SIZE = 50
+        limit = min(idx + CHUNK_SIZE, len(torrents))
+        
+        query = self.remover_filter_var.get().lower()
+        
+        for i in range(idx, limit):
+            t = torrents[i]
+            name = t.get('name', '')
+            
+            # Apply filter if set
+            if query and query not in name.lower():
+                continue
+                
+            size_str = format_size(t.get('total_size', 0))
+            # Get path
+            save_path = t.get('save_path') or t.get('content_path') or ''
+            
+            self.remover_tree.insert("", "end", values=(
+                name, 
+                size_str, 
+                t.get('category'), 
+                t.get('state'), 
+                save_path,
+                t.get('hash')
+            ))
+            
+        # Update progress
+        self.remover_progress['value'] = limit
+        self.root.update_idletasks() # Ensure UI redraws
+        
+        if limit < len(torrents):
+            # Schedule next chunk
+            self.root.after(1, lambda: self._remover_populate_chunk(torrents, limit))
+        else:
+            # Done
+            self._remover_load_done(f"Loaded {len(torrents)} torrents.", "green")
+
+    def _remover_load_done(self, msg, color):
+        self.remover_status.config(text=msg, fg=color)
+        self.remover_progress.stop()
+        self.remover_progress.pack_forget()
+
+    # Re-use population logic efficiently or just call clear+start?
+    def remover_apply_filter(self):
+        # Clear tree
+        for item in self.remover_tree.get_children():
+            self.remover_tree.delete(item)
+        
+        # If list is huge, we might want to chunk this too?
+        # For now, let's reuse the chunk logic but with existing data
+        if self.remover_all_torrents:
+            self.remover_progress.pack(side="right")
+            self._start_populate_determinate(self.remover_all_torrents)
+        else:
+            self.remover_status.config(text="List empty.", fg="gray")
+    
+    # Keeping old populate for reference or removing?
+    # Renaming/removing _remover_populate_tree to avoid conflict/use new logic
+    
+    def remover_match_from_files(self):
+        files = filedialog.askopenfilenames(title="Select .torrent files to match", filetypes=[("Torrent files", "*.torrent")])
+        if not files: return
+        
+        if not self.remover_all_torrents:
+            messagebox.showinfo("Info", "Please load the torrent list from the client first.")
+            return
+
+        self.remover_status.config(text="Calculating hashes...", fg="blue")
+        
+        def _thread():
+            matched_count = 0
+            hashes_to_select = set()
+            
+            for fp in files:
+                try:
+                    with open(fp, "rb") as f:
+                        data = f.read()
+                    
+                    # Calculate Info Hash
+                    h = self.calculate_torrent_hash(data)
+                    if h:
+                        hashes_to_select.add(h)
+                except: pass
+            
+            # Find in tree
+            # We need to map hash -> item_id
+            # But the tree might be filtered.
+            # So we should probably clear filter?
+            # Or just select if visible?
+            # Let's just iterate visible items in tree.
+            
+            # Better: Select matching items in the tree.
+            
+            def _select_in_ui():
+                # Clear selection first? No, maybe add to it.
+                # sel = self.remover_tree.selection()
+                
+                found_items = []
+                for item in self.remover_tree.get_children():
+                    vals = self.remover_tree.item(item)['values']
+                    t_hash = vals[4].lower()
+                    if t_hash in hashes_to_select:
+                        found_items.append(item)
+                
+                if found_items:
+                    self.remover_tree.selection_set(found_items)
+                    self.remover_tree.see(found_items[0])
+                    self.remover_status.config(text=f"Matched and selected {len(found_items)} torrents.", fg="green")
+                else:
+                    self.remover_status.config(text="No matches found in current list.", fg="orange")
+
+            self.root.after(0, _select_in_ui)
+
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def remover_delete_selected(self):
+        selected = self.remover_tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "No torrents selected.")
+            return
+
+        delete_files = self.delete_files_var.get()
+        count = len(selected)
+        
+        msg = f"Are you sure you want to remove {count} torrent(s)?"
+        if delete_files:
+            msg += "\n\nWARNING: Content files (DATA) will also be DELETED permanently!"
+            
+        if not messagebox.askyesno("Confirm Removal", msg, icon='warning'):
+            return
+
+        idx = self.remover_client_selector.current()
+        client_conf = self.config["clients"][idx]
+        
+        hashes = []
+        for item in selected:
+            vals = self.remover_tree.item(item)['values']
+            hashes.append(vals[4]) # Hash is 5th col
+
+        def _thread():
+            try:
+                s = self._get_qbit_session(client_conf)
+                if not s: return
+
+                # Join hashes with |
+                hash_str = "|".join(hashes)
+                
+                self.root.after(0, lambda: self.remover_status.config(text="Deleting...", fg="blue"))
+                
+                resp = s.post(f"{client_conf['url'].rstrip('/')}/api/v2/torrents/delete", data={
+                    "hashes": hash_str,
+                    "deleteFiles": "true" if delete_files else "false"
+                })
+                
+                if resp.status_code == 200:
+                    self.root.after(0, lambda: self.remover_status.config(text=f"Removed {len(hashes)} torrents.", fg="green"))
+                    self.root.after(0, self.remover_load_torrents) # Refresh
+                else:
+                    self.root.after(0, lambda: self.remover_status.config(text=f"Delete failed: {resp.status_code}", fg="red"))
+                    
+            except Exception as e:
+                self.root.after(0, lambda: self.remover_status.config(text=f"Error: {e}", fg="red"))
+
+        threading.Thread(target=_thread, daemon=True).start()
+
     # --- Settings Tab UI ---
     def create_settings_ui(self):
         # 1. Global Auth Section
         global_frame = tk.LabelFrame(self.settings_tab, text="Global Authentication", padx=10, pady=10)
-        global_frame.pack(fill="x", padx=10, pady=5)
-
         self.global_auth_var = tk.BooleanVar(value=self.config["global_auth"]["enabled"])
         tk.Checkbutton(global_frame, text="Use Global Authentication for All Clients", 
                       variable=self.global_auth_var, command=self.toggle_global_auth).pack(anchor="w", padx=5)
@@ -774,7 +1108,7 @@ class QBitAdderApp:
 
 
         # 3. Rutracker Auth Section
-        rt_frame = tk.LabelFrame(self.settings_tab, text="Rutracker Forum Login (for category fetching)", padx=10, pady=10)
+        rt_frame = tk.LabelFrame(self.settings_tab, text="Rutracker Forum Login (for downloading .torrents and failover category fetching)", padx=10, pady=10)
         rt_frame.pack(fill="x", padx=10, pady=5)
 
         rt_auth_frame = tk.Frame(rt_frame)
@@ -871,6 +1205,7 @@ class QBitAdderApp:
                  self.client_selector.current(0)
         self.update_updater_client_dropdown()
         self.update_repair_client_dropdown()
+        self.update_remover_client_dropdown() # Add this line
 
     def get_cats_status_text(self):
         last_updated = self.cat_manager.cache.get('last_updated', '')
@@ -1758,10 +2093,48 @@ class QBitAdderApp:
         
         return items
 
+    def calculate_torrent_hash(self, file_content):
+        """Calculate Info Hash (SHA1 of info dict) from raw bytes."""
+        try:
+            # We need the raw bytes of the 'info' dictionary.
+            # bdecode returns a python dict, but we need the original bencoded substring.
+            # A simple bdecode doesn't give us offsets easily unless modified.
+            # BUT we can search for "4:info" and then decode just that part to find its length?
+            
+            # Better approach:
+            # Find "4:info"
+            # The value starts immediately after.
+            # We can use our bdecode which returns end index!
+            
+            # Find first occurrence of "4:info"
+            # Note: keys in bencode are sorted, but "info" is a key in the root dict.
+            # It's safer to decode the whole thing and track offsets, 
+            # OR honestly, just find "4:info" and check if it looks like a key.
+            # Given it's a top level dict, it should be safe to finding "4:info"
+            
+            start_marker = b'4:info'
+            idx = file_content.find(start_marker)
+            if idx == -1: return None
+            
+            val_start = idx + len(start_marker)
+            
+            # Now decode from val_start to get the end index
+            _, next_idx = bdecode(file_content, val_start)
+            
+            # The raw info dict bytes
+            info_bytes = file_content[val_start:next_idx]
+            
+            # SHA1 hash
+            sha1 = hashlib.sha1(info_bytes).hexdigest()
+            return sha1.lower()
+            
+        except Exception as e:
+            print(f"Hash calc error: {e}")
+            return None
+
     def extract_id_from_bytes(self, content, filename_for_log):
         """Extract topic ID from torrent bytes using proper bencode parsing."""
         try:
-            info = parse_torrent_info(content)
             topic_id = info.get('topic_id')
             if topic_id:
                 return topic_id
@@ -1872,6 +2245,36 @@ class QBitAdderApp:
     # ===================================================================
     # UPDATE TORRENTS TAB
     # ===================================================================
+
+    def _get_qbit_session(self, client_conf):
+        """Helper to get an authenticated requests.Session for a client."""
+        try:
+            url = client_conf["url"]
+            if client_conf.get("use_global_auth") and self.config["global_auth"]["enabled"]:
+                user = self.config["global_auth"]["username"]
+                pw = self.config["global_auth"]["password"]
+            else:
+                user = client_conf.get("username", "")
+                pw = client_conf.get("password", "")
+
+            s = requests.Session()
+            # Try version first to see if auth needed/valid
+            try:
+                resp = s.get(f"{url}/api/v2/app/version", timeout=5)
+                if resp.status_code == 200:
+                    return s
+            except: pass # Proceed to login attempt
+            
+            # Login
+            resp = s.post(f"{url}/api/v2/auth/login", data={"username": user, "password": pw}, timeout=10)
+            if resp.status_code == 200 and resp.text != "Fails.":
+                return s
+            else:
+                print(f"Login failed: {resp.status_code} {resp.text}")
+                return None
+        except Exception as e:
+            print(f"Connection error: {e}")
+            return None
 
     def create_updater_ui(self):
         # --- Scan Controls ---

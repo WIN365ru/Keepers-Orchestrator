@@ -7,3 +7,4 @@ docs.html
 /.tests
 /__pycache__
 /changelog
+q_adder_data.db

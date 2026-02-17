@@ -47,7 +47,7 @@ CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "
 DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_data.db")
 
 # App Version & Update Info
-APP_VERSION = "0.7.0-alpha1"
+APP_VERSION = "0.7.0-alpha3"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -5142,7 +5142,7 @@ class QBitAdderApp:
         tree_frame = tk.Frame(self.keepers_tab)
         tree_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
-        cols = ("id", "name", "size", "seeds", "leech", "status")
+        cols = ("id", "name", "size", "seeds", "leech", "status", "link")
         self.keepers_tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
         self.keepers_tree.heading("id", text="ID", command=lambda: self.sort_tree(self.keepers_tree, "id", False))
         self.keepers_tree.heading("name", text="Name", command=lambda: self.sort_tree(self.keepers_tree, "name", False))
@@ -5150,13 +5150,18 @@ class QBitAdderApp:
         self.keepers_tree.heading("seeds", text="Seeds", command=lambda: self.sort_tree(self.keepers_tree, "seeds", False))
         self.keepers_tree.heading("leech", text="Leech", command=lambda: self.sort_tree(self.keepers_tree, "leech", False))
         self.keepers_tree.heading("status", text="Status", command=lambda: self.sort_tree(self.keepers_tree, "status", False))
+        self.keepers_tree.heading("link", text="Link", command=lambda: self.sort_tree(self.keepers_tree, "link", False))
 
         self.keepers_tree.column("id", width=60)
-        self.keepers_tree.column("name", width=400)
-        self.keepers_tree.column("size", width=80)
+        self.keepers_tree.column("name", width=350)
+        self.keepers_tree.column("size", width=70)
         self.keepers_tree.column("seeds", width=50)
         self.keepers_tree.column("leech", width=50)
-        self.keepers_tree.column("status", width=100)
+        self.keepers_tree.column("status", width=80)
+        self.keepers_tree.column("link", width=50)
+
+        # Bind double-click to open link
+        self.keepers_tree.bind("<Double-1>", self._keepers_on_double_click)
 
         top_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.keepers_tree.yview)
         self.keepers_tree.configure(yscrollcommand=top_scroll.set)
@@ -5172,7 +5177,10 @@ class QBitAdderApp:
         tk.Checkbutton(action_frame, text="Start Paused", variable=self.keepers_paused_var).pack(side="left")
 
         self.keepers_add_btn = tk.Button(action_frame, text="Add Selected", command=self._keepers_add_selected, state="normal")
-        self.keepers_add_btn.pack(side="left", padx=10)
+        self.keepers_add_btn.pack(side="left", padx=5)
+
+        self.keepers_dl_btn = tk.Button(action_frame, text="Download .torrent", command=self._keepers_download_torrent)
+        self.keepers_dl_btn.pack(side="left", padx=5)
 
         # Log
         self.keepers_log_area = scrolledtext.ScrolledText(self.keepers_tab, height=6, state='disabled')
@@ -5336,9 +5344,28 @@ class QBitAdderApp:
         self.root.after(0, lambda: self.keepers_stop_btn.config(state="disabled"))
 
     def _keepers_insert_tree(self, t, status):
+        link = f"https://rutracker.org/forum/viewtopic.php?t={t['id']}"
         self.keepers_tree.insert("", "end", values=(
-            t['id'], t['name'], t['size_str'], t['seeds'], t['leech'], status
+            t['id'], t['name'], t['size_str'], t['seeds'], t['leech'], status, link
         ))
+
+    def _keepers_on_double_click(self, event):
+        item = self.keepers_tree.identify('item', event.x, event.y)
+        column = self.keepers_tree.identify_column(event.x)
+        
+        if not item: return
+        
+        # Column #7 is "link" (cols are #1-indexed in identify_column logic usually, let's check)
+        # cols = ("id", "name", "size", "seeds", "leech", "status", "link")
+        # #1=id, #2=name, #3=size, #4=seeds, #5=leech, #6=status, #7=link
+        
+        if column == "#7":
+            vals = self.keepers_tree.item(item, "values")
+            # vals index 6 is link
+            if len(vals) > 6:
+                link = vals[6]
+                if link.startswith("http"):
+                    webbrowser.open(link)
 
     def _keepers_scrape_ids(self, html_content):
         """Extract just topic IDs from viewforum."""
@@ -5352,6 +5379,30 @@ class QBitAdderApp:
                 ids.append(int(m))
         return ids
 
+
+    def _download_torrent_content(self, tid):
+        """Helper to download .torrent file content with auth retry."""
+        try:
+            dl_url = f"https://rutracker.org/forum/dl.php?t={tid}"
+            t_content = self.cat_manager.session.get(dl_url).content
+            
+            if b'login_username' in t_content or b'login.php' in t_content:
+                    self.keepers_log(f"  Session expired. Logging in...")
+                    user, pwd = self._get_rutracker_creds()
+                    if user and pwd and self.cat_manager.login(user, pwd):
+                        t_content = self.cat_manager.session.get(dl_url).content
+                    else:
+                        self.keepers_log(f"  Login failed. Skipping {tid}.")
+                        return None
+
+            if b'bbtitle' in t_content: # Login page or error remaining
+                    self.keepers_log(f"  Failed to download .torrent for {tid}")
+                    return None
+            
+            return t_content
+        except Exception as e:
+            self.keepers_log(f"  Download error for {tid}: {e}")
+            return None
 
     def _keepers_add_selected(self):
         selected = self.keepers_tree.selection()
@@ -5371,83 +5422,105 @@ class QBitAdderApp:
             # vals = (id, name, size, seeds, leech, status)
             tid = vals[0]
             name = vals[1]
-            seeds = int(vals[3])
-            leech = int(vals[4])
+            try:
+                seeds = int(vals[3])
+            except:
+                seeds = 0
+            try:
+                leech = int(vals[4])
+            except:
+                leech = 0
             
             self.keepers_log(f"Adding {tid}...")
             
             # Download .torrent
+            t_content = self._download_torrent_content(tid)
+            if not t_content:
+                continue
+                
+            # Send to qBit
+                
+            # Send to qBit
+            # Construct separate category save path?
+            # User config usage:
+            save_path = f"{client_conf['base_save_path']}/Keepers"
+            
+            start_paused = self.keepers_paused_var.get()
+            
+            files = {'torrents': (f'{tid}.torrent', t_content, 'application/x-bittorrent')}
+            data = {
+                'savepath': save_path,
+                'category': 'Keepers',
+                'paused': 'true' if start_paused else 'false',
+                'tags': 'Keepers'
+            }
+            
+            url = client_conf["url"].rstrip("/")
             try:
-                dl_url = f"https://rutracker.org/forum/dl.php?t={tid}"
-                t_content = self.cat_manager.session.get(dl_url).content
-                
-                if b'login_username' in t_content or b'login.php' in t_content:
-                     self.keepers_log(f"  Session expired. Logging in...")
-                     user, pwd = self._get_rutracker_creds()
-                     if user and pwd and self.cat_manager.login(user, pwd):
-                          t_content = self.cat_manager.session.get(dl_url).content
-                     else:
-                          self.keepers_log(f"  Login failed. Skipping {tid}.")
-                          continue
-
-                if b'bbtitle' in t_content: # Login page or error remaining
-                     self.keepers_log(f"  Failed to download .torrent for {tid}")
-                     continue
-                
-                # Send to qBit
-                # Construct separate category save path?
-                # User config usage:
-                save_path = f"{client_conf['base_save_path']}/Keepers"
-                
-                start_paused = self.keepers_paused_var.get()
-                
-                files = {'torrents': (f'{tid}.torrent', t_content, 'application/x-bittorrent')}
-                data = {
-                    'savepath': save_path,
-                    'category': 'Keepers',
-                    'paused': 'true' if start_paused else 'false',
-                    'tags': 'Keepers'
-                }
-                
-                url = client_conf["url"].rstrip("/")
                 resp = s.post(f"{url}/api/v2/torrents/add", files=files, data=data)
                 
                 if resp.status_code == 200:
                     self.keepers_log(f"  Added successfully.")
-                    # Add to DB
-                    # We need info_hash and size_bytes. 
-                    # parse_torrent_info gives us this.
-                    t_info = parse_torrent_info(t_content) # Reuse existing func
                     
-                    # Need info_hash? qBit returns "Ok." 
-                    # To get hash we'd need to bdecode header. 
-                    # parse_torrent_info does not return hash currently?
-                    # Let's verify parse_torrent_info.
-                    # It calls bdecode. 
-                    # Hash calculation is missing in parse_torrent_info usually unless added.
-                    # I will add hash calculation here locally.
+                    # Parse info for DB size
+                    t_info = parse_torrent_info(t_content) 
+                    size_bytes = t_info.get('total_size', 0)
                     
-                    hasher = hashlib.sha1()
-                    t_decoded, _ = bdecode(t_content)
-                    info_dict = t_decoded.get('info')
-                    # Need updates bencode function to easily extract raw info dict bytes...
-                    # Or just rely on qBit? 
-                    # We'll skip hash for now or add "waiting" logic.
-                    # Actually, let's just store what we have.
+                    # Add to DB (we use empty string for hash as we can't easily calc it without bencode lib here)
+                    # kept_torrents: topic_id, info_hash, name, size, seeds, leech, date, cat_id
                     
-                    self.db_manager.add_kept_torrent(
-                        tid, "HASH_PENDING", name, t_info.get('total_size', 0), seeds, leech, 0
-                    )
+                    # Extract Category ID from combobox string "Name (123)"
+                    try:
+                        cat_str = self.keepers_cat_combo.get()
+                        cat_id = int(re.search(r'\((\d+)\)$', cat_str).group(1))
+                    except:
+                        cat_id = 0
+
+                    self.db_manager.add_kept_torrent(tid, "", name, size_bytes, seeds, leech, cat_id)
                     
-                    self.keepers_tree.set(item, "status", "Added")
-                    count += 1
+                    # Update Treeview Status
+                    self.keepers_tree.set(item, "status", "Kept")
+                    
                 else:
-                    self.keepers_log(f"  Failed to add to client.")
+                    self.keepers_log(f"  qBit Error: {resp.status_code} - {resp.text}")
 
             except Exception as e:
-                self.keepers_log(f"  Error: {e}")
+                self.keepers_log(f"  Add Error: {e}")
+
+        # Update stats
+        self.refresh_statistics()
+
+    def _keepers_download_torrent(self):
+        selected = self.keepers_tree.selection()
+        if not selected: return
         
-        messagebox.showinfo("Done", f"Added {count} torrents to Keepers.")
+        temp_dir = tempfile.gettempdir()
+        count = 0
+        for item in selected:
+            vals = self.keepers_tree.item(item, "values")
+            tid = vals[0]
+            name = vals[1]
+            
+            self.keepers_log(f"Downloading {tid} to temp...")
+            t_content = self._download_torrent_content(tid)
+            if t_content:
+                 # Clean name for filename
+                 safe_name = "".join([c for c in name if c.isalpha() or c.isdigit() or c in " ._-()"]).strip()
+                 fname = f"[{tid}] {safe_name}.torrent"
+                 path = os.path.join(temp_dir, fname)
+                 try:
+                     with open(path, "wb") as f:
+                         f.write(t_content)
+                     count += 1
+                 except Exception as e:
+                     self.keepers_log(f"Error saving {fname}: {e}")
+        
+        if count > 0:
+             messagebox.showinfo("Saved", f"Saved {count} torrents to:\n{temp_dir}")
+             try:
+                 os.startfile(temp_dir)
+             except: pass
+
 
 
 

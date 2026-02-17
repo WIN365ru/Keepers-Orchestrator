@@ -42,6 +42,10 @@ DEFAULT_CONFIG = {
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
 CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rutracker_categories.json")
 
+# App Version & Update Info
+APP_VERSION = "0.5.0"
+GITHUB_REPO = "WIN365ru/qbit-adder-python"
+
 # --- Simple Bencode Decoder ---
 def bdecode(data, idx=0):
     """Minimal bencode decoder. Returns (decoded_value, next_index)."""
@@ -1189,9 +1193,74 @@ class QBitAdderApp:
         self.cats_progress = ttk.Progressbar(data_frame, mode='determinate', length=300)
         self.cats_progress_label = tk.Label(data_frame, text="", fg="gray")
 
+        # Version & Update
+        v_frame = tk.Frame(self.settings_tab)
+        v_frame.pack(side="bottom", anchor="se", padx=10, pady=5)
+        
+        self.version_label = tk.Label(v_frame, text=f"version {APP_VERSION}", fg="gray")
+        self.version_label.pack(side="right", padx=5)
+        
+        # Check Updates Button
+        tk.Button(v_frame, text="Check for updates", command=lambda: threading.Thread(target=self.check_github_updates, args=(False,), daemon=True).start()).pack(side="right", padx=5)
+        
+        # GitHub Link
+        lbl_gh = tk.Label(v_frame, text="GitHub", fg="blue", cursor="hand2")
+        lbl_gh.pack(side="right", padx=5)
+        lbl_gh.bind("<Button-1>", lambda e: webbrowser.open(f"https://github.com/{GITHUB_REPO}"))
+        
+        # Check for updates on startup (threaded, silent)
+        threading.Thread(target=self.check_github_updates, args=(True,), daemon=True).start()
+
         self.current_client_index = -1
         self.refresh_client_list()
 
+    def check_github_updates(self, silent=True):
+        """Check GitHub for new releases. silent=False for manual check feedback."""
+        try:
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                tag = data.get("tag_name", "").strip().lower()
+                html_url = data.get("html_url", "")
+                
+                def parse_v(v_str):
+                    return [int(x) for x in re.sub(r'[^0-9.]', '', v_str).split('.') if x.isdigit()]
+
+                curr_v = parse_v(APP_VERSION)
+                new_v = parse_v(tag)
+                
+                if new_v > curr_v:
+                    # found update
+                    def _update_ui():
+                        self.version_label.pack_forget()
+                        # specific ID or just pack?
+                        # If we repack, we mess order. 
+                        # Better to just config the label or replace it IN PLACE?
+                        # Or just popup if manual?
+                        
+                        # If manual, popup
+                        if not silent:
+                            if messagebox.askyesno("Update Available", f"New version {tag} is available!\n\nOpen GitHub release page?"):
+                                webbrowser.open(html_url)
+                        
+                        # Always show button in UI if update found
+                        # We can change the version label text/color
+                        self.version_label.config(text=f"Update available: {tag}", fg="red", cursor="hand2")
+                        self.version_label.bind("<Button-1>", lambda e: webbrowser.open(html_url))
+                        
+                    self.root.after(0, _update_ui)
+                else:
+                    if not silent:
+                        self.root.after(0, lambda: messagebox.showinfo("No Updates", f"You are using the latest version ({APP_VERSION})."))
+            else:
+                if not silent:
+                    self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to check updates: HTTP {resp.status_code}"))
+
+        except Exception as e:
+            if not silent:
+                 self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to check updates: {e}"))
+            
     def update_client_dropdown(self):
         if hasattr(self, 'client_selector'):
             options = [c["name"] for c in self.config["clients"]] + ["All Clients"]

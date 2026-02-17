@@ -474,10 +474,12 @@ class QBitAdderApp:
 
         self.adder_tab = tk.Frame(self.notebook)
         self.updater_tab = tk.Frame(self.notebook)
+        self.repair_tab = tk.Frame(self.notebook)
         self.settings_tab = tk.Frame(self.notebook)
 
         self.notebook.add(self.adder_tab, text="Add Torrents")
         self.notebook.add(self.updater_tab, text="Update Torrents")
+        self.notebook.add(self.repair_tab, text="Repair Categories")
         self.notebook.add(self.settings_tab, text="Settings")
 
         self.create_adder_ui()
@@ -492,6 +494,13 @@ class QBitAdderApp:
         self.updater_selected_client = None
         self.updater_stop_event = threading.Event()
         self.create_updater_ui()
+
+        # Repair tab state
+        self.repair_scanning = False
+        self.repair_scan_results = []
+        self.repair_selected_client = None
+        self.repair_stop_event = threading.Event()
+        self.create_repair_ui()
 
         self.create_settings_ui()
 
@@ -713,6 +722,7 @@ class QBitAdderApp:
             else:
                  self.client_selector.current(0)
         self.update_updater_client_dropdown()
+        self.update_repair_client_dropdown()
 
     def get_cats_status_text(self):
         last_updated = self.cat_manager.cache.get('last_updated', '')
@@ -1557,6 +1567,7 @@ class QBitAdderApp:
         self.updater_log_area.pack(fill="both", expand=True)
 
         self.update_updater_client_dropdown()
+        self.update_repair_client_dropdown()
 
     def updater_log(self, message):
         """Log to the updater tab's own log area (thread-safe)."""
@@ -2037,6 +2048,553 @@ class QBitAdderApp:
         self.root.after(0, lambda: messagebox.showinfo("Done", summary))
         self.root.after(0, lambda: self._updater_set_action_buttons(
             "normal" if self.updater_scan_results else "disabled"))
+
+    # ===================================================================
+    # REPAIR CATEGORIES TAB
+    # ===================================================================
+
+    def create_repair_ui(self):
+        # --- Scan Controls ---
+        ctrl_frame = tk.LabelFrame(self.repair_tab, text="Scan Controls", padx=10, pady=5)
+        ctrl_frame.pack(fill="x", padx=10, pady=5)
+
+        tk.Label(ctrl_frame, text="Client:").pack(side="left")
+        self.repair_client_selector = ttk.Combobox(ctrl_frame, state="readonly", width=25)
+        self.repair_client_selector.pack(side="left", padx=5)
+
+        self.repair_scan_btn = tk.Button(ctrl_frame, text="Scan Now", command=self.repair_start_scan)
+        self.repair_scan_btn.pack(side="left", padx=5)
+
+        self.repair_stop_btn = tk.Button(ctrl_frame, text="Stop", command=self.repair_stop_scan, state="disabled")
+        self.repair_stop_btn.pack(side="left", padx=5)
+
+        # --- Progress (hidden until scan) ---
+        self.repair_prog_frame = tk.Frame(self.repair_tab)
+        self.repair_progress = ttk.Progressbar(self.repair_prog_frame, mode='determinate')
+        self.repair_progress.pack(fill="x", padx=5, pady=(2, 0))
+        self.repair_progress_label = tk.Label(self.repair_prog_frame, text="", fg="gray")
+        self.repair_progress_label.pack(fill="x", padx=5, pady=(0, 2))
+
+        # --- Results Treeview ---
+        results_frame = tk.LabelFrame(self.repair_tab, text="Category Mismatches", padx=5, pady=5)
+        results_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        tree_container = tk.Frame(results_frame)
+        tree_container.pack(fill="both", expand=True)
+
+        self.repair_tree = ttk.Treeview(
+            tree_container,
+            columns=("name", "cur_cat", "correct_cat", "cur_path", "new_path"),
+            show="headings",
+            selectmode="extended"
+        )
+        self.repair_tree.heading("name", text="Torrent Name")
+        self.repair_tree.heading("cur_cat", text="Current Cat")
+        self.repair_tree.heading("correct_cat", text="Correct Cat")
+        self.repair_tree.heading("cur_path", text="Current Path")
+        self.repair_tree.heading("new_path", text="New Path")
+        self.repair_tree.column("name", width=250, minwidth=120)
+        self.repair_tree.column("cur_cat", width=100, minwidth=60)
+        self.repair_tree.column("correct_cat", width=100, minwidth=60)
+        self.repair_tree.column("cur_path", width=200, minwidth=80)
+        self.repair_tree.column("new_path", width=200, minwidth=80)
+
+        tree_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.repair_tree.yview)
+        self.repair_tree.configure(yscrollcommand=tree_scroll.set)
+        self.repair_tree.pack(side="left", fill="both", expand=True)
+        tree_scroll.pack(side="right", fill="y")
+
+        # Tag colors
+        self.repair_tree.tag_configure("mismatch", foreground="dark red")
+        self.repair_tree.tag_configure("fixed", foreground="dark green")
+        self.repair_tree.tag_configure("error", foreground="red")
+
+        self.repair_summary_label = tk.Label(results_frame, text="Click Scan to check categories.", fg="gray")
+        self.repair_summary_label.pack(anchor="w", pady=(5, 0))
+
+        # --- Action Buttons ---
+        action_frame = tk.Frame(self.repair_tab)
+        action_frame.pack(fill="x", padx=10, pady=5)
+
+        self.repair_selected_btn = tk.Button(
+            action_frame, text="Repair Selected",
+            command=lambda: self._repair_perform_action("selected"), state="disabled")
+        self.repair_selected_btn.pack(side="left", padx=3, fill="x", expand=True)
+
+        self.repair_all_btn = tk.Button(
+            action_frame, text="Repair All",
+            command=lambda: self._repair_perform_action("all"), state="disabled")
+        self.repair_all_btn.pack(side="left", padx=3, fill="x", expand=True)
+
+        # --- Repair Log ---
+        log_frame = tk.LabelFrame(self.repair_tab, text="Repair Log", padx=1, pady=1)
+        log_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        self.repair_log_area = scrolledtext.ScrolledText(log_frame, height=6, state="disabled")
+        self.repair_log_area.pack(fill="both", expand=True)
+
+        self.update_repair_client_dropdown()
+
+    def repair_log(self, message):
+        """Log to the repair tab's own log area (thread-safe)."""
+        def _write():
+            self.repair_log_area.config(state="normal")
+            self.repair_log_area.insert(tk.END, message + "\n")
+            self.repair_log_area.see(tk.END)
+            self.repair_log_area.config(state="disabled")
+        self.root.after(0, _write)
+
+    def update_repair_client_dropdown(self):
+        if hasattr(self, 'repair_client_selector'):
+            names = [c["name"] for c in self.config["clients"]]
+            self.repair_client_selector['values'] = names
+            idx = self.config.get("last_selected_client_index", 0)
+            if idx >= len(names):
+                idx = 0
+            if names:
+                self.repair_client_selector.current(idx)
+
+    def _repair_set_action_buttons(self, state):
+        self.repair_selected_btn.config(state=state)
+        self.repair_all_btn.config(state=state)
+
+    def _repair_update_progress(self, current, total, phase):
+        pct = int(current / total * 100) if total > 0 else 0
+        def _update(p=pct, c=current, t=total, ph=phase):
+            self.repair_progress.configure(value=p)
+            self.repair_progress_label.config(text=f"{ph}... {c}/{t} ({p}%)")
+        self.root.after(0, _update)
+
+    def _repair_scan_finished(self):
+        self.repair_scanning = False
+        def _reset():
+            self.repair_scan_btn.config(state="normal")
+            self.repair_stop_btn.config(state="disabled")
+            self.repair_prog_frame.pack_forget()
+            if self.repair_scan_results:
+                self._repair_set_action_buttons("normal")
+        self.root.after(0, _reset)
+
+    def repair_stop_scan(self):
+        self.repair_stop_event.set()
+        self.repair_log("Stopping scan...")
+        self.repair_stop_btn.config(state="disabled")
+
+    # --- Scan ---
+
+    def repair_start_scan(self):
+        if self.repair_scanning:
+            return
+
+        sel = self.repair_client_selector.current()
+        if sel < 0 or sel >= len(self.config["clients"]):
+            self.repair_log("No client selected.")
+            return
+
+        self.repair_scanning = True
+        self.repair_scan_results = []
+        self.repair_stop_event.clear()
+
+        # Clear treeview
+        for item in self.repair_tree.get_children():
+            self.repair_tree.delete(item)
+
+        # UI state
+        self.repair_scan_btn.config(state="disabled")
+        self.repair_stop_btn.config(state="normal")
+        self._repair_set_action_buttons("disabled")
+        self.repair_summary_label.config(text="Scanning...", fg="black")
+
+        # Show progress
+        self.repair_prog_frame.pack(fill="x", padx=10, after=self.repair_tab.winfo_children()[0])
+        self.repair_progress['value'] = 0
+        self.repair_progress_label.config(text="Connecting...")
+
+        self.repair_selected_client = self.config["clients"][sel]
+        threading.Thread(target=self._repair_scan_thread, daemon=True).start()
+
+    def _repair_compute_new_path(self, current_save_path, current_category, correct_category, base_save_path):
+        """Compute the new save path by swapping the category folder segment."""
+        cur = current_save_path.replace("\\", "/").rstrip("/")
+        base = base_save_path.replace("\\", "/").rstrip("/")
+
+        if not cur.startswith(base):
+            # Path doesn't start with base — can only fix category, not move
+            return None
+
+        remainder = cur[len(base):].strip("/")
+        parts = remainder.split("/") if remainder else []
+
+        if current_category and len(parts) >= 1 and parts[0] == current_category:
+            # Replace old category segment with new one
+            parts[0] = correct_category
+        elif not current_category and len(parts) >= 1:
+            # No category was set — insert category before existing path
+            parts = [correct_category] + parts
+        else:
+            # Fallback: just prepend category
+            parts = [correct_category] + parts
+
+        return base + "/" + "/".join(parts)
+
+    def _repair_scan_thread(self):
+        client = self.repair_selected_client
+        url = client["url"]
+        base_save_path = client["base_save_path"]
+
+        # Resolve auth
+        if client["use_global_auth"] and self.config["global_auth"]["enabled"]:
+            user = self.config["global_auth"]["username"]
+            pw = self.config["global_auth"]["password"]
+        else:
+            user = client["username"]
+            pw = client["password"]
+
+        session = requests.Session()
+
+        # Connect & auth
+        try:
+            resp = session.get(f"{url}/api/v2/app/version", timeout=10)
+            if resp.status_code != 200:
+                resp = session.post(f"{url}/api/v2/auth/login",
+                    data={"username": user, "password": pw}, timeout=10)
+                if resp.status_code != 200 or resp.text != "Ok.":
+                    self.repair_log(f"Auth failed for {client['name']}")
+                    self._repair_scan_finished()
+                    return
+        except Exception as e:
+            self.repair_log(f"Connection failed: {e}")
+            self._repair_scan_finished()
+            return
+
+        # Phase 1: Fetch all torrents
+        self.repair_log("Connected. Fetching torrent list...")
+        try:
+            resp = session.get(f"{url}/api/v2/torrents/info", timeout=30)
+            if resp.status_code != 200:
+                self.repair_log(f"Failed to get torrent list: HTTP {resp.status_code}")
+                self._repair_scan_finished()
+                return
+        except Exception as e:
+            self.repair_log(f"Failed to get torrent list: {e}")
+            self._repair_scan_finished()
+            return
+
+        all_torrents = resp.json()
+        total = len(all_torrents)
+        self.repair_log(f"Found {total} torrents. Resolving topic IDs...")
+
+        # Build hash → torrent info map
+        torrents_by_hash = {}
+        for t in all_torrents:
+            torrents_by_hash[t["hash"]] = {
+                "hash": t["hash"],
+                "name": t.get("name", "Unknown"),
+                "category": t.get("category", ""),
+                "save_path": t.get("save_path", t.get("content_path", "")),
+            }
+
+        if self.repair_stop_event.is_set():
+            self.repair_log("Scan stopped by user.")
+            self._repair_scan_finished()
+            return
+
+        # Phase 2: Batch-resolve topic IDs via Rutracker API
+        hashes_upper = [t["hash"].upper() for t in all_torrents]
+        hash_to_topic = {}
+
+        for batch_start in range(0, len(hashes_upper), 100):
+            if self.repair_stop_event.is_set():
+                break
+            batch = hashes_upper[batch_start:batch_start + 100]
+            self._repair_update_progress(batch_start + len(batch), len(hashes_upper), "Resolving topic IDs")
+            try:
+                api_resp = requests.get(
+                    "https://api.rutracker.cc/v1/get_topic_id",
+                    params={"by": "hash", "val": ",".join(batch)},
+                    timeout=15)
+                if api_resp.status_code == 200:
+                    result = api_resp.json().get("result", {})
+                    hash_to_topic.update(result)
+            except Exception as e:
+                self.repair_log(f"API error (get_topic_id): {e}")
+
+        if self.repair_stop_event.is_set():
+            self.repair_log("Scan stopped by user.")
+            self._repair_scan_finished()
+            return
+
+        # Map topic IDs to torrents
+        for t_hash, info in torrents_by_hash.items():
+            h_upper = t_hash.upper()
+            tid = hash_to_topic.get(h_upper)
+            info["topic_id"] = str(tid) if tid else None
+
+        # Fallback: extract topic_id from qBit properties comment
+        no_topic = [h for h, info in torrents_by_hash.items() if not info.get("topic_id")]
+        if no_topic:
+            self.repair_log(f"Falling back to qBit properties for {len(no_topic)} torrents...")
+            for i, t_hash in enumerate(no_topic):
+                if self.repair_stop_event.is_set():
+                    break
+                if i % 50 == 0:
+                    self._repair_update_progress(i, len(no_topic), "Reading properties")
+                try:
+                    prop_resp = session.get(f"{url}/api/v2/torrents/properties",
+                        params={"hash": t_hash}, timeout=10)
+                    if prop_resp.status_code == 200:
+                        comment = prop_resp.json().get("comment", "")
+                        m = re.search(r'viewtopic\.php\?t=(\d+)', comment)
+                        if not m:
+                            m = re.search(r'rutracker\.org/forum/.*?t=(\d+)', comment)
+                        if m:
+                            torrents_by_hash[t_hash]["topic_id"] = m.group(1)
+                except Exception:
+                    pass
+
+        if self.repair_stop_event.is_set():
+            self.repair_log("Scan stopped by user.")
+            self._repair_scan_finished()
+            return
+
+        # Filter to only Rutracker torrents (have topic_id)
+        rt_torrents = {h: info for h, info in torrents_by_hash.items() if info.get("topic_id")}
+        self.repair_log(f"Found {len(rt_torrents)} Rutracker torrents out of {total} total.")
+
+        if not rt_torrents:
+            self.root.after(0, lambda: self.repair_summary_label.config(
+                text="No Rutracker torrents found.", fg="gray"))
+            self._repair_scan_finished()
+            return
+
+        # Phase 3: Batch-resolve categories via Rutracker API
+        self.repair_log("Resolving correct categories...")
+        unique_topics = list(set(info["topic_id"] for info in rt_torrents.values()))
+        topic_to_forum = {}
+
+        for batch_start in range(0, len(unique_topics), 100):
+            if self.repair_stop_event.is_set():
+                break
+            batch = unique_topics[batch_start:batch_start + 100]
+            self._repair_update_progress(batch_start + len(batch), len(unique_topics), "Resolving categories")
+            try:
+                api_resp = requests.get(
+                    "https://api.rutracker.cc/v1/get_tor_topic_data",
+                    params={"by": "topic_id", "val": ",".join(batch)},
+                    timeout=15)
+                if api_resp.status_code == 200:
+                    result = api_resp.json().get("result", {})
+                    for tid, data in result.items():
+                        if data and isinstance(data, dict):
+                            forum_id = data.get("forum_id")
+                            if forum_id:
+                                topic_to_forum[str(tid)] = forum_id
+            except Exception as e:
+                self.repair_log(f"API error (get_tor_topic_data): {e}")
+
+        if self.repair_stop_event.is_set():
+            self.repair_log("Scan stopped by user.")
+            self._repair_scan_finished()
+            return
+
+        # Build forum_id → correct category name mapping
+        forum_to_category = {}
+        for forum_id in set(topic_to_forum.values()):
+            breadcrumb = self.cat_manager._build_breadcrumb_path(forum_id)
+            if breadcrumb:
+                forum_to_category[forum_id] = breadcrumb["category"]
+            else:
+                # Try flat cache lookup
+                name = self.cat_manager.cache.get("categories", {}).get(str(forum_id))
+                if name:
+                    forum_to_category[forum_id] = name
+
+        # Phase 4: Compare & find mismatches
+        self.repair_log("Comparing categories...")
+        mismatches = []
+
+        for t_hash, info in rt_torrents.items():
+            tid = info["topic_id"]
+            forum_id = topic_to_forum.get(tid)
+            if not forum_id:
+                continue
+
+            correct_cat = forum_to_category.get(forum_id)
+            if not correct_cat:
+                continue
+
+            current_cat = info["category"]
+            if current_cat == correct_cat:
+                continue  # Already correct
+
+            # Compute new path
+            new_path = self._repair_compute_new_path(
+                info["save_path"], current_cat, correct_cat, base_save_path)
+
+            entry = {
+                "hash": t_hash,
+                "name": info["name"],
+                "current_category": current_cat,
+                "correct_category": correct_cat,
+                "current_path": info["save_path"],
+                "new_path": new_path or info["save_path"],
+                "move_files": new_path is not None,
+            }
+            mismatches.append(entry)
+
+        self.repair_scan_results = mismatches
+
+        # Populate treeview
+        def _populate():
+            for entry in mismatches:
+                iid = entry["hash"]
+                cur_cat_display = entry["current_category"] or "(none)"
+                self.repair_tree.insert("", "end", iid=iid, values=(
+                    entry["name"],
+                    cur_cat_display,
+                    entry["correct_category"],
+                    entry["current_path"],
+                    entry["new_path"],
+                ))
+                self.repair_tree.item(iid, tags=("mismatch",))
+
+            count = len(mismatches)
+            rt_count = len(rt_torrents)
+            self.repair_summary_label.config(
+                text=f"Found {count} mismatched categories out of {rt_count} Rutracker torrents.",
+                fg="red" if count > 0 else "green")
+        self.root.after(0, _populate)
+
+        self.repair_log(f"Scan complete. {len(mismatches)} mismatches found.")
+        self._repair_scan_finished()
+
+    # --- Repair Actions ---
+
+    def _repair_perform_action(self, mode):
+        if mode == "selected":
+            selected = self.repair_tree.selection()
+            if not selected:
+                messagebox.showwarning("No Selection", "Select torrents to repair.")
+                return
+            hashes = list(selected)
+        else:
+            hashes = [e["hash"] for e in self.repair_scan_results]
+            if not hashes:
+                return
+
+        count = len(hashes)
+        if not messagebox.askyesno("Confirm Repair",
+            f"Repair {count} torrent(s)?\n\n"
+            "This will update categories and move files to correct paths."):
+            return
+
+        self._repair_set_action_buttons("disabled")
+        self.repair_scan_btn.config(state="disabled")
+        threading.Thread(target=self._repair_action_thread, args=(hashes,), daemon=True).start()
+
+    def _repair_action_thread(self, hashes):
+        client = self.repair_selected_client
+        url = client["url"]
+
+        # Resolve auth
+        if client["use_global_auth"] and self.config["global_auth"]["enabled"]:
+            user = self.config["global_auth"]["username"]
+            pw = self.config["global_auth"]["password"]
+        else:
+            user = client["username"]
+            pw = client["password"]
+
+        session = requests.Session()
+
+        # Connect & auth
+        try:
+            resp = session.get(f"{url}/api/v2/app/version", timeout=10)
+            if resp.status_code != 200:
+                resp = session.post(f"{url}/api/v2/auth/login",
+                    data={"username": user, "password": pw}, timeout=10)
+                if resp.status_code != 200 or resp.text != "Ok.":
+                    self.repair_log("Auth failed.")
+                    self.root.after(0, lambda: self._repair_set_action_buttons(
+                        "normal" if self.repair_scan_results else "disabled"))
+                    return
+        except Exception as e:
+            self.repair_log(f"Connection failed: {e}")
+            self.root.after(0, lambda: self._repair_set_action_buttons(
+                "normal" if self.repair_scan_results else "disabled"))
+            return
+
+        # Build lookup from scan results
+        results_map = {e["hash"]: e for e in self.repair_scan_results}
+
+        # Collect all unique correct categories to create them first
+        cats_to_create = set()
+        for h in hashes:
+            entry = results_map.get(h)
+            if entry:
+                cats_to_create.add(entry["correct_category"])
+
+        for cat_name in cats_to_create:
+            try:
+                session.post(f"{url}/api/v2/torrents/createCategory",
+                    data={"category": cat_name}, timeout=10)
+                # 409 = already exists, that's OK
+            except Exception:
+                pass
+
+        success = 0
+        fail = 0
+
+        for i, t_hash in enumerate(hashes):
+            entry = results_map.get(t_hash)
+            if not entry:
+                continue
+
+            t_name = entry["name"]
+            correct_cat = entry["correct_category"]
+            new_path = entry["new_path"]
+            move = entry["move_files"]
+
+            self.repair_log(f"[{i+1}/{len(hashes)}] Repairing: {t_name[:70]}")
+
+            try:
+                # Step 1: Set category
+                resp = session.post(f"{url}/api/v2/torrents/setCategory",
+                    data={"hashes": t_hash, "category": correct_cat}, timeout=15)
+                if resp.status_code != 200:
+                    self.repair_log(f"  Failed to set category: HTTP {resp.status_code}")
+                    fail += 1
+                    self.root.after(0, lambda h=t_hash: self.repair_tree.item(h, tags=("error",)))
+                    continue
+
+                # Step 2: Move files if path changed
+                if move and new_path != entry["current_path"]:
+                    resp = session.post(f"{url}/api/v2/torrents/setLocation",
+                        data={"hashes": t_hash, "location": new_path}, timeout=30)
+                    if resp.status_code != 200:
+                        self.repair_log(f"  Category set OK, but move failed: HTTP {resp.status_code}")
+                        self.repair_log(f"  Tried moving to: {new_path}")
+                        # Category was set, so partial success
+                    else:
+                        self.repair_log(f"  Moved: {new_path}")
+
+                self.repair_log(f"  Category: {entry['current_category'] or '(none)'} -> {correct_cat}")
+                success += 1
+
+                # Update treeview to show fixed
+                self.root.after(0, lambda h=t_hash: self.repair_tree.item(h, tags=("fixed",)))
+
+            except Exception as e:
+                fail += 1
+                self.repair_log(f"  Error: {e}")
+                self.root.after(0, lambda h=t_hash: self.repair_tree.item(h, tags=("error",)))
+
+        summary = f"Done: {success} repaired, {fail} failed"
+        self.repair_log(summary)
+        self.root.after(0, lambda: messagebox.showinfo("Repair Complete", summary))
+        self.root.after(0, lambda: self._repair_set_action_buttons(
+            "normal" if self.repair_scan_results else "disabled"))
+        self.root.after(0, lambda: self.repair_scan_btn.config(state="normal"))
+
 
 if __name__ == "__main__":
     root = tk.Tk()

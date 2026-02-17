@@ -37,14 +37,15 @@ DEFAULT_CONFIG = {
             "base_save_path": "C:/Torrents/Sport/"
         }
     ],
-    "last_selected_client_index": 0 
+    "last_selected_client_index": 0,
+    "torrent_cache_ttl_hours": 6
 }
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
 CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rutracker_categories.json")
 
 # App Version & Update Info
-APP_VERSION = "0.6.2"
+APP_VERSION = "0.6.3"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -601,6 +602,10 @@ class QBitAdderApp:
         self.mover_busy = False
         self.create_mover_ui()
 
+        # --- Torrent List Cache (per client) ---
+        # Structure: {client_name: {"torrents": [...], "timestamp": float}}
+        self.torrent_cache = {}
+
         self.create_settings_ui()
         
         # Search Tab (New)
@@ -768,9 +773,12 @@ class QBitAdderApp:
         tk.Label(client_frame, text="Client:").pack(side="left")
         self.remover_client_selector = ttk.Combobox(client_frame, state="readonly", width=30)
         self.remover_client_selector.pack(side="left", padx=5)
-        self.remover_client_selector.bind("<<ComboboxSelected>>", lambda e: self.remover_load_torrents())
+        self.remover_client_selector.bind("<<ComboboxSelected>>", lambda e: self._remover_on_client_changed())
         
-        tk.Button(client_frame, text="Refresh List", command=self.remover_load_torrents).pack(side="left", padx=10)
+        tk.Button(client_frame, text="Refresh List", command=lambda: self.remover_load_torrents(force=True)).pack(side="left", padx=10)
+
+        self.remover_cache_label = tk.Label(client_frame, text="List updated: never", fg="gray")
+        self.remover_cache_label.pack(side="left", padx=10)
 
         # 2. Filter & Options
         ctrl_frame = tk.Frame(self.remover_tab)
@@ -842,32 +850,56 @@ class QBitAdderApp:
             if options:
                 self.remover_client_selector.current(0)
     
-    def remover_load_torrents(self):
+    def _remover_on_client_changed(self):
+        """When client dropdown changes, show cache time and load from cache or API."""
+        idx = self.remover_client_selector.current()
+        if idx >= 0 and idx < len(self.config["clients"]):
+            client_name = self.config["clients"][idx]["name"]
+            self._show_cache_time_for_client(client_name, self.remover_cache_label)
+        self.remover_load_torrents()
+
+    def remover_load_torrents(self, force=False):
         idx = self.remover_client_selector.current()
         if idx < 0: return
-        
+
         client_conf = self.config["clients"][idx]
+        client_name = client_conf["name"]
+
+        # Check cache first (unless force refresh)
+        if not force:
+            cached, ts = self._cache_get(client_name)
+            if cached is not None:
+                self.remover_all_torrents = cached
+                for item in self.remover_tree.get_children():
+                    self.remover_tree.delete(item)
+                self._start_populate_determinate(cached)
+                self._show_cache_time_for_client(client_name, self.remover_cache_label)
+                return
+
         self.remover_status.config(text="Downloading list...", fg="black")
         self.remover_progress.pack(side="right")
         self.remover_progress.config(mode='indeterminate')
         self.remover_progress.start(10)
-        
+
         # Clear tree & data
         self.remover_all_torrents = []
         for item in self.remover_tree.get_children():
             self.remover_tree.delete(item)
-            
+
         def _thread():
             try:
                 s = self._get_qbit_session(client_conf)
                 if not s:
                     self.root.after(0, lambda: self._remover_load_done("Connection failed", "red"))
                     return
-                    
+
                 resp = s.get(f"{client_conf['url'].rstrip('/')}/api/v2/torrents/info")
                 if resp.status_code == 200:
                     torrents = resp.json()
                     self.remover_all_torrents = torrents
+                    # Store in cache
+                    ts = self._cache_put(client_name, torrents)
+                    self.root.after(0, lambda: self._update_cache_labels(client_name, ts))
                     # Switch to determinate progress for population
                     self.root.after(0, lambda: self._start_populate_determinate(torrents))
                 else:
@@ -1190,6 +1222,26 @@ class QBitAdderApp:
         
         tk.Button(au_frame, text="Save Auto-Update Settings", command=self.save_auto_update_settings).pack(pady=5)
 
+        # 3.6 Torrent List Cache TTL
+        cache_frame = tk.LabelFrame(self.settings_tab, text="Torrent List Cache", padx=10, pady=10)
+        cache_frame.pack(fill="x", padx=10, pady=5)
+
+        cache_ttl_frame = tk.Frame(cache_frame)
+        cache_ttl_frame.pack(fill="x", padx=5, pady=2)
+
+        tk.Label(cache_ttl_frame, text="Cache TTL (hours):").pack(side="left")
+        self.entry_torrent_cache_ttl = tk.Entry(cache_ttl_frame, width=5)
+        self.entry_torrent_cache_ttl.pack(side="left", padx=5)
+        self.entry_torrent_cache_ttl.insert(0, str(self.config.get("torrent_cache_ttl_hours", 6)))
+
+        tk.Label(cache_ttl_frame, text="(how long to reuse loaded torrent lists before fetching fresh data)", fg="gray").pack(side="left", padx=5)
+
+        cache_btn_frame = tk.Frame(cache_frame)
+        cache_btn_frame.pack(fill="x", padx=5, pady=2)
+
+        tk.Button(cache_btn_frame, text="Save Cache Settings", command=self._save_torrent_cache_settings).pack(side="left")
+        tk.Button(cache_btn_frame, text="Clear All Cached Lists", command=self._clear_torrent_cache).pack(side="left", padx=10)
+
         # 4. Data Sources Section
         data_frame = tk.LabelFrame(self.settings_tab, text="Data Sources")
         data_frame.pack(fill="x", padx=10, pady=5)
@@ -1397,23 +1449,6 @@ class QBitAdderApp:
         self.save_config()
         messagebox.showinfo("Saved", "Global settings saved.")
 
-    def save_rutracker_settings(self):
-        user = self.entry_rt_user.get()
-        pwd = self.entry_rt_pass.get()
-        ttl_str = self.entry_cat_ttl.get()
-        
-        try:
-            ttl = int(ttl_str)
-        except ValueError:
-            messagebox.showerror("Error", "TTL must be an integer.")
-            return
-
-        self.config["rutracker_auth"]["username"] = user
-        self.config["rutracker_auth"]["password"] = pwd
-        self.config["category_ttl_hours"] = ttl
-        self.save_config()
-        messagebox.showinfo("Success", "Rutracker settings saved.")
-
     def save_auto_update_settings(self):
         enabled = self.auto_update_var.get()
         interval_str = self.entry_au_interval.get()
@@ -1429,6 +1464,28 @@ class QBitAdderApp:
         self.config["auto_update_interval_min"] = interval
         self.save_config()
         messagebox.showinfo("Success", "Auto-update settings saved.")
+
+    def _save_torrent_cache_settings(self):
+        try:
+            ttl = int(self.entry_torrent_cache_ttl.get())
+            if ttl < 0: raise ValueError
+        except ValueError:
+            messagebox.showerror("Error", "Cache TTL must be a non-negative integer.")
+            return
+        self.config["torrent_cache_ttl_hours"] = ttl
+        self.save_config()
+        messagebox.showinfo("Success", f"Torrent cache TTL set to {ttl} hours.")
+
+    def _clear_torrent_cache(self):
+        self._cache_invalidate()
+        # Reset all cache labels
+        if hasattr(self, 'remover_cache_label'):
+            self.remover_cache_label.config(text="List updated: never", fg="gray")
+        if hasattr(self, 'repair_cache_label'):
+            self.repair_cache_label.config(text="List updated: never", fg="gray")
+        if hasattr(self, 'mover_cache_label'):
+            self.mover_cache_label.config(text="List updated: never", fg="gray")
+        messagebox.showinfo("Cache Cleared", "All cached torrent lists have been cleared.")
 
     def save_rutracker_settings(self):
         if "rutracker_auth" not in self.config:
@@ -2358,6 +2415,72 @@ class QBitAdderApp:
         except Exception as e:
             print(f"Connection error: {e}")
             return None
+
+    # --- Torrent Cache Helpers ---
+
+    def _cache_get(self, client_name):
+        """Get cached torrent list for a client. Returns (torrents, timestamp) or (None, None) if stale/missing."""
+        entry = self.torrent_cache.get(client_name)
+        if not entry:
+            return None, None
+        ttl_hours = self.config.get("torrent_cache_ttl_hours", 6)
+        age = time.time() - entry["timestamp"]
+        if age > ttl_hours * 3600:
+            return None, None  # Stale
+        return entry["torrents"], entry["timestamp"]
+
+    def _cache_put(self, client_name, torrents):
+        """Store torrent list in cache for a client."""
+        ts = time.time()
+        self.torrent_cache[client_name] = {"torrents": torrents, "timestamp": ts}
+        return ts
+
+    def _cache_format_time(self, timestamp):
+        """Format a cache timestamp to human-readable string."""
+        if not timestamp:
+            return "never"
+        dt = datetime.datetime.fromtimestamp(timestamp)
+        return dt.strftime("%H:%M:%S %d.%m.%Y")
+
+    def _cache_invalidate(self, client_name=None):
+        """Invalidate cache for a specific client, or all if None."""
+        if client_name:
+            self.torrent_cache.pop(client_name, None)
+        else:
+            self.torrent_cache.clear()
+
+    def _update_cache_labels(self, client_name, timestamp):
+        """Update all 'last updated' labels across tabs for this client."""
+        time_str = self._cache_format_time(timestamp)
+        text = f"List updated: {time_str}"
+
+        # Update labels only if the tab is showing the same client
+        if hasattr(self, 'remover_cache_label'):
+            r_idx = self.remover_client_selector.current()
+            if r_idx >= 0 and r_idx < len(self.config["clients"]):
+                if self.config["clients"][r_idx]["name"] == client_name:
+                    self.remover_cache_label.config(text=text, fg="gray")
+
+        if hasattr(self, 'repair_cache_label'):
+            r_idx = self.repair_client_selector.current()
+            if r_idx >= 0 and r_idx < len(self.config["clients"]):
+                if self.config["clients"][r_idx]["name"] == client_name:
+                    self.repair_cache_label.config(text=text, fg="gray")
+
+        if hasattr(self, 'mover_cache_label'):
+            r_idx = self.mover_client_selector.current()
+            if r_idx >= 0 and r_idx < len(self.config["clients"]):
+                if self.config["clients"][r_idx]["name"] == client_name:
+                    self.mover_cache_label.config(text=text, fg="gray")
+
+    def _show_cache_time_for_client(self, client_name, label_widget):
+        """Show the cache time on a specific label for a given client name."""
+        entry = self.torrent_cache.get(client_name)
+        if entry:
+            time_str = self._cache_format_time(entry["timestamp"])
+            label_widget.config(text=f"List updated: {time_str}", fg="gray")
+        else:
+            label_widget.config(text="List updated: never", fg="gray")
 
     def create_updater_ui(self):
         # --- Scan Controls ---
@@ -3294,12 +3417,16 @@ class QBitAdderApp:
         tk.Label(ctrl_frame, text="Client:").pack(side="left")
         self.repair_client_selector = ttk.Combobox(ctrl_frame, state="readonly", width=25)
         self.repair_client_selector.pack(side="left", padx=5)
+        self.repair_client_selector.bind("<<ComboboxSelected>>", lambda e: self._repair_on_client_changed())
 
         self.repair_scan_btn = tk.Button(ctrl_frame, text="Scan Now", command=self.repair_start_scan)
         self.repair_scan_btn.pack(side="left", padx=5)
 
         self.repair_stop_btn = tk.Button(ctrl_frame, text="Stop", command=self.repair_stop_scan, state="disabled")
         self.repair_stop_btn.pack(side="left", padx=5)
+
+        self.repair_cache_label = tk.Label(ctrl_frame, text="List updated: never", fg="gray")
+        self.repair_cache_label.pack(side="left", padx=10)
 
         # --- Progress (hidden until scan) ---
         self.repair_prog_frame = tk.Frame(self.repair_tab)
@@ -3386,6 +3513,13 @@ class QBitAdderApp:
                 idx = 0
             if names:
                 self.repair_client_selector.current(idx)
+
+    def _repair_on_client_changed(self):
+        """When client dropdown changes, show cache time."""
+        idx = self.repair_client_selector.current()
+        if idx >= 0 and idx < len(self.config["clients"]):
+            client_name = self.config["clients"][idx]["name"]
+            self._show_cache_time_for_client(client_name, self.repair_cache_label)
 
     def _repair_set_action_buttons(self, state):
         self.repair_selected_btn.config(state=state)
@@ -3501,20 +3635,31 @@ class QBitAdderApp:
             self._repair_scan_finished()
             return
 
-        # Phase 1: Fetch all torrents
-        self.repair_log("Connected. Fetching torrent list...")
-        try:
-            resp = session.get(f"{url}/api/v2/torrents/info", timeout=30)
-            if resp.status_code != 200:
-                self.repair_log(f"Failed to get torrent list: HTTP {resp.status_code}")
+        # Phase 1: Fetch all torrents (use cache if available)
+        client_name = client["name"]
+        cached, ts = self._cache_get(client_name)
+        if cached is not None:
+            all_torrents = cached
+            self.repair_log(f"Using cached torrent list ({len(all_torrents)} torrents).")
+            self.root.after(0, lambda: self._show_cache_time_for_client(client_name, self.repair_cache_label))
+        else:
+            self.repair_log("Connected. Fetching torrent list...")
+            try:
+                resp = session.get(f"{url}/api/v2/torrents/info", timeout=30)
+                if resp.status_code != 200:
+                    self.repair_log(f"Failed to get torrent list: HTTP {resp.status_code}")
+                    self._repair_scan_finished()
+                    return
+            except Exception as e:
+                self.repair_log(f"Failed to get torrent list: {e}")
                 self._repair_scan_finished()
                 return
-        except Exception as e:
-            self.repair_log(f"Failed to get torrent list: {e}")
-            self._repair_scan_finished()
-            return
 
-        all_torrents = resp.json()
+            all_torrents = resp.json()
+            # Store in cache
+            ts = self._cache_put(client_name, all_torrents)
+            self.root.after(0, lambda: self._update_cache_labels(client_name, ts))
+
         total = len(all_torrents)
         self.repair_log(f"Found {total} torrents. Resolving topic IDs...")
 
@@ -3869,12 +4014,16 @@ class QBitAdderApp:
         tk.Label(client_frame, text="Client:").pack(side="left")
         self.mover_client_selector = ttk.Combobox(client_frame, state="readonly", width=25)
         self.mover_client_selector.pack(side="left", padx=5)
+        self.mover_client_selector.bind("<<ComboboxSelected>>", lambda e: self._mover_on_client_changed())
 
-        self.mover_load_btn = tk.Button(client_frame, text="Load Torrents", command=self._mover_load_torrents)
+        self.mover_load_btn = tk.Button(client_frame, text="Load Torrents", command=lambda: self._mover_load_torrents(force=True))
         self.mover_load_btn.pack(side="left", padx=5)
 
         self.mover_load_status = tk.Label(client_frame, text="", fg="gray")
         self.mover_load_status.pack(side="left", padx=10)
+
+        self.mover_cache_label = tk.Label(client_frame, text="List updated: never", fg="gray")
+        self.mover_cache_label.pack(side="left", padx=5)
 
         # --- Section B: Category Mover ---
         cat_frame = tk.LabelFrame(parent, text="Move by Category", padx=10, pady=5)
@@ -4103,6 +4252,13 @@ class QBitAdderApp:
             if names:
                 self.mover_client_selector.current(idx)
 
+    def _mover_on_client_changed(self):
+        """When client dropdown changes, show cache time."""
+        idx = self.mover_client_selector.current()
+        if idx >= 0 and idx < len(self.config["clients"]):
+            client_name = self.config["clients"][idx]["name"]
+            self._show_cache_time_for_client(client_name, self.mover_cache_label)
+
     def _mover_browse_path(self):
         path = filedialog.askdirectory(title="Select new root path")
         if path:
@@ -4187,13 +4343,57 @@ class QBitAdderApp:
 
     # --- Load Torrents ---
 
-    def _mover_load_torrents(self):
+    def _mover_populate_from_torrents(self, torrents, source=""):
+        """Populate mover UI (categories, dropdowns) from a torrent list."""
+        self.mover_all_torrents = torrents
+
+        # Group by category
+        cats = {}
+        for t in torrents:
+            cat = t.get("category", "") or "(no category)"
+            if cat not in cats:
+                cats[cat] = []
+            cats[cat].append(t)
+        self.mover_categories = cats
+
+        # Populate category dropdown
+        cat_options = []
+        for cat_name in sorted(cats.keys()):
+            cat_torrents = cats[cat_name]
+            total_size = sum(t.get("size", 0) for t in cat_torrents)
+            cat_options.append(f"{cat_name} ({len(cat_torrents)} torrents, {format_size(total_size)})")
+
+        def _update_ui():
+            self.mover_cat_selector['values'] = cat_options
+            if cat_options:
+                self.mover_cat_selector.current(0)
+                self._mover_on_cat_selected(None)
+            src_text = f" ({source})" if source else ""
+            self.mover_load_status.config(
+                text=f"Loaded {len(torrents)} torrents in {len(cats)} categories{src_text}", fg="green")
+            self.mover_load_btn.config(state="normal")
+            self.mover_cat_move_btn.config(state="normal")
+            self.mover_preview_btn.config(state="normal")
+        self.root.after(0, _update_ui)
+
+    def _mover_load_torrents(self, force=False):
         sel = self.mover_client_selector.current()
         if sel < 0 or sel >= len(self.config["clients"]):
             self.mover_log("No client selected.")
             return
 
         self.mover_selected_client = self.config["clients"][sel]
+        client_name = self.mover_selected_client["name"]
+
+        # Check cache first (unless force refresh)
+        if not force:
+            cached, ts = self._cache_get(client_name)
+            if cached is not None:
+                self._mover_populate_from_torrents(cached, source="cached")
+                self._show_cache_time_for_client(client_name, self.mover_cache_label)
+                self.mover_log(f"Loaded {len(cached)} torrents from cache.")
+                return
+
         self.mover_load_btn.config(state="disabled")
         self.mover_load_status.config(text="Loading...", fg="blue")
 
@@ -4215,37 +4415,12 @@ class QBitAdderApp:
                     return
 
                 torrents = resp.json()
-                self.mover_all_torrents = torrents
+                # Store in cache
+                ts = self._cache_put(client_name, torrents)
+                self.root.after(0, lambda: self._update_cache_labels(client_name, ts))
 
-                # Group by category
-                cats = {}
-                for t in torrents:
-                    cat = t.get("category", "") or "(no category)"
-                    if cat not in cats:
-                        cats[cat] = []
-                    cats[cat].append(t)
-                self.mover_categories = cats
-
-                # Populate category dropdown
-                cat_options = []
-                for cat_name in sorted(cats.keys()):
-                    cat_torrents = cats[cat_name]
-                    total_size = sum(t.get("size", 0) for t in cat_torrents)
-                    cat_options.append(f"{cat_name} ({len(cat_torrents)} torrents, {format_size(total_size)})")
-
-                def _update_ui():
-                    self.mover_cat_selector['values'] = cat_options
-                    if cat_options:
-                        self.mover_cat_selector.current(0)
-                        self._mover_on_cat_selected(None)
-                    self.mover_load_status.config(
-                        text=f"Loaded {len(torrents)} torrents in {len(cats)} categories", fg="green")
-                    self.mover_load_btn.config(state="normal")
-                    self.mover_cat_move_btn.config(state="normal")
-                    self.mover_preview_btn.config(state="normal")
-                self.root.after(0, _update_ui)
-
-                self.mover_log(f"Loaded {len(torrents)} torrents in {len(cats)} categories.")
+                self._mover_populate_from_torrents(torrents)
+                self.mover_log(f"Loaded {len(torrents)} torrents from qBittorrent.")
 
             except Exception as e:
                 self.mover_log(f"Error loading: {e}")

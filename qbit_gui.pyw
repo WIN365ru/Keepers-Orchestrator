@@ -47,7 +47,7 @@ CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "
 DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_data.db")
 
 # App Version & Update Info
-APP_VERSION = "0.7.0-alpha3"
+APP_VERSION = "0.7.0-alpha4"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -499,6 +499,21 @@ class CategoryManager:
             if cached_cat:
                 self.log(f"  Using cached category: {cached_cat}")
                 return {"category": cached_cat, "full_path": cached_cat}
+        return None
+
+    def fetch_topic_data(self, topic_id):
+        """Fetch topic data from API to get info_hash and other details."""
+        url = "https://api.t-ru.org/v2/get_tor_topic_data"
+        params = {"by": "topic_id", "val": topic_id}
+        try:
+            resp = self.session.get(url, params=params, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                # API returns dict with topic_id keys: {"result": {"123": {...}}}
+                if data and "result" in data and str(topic_id) in data["result"]:
+                    return data["result"][str(topic_id)]
+        except Exception as e:
+            self.log(f"API Error for {topic_id}: {e}")
         return None
 
     def login(self, username, password):
@@ -5127,6 +5142,32 @@ class QBitAdderApp:
         # Bind key release for filtering
         self.keepers_cat_combo.bind('<KeyRelease>', self._keepers_filter_cats)
 
+        # Client Selector
+        tk.Label(top_frame, text="Client:").pack(side="left", padx=5)
+        self.keepers_client_combo = ttk.Combobox(top_frame, width=15, state="readonly")
+        self.keepers_client_combo['values'] = [c['name'] for c in self.config['clients']]
+        if self.keepers_client_combo['values']:
+             # Try to select last used
+             try:
+                 self.keepers_client_combo.current(self.config.get('last_selected_client_index', 0))
+             except:
+                 self.keepers_client_combo.current(0)
+        self.keepers_client_combo.pack(side="left")
+
+        # Category Options
+        cat_frame = tk.Frame(self.keepers_tab)
+        cat_frame.pack(fill="x", padx=5, pady=2)
+        
+        tk.Label(cat_frame, text="Save Category:").pack(side="left", padx=5)
+        self.keepers_cat_mode = tk.StringVar(value="preserve") # preserve / custom
+        
+        tk.Radiobutton(cat_frame, text="Forum Category", variable=self.keepers_cat_mode, value="preserve", command=self._keepers_toggle_cat_input).pack(side="left")
+        tk.Radiobutton(cat_frame, text="Custom:", variable=self.keepers_cat_mode, value="custom", command=self._keepers_toggle_cat_input).pack(side="left")
+        
+        self.keepers_custom_cat_entry = tk.Entry(cat_frame, width=15, state="disabled")
+        self.keepers_custom_cat_entry.pack(side="left", padx=5)
+        self.keepers_custom_cat_entry.insert(0, "Keepers")
+
         tk.Label(top_frame, text="Max Seeds:").pack(side="left", padx=5)
         self.keepers_max_seeds = tk.IntVar(value=5)
         seeds_spin = tk.Spinbox(top_frame, from_=0, to=100, textvariable=self.keepers_max_seeds, width=5)
@@ -5195,43 +5236,164 @@ class QBitAdderApp:
             self.keepers_cat_combo['values'] = filtered
 
     def keepers_log(self, msg):
-        self.keepers_log_area.config(state='normal')
-        self.keepers_log_area.insert(tk.END, f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}\n")
-        self.keepers_log_area.see(tk.END)
-        self.keepers_log_area.config(state='disabled')
+        def _log():
+            try:
+                self.keepers_log_area.config(state='normal')
+                self.keepers_log_area.insert(tk.END, f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}\n")
+                self.keepers_log_area.see(tk.END)
+                self.keepers_log_area.config(state='disabled')
+            except: pass
+        self.root.after(0, _log)
 
     def keepers_start_scan(self):
-        cat_str = self.keepers_cat_var.get()
+        cat_str = self.keepers_cat_combo.get()
         if not cat_str:
-            messagebox.showerror("Error", "Select a category")
+            messagebox.showwarning("Scan", "Please select a category.")
             return
-        
-        # Extract ID "Name (123)" -> 123
+
         try:
             cat_id = int(re.search(r'\((\d+)\)$', cat_str).group(1))
         except:
-            # Maybe user typed just ID?
-            try:
-                 cat_id = int(cat_str)
-            except:
-                messagebox.showerror("Error", "Invalid category format")
-                return
+            messagebox.showerror("Error", "Invalid Category format.")
+            return
 
-        self.keepers_scan_active = True
+        try:
+            max_seeds = self.keepers_max_seeds.get()
+        except:
+            max_seeds = 5
+            
+        # Get selected client
+        client_idx = self.keepers_client_combo.current()
+        if client_idx < 0: client_idx = 0
+        client_conf = self.config["clients"][client_idx]
+
+        # Clear previous
+        for item in self.keepers_tree.get_children():
+            self.keepers_tree.delete(item)
+
         self.keepers_stop_event.clear()
+        self.keepers_scan_active = True
         self.keepers_scan_btn.config(state="disabled")
         self.keepers_stop_btn.config(state="normal")
-        self.keepers_tree.delete(*self.keepers_tree.get_children())
-        
-        threading.Thread(target=self._keepers_scan_thread, args=(cat_id, self.keepers_max_seeds.get()), daemon=True).start()
+        self.keepers_log_area.config(state='normal')
+        self.keepers_log_area.delete(1.0, tk.END)
+        self.keepers_log_area.config(state='disabled')
+
+        t = threading.Thread(target=self._keepers_scan_thread, args=(cat_id, max_seeds, client_conf))
+        t.daemon = True
+        t.start()
 
     def keepers_stop_scan(self):
         self.keepers_stop_event.set()
         self.keepers_log("Stopping scan...")
 
-    def _keepers_scan_thread(self, cat_id, max_seeds):
-        self.keepers_log(f"Scanning category {cat_id} for max {max_seeds} seeds...")
+    def _keepers_parse_forum_page(self, html_content):
+        """Parse viewforum HTML to extract topic list with seeds/leech."""
+        topics = []
         
+        # Split by row start to avoid global regex backtracking
+        # Each row starts with <tr id="tr-{tid}"
+        chunks = html_content.split('<tr id="tr-')
+        
+        for chunk in chunks[1:]: # Skip preamble
+            # chunk starts with "12345"...
+            try:
+                # 1. Extract ID (at start)
+                m_id = re.match(r'^(\d+)', chunk)
+                if not m_id: continue
+                tid_str = m_id.group(1)
+                tid = int(tid_str)
+                
+                # Limit scan window to likely row length (e.g. 5000 chars) to prevent runaway regex
+                row_html = chunk[:5000]
+                
+                # 2. Title: <a id="tt-{tid}" ...>(.*?)</a>
+                # Using explicit ID in regex makes it safer
+                m_title = re.search(f'<a id="tt-{tid}"[^>]*>(.*?)</a>', row_html, re.DOTALL | re.IGNORECASE)
+                if m_title:
+                    title_raw = m_title.group(1)
+                    title = re.sub(r'<[^>]+>', '', title_raw).strip()
+                    title = html.unescape(title)
+                else:
+                    title = "Unknown"
+
+                # 3. Size: data-ts_text="(\d+)"
+                # Try data-ts_text first (sortable raw bytes)
+                m_size = re.search(r'data-ts_text=["\']?(\d+)["\']?', row_html)
+                if m_size:
+                    size = int(m_size.group(1))
+                else:
+                    # Fallback: try to find size in class="tor-size"
+                    # <td class="tor-size" ...><a ...>1.2 GB</a></td> or similar
+                    # This is harder to parse exact bytes from, so we default 0 if data-ts_text missing
+                    size = 0
+                
+                # 4. Seeds: <b class="seedmed">(\d+)</b> OR <td class="s">...</td>
+                # Try finding class="seedmed" or generic number in seed column
+                # The seed column usually follows the size column.
+                
+                # Check for "seedmed" specifically
+                m_seeds = re.search(r'class=["\']?seedmed["\']?[^>]*>(\d+)', row_html)
+                if m_seeds:
+                    seeds = int(m_seeds.group(1))
+                else:
+                    # Fallback: Look for <td class="s" ...>...<b>(\d+)</b>...</td>
+                    # regex for that is complex on a chunk.
+                    # Let's try just finding the next number after "tor-size" if we can't find seedmed?
+                    # No, that's risky.
+                    # Rutracker usually has <b class="seedmed">. Maybe the class is quoted differently?
+                    # or it's <span class="seedmed">?
+                    # Updated regex to be tag-agnostic: class=["']?seedmed["']?[^>]*>(\d+)
+                    seeds = 0
+                
+                # 5. Leech: class="leechmed"
+                m_leech = re.search(r'class=["\']?leechmed["\']?[^>]*>(\d+)', row_html)
+                leech = 0
+                if m_leech:
+                    leech = int(m_leech.group(1))
+                else:
+                     # Sometimes leech is just 0 without class if 0?
+                     # Or it's in <td class="l">0</td>
+                     pass
+                
+                topics.append({
+                    'id': tid,
+                    'name': title,
+                    'size_str': format_size(size),
+                    'raw_size': size,
+                    'seeds': seeds,
+                    'leech': leech
+                })
+            except Exception:
+                continue # Skip malformed row
+            
+        return topics
+
+
+    def _keepers_scan_thread(self, cat_id, max_seeds, client_conf):
+        # 0. Fetch Client Data (in thread)
+        client_data = {}
+        try:
+            self.keepers_log("Fetching client status...")
+            s = self._get_qbit_session(client_conf)
+            if s:
+                url = client_conf["url"].rstrip("/")
+                resp = s.get(f"{url}/api/v2/torrents/info", timeout=10)
+                if resp.status_code == 200:
+                    torrents = resp.json()
+                    for t in torrents:
+                        h = t.get('hash', '').lower()
+                        if h:
+                            client_data[h] = {
+                                'state': t.get('state', 'unknown'),
+                                'progress': t.get('progress', 0),
+                                'category': t.get('category', '')
+                            }
+            else:
+                 self.keepers_log("Could not connect to client. Real-time status disabled.")
+        except Exception as e:
+            self.keepers_log(f"Error fetching client torrents: {e}")
+
         page = 0
         limit_pages = 5 # Safety limit
         found_count = 0 
@@ -5266,64 +5428,65 @@ class QBitAdderApp:
                 # Reset retry flag on success
                 login_retried = False
 
-                # 1. Scrape only IDs first (most robust)
-                topic_ids = self._keepers_scrape_ids(resp.text)
-                
-                if not topic_ids:
-                    self.keepers_log("No topics found on this page. (Regex mismatch or empty)")
-                
-                else:
-                    self.keepers_log(f"  Found {len(topic_ids)} topics. Fetching details via API...")
-                    # 2. Fetch details from API
+                try:
+                    # 1. Scrape candidates from HTML (Reliable)
+                    candidates = self._keepers_parse_forum_page(resp.text)
+                    if not candidates:
+                        self.keepers_log("No topics found on this page (or parse error).")
+                        break
                     
-                    # chunking (API limit might exist, usually 50-100 is ok)
-                    chunks = [topic_ids[i:i + 50] for i in range(0, len(topic_ids), 50)]
+                    self.keepers_log(f"  Found {len(candidates)} topics via scraping.")
                     
-                    for chunk in chunks:
-                        if self.keepers_stop_event.is_set(): break
-                        
-                        api_url = "https://api.rutracker.cc/v1/get_tor_topic_data"
-                        try:
-                            # API expects comma-separated IDs
-                            val_str = ",".join(map(str, chunk))
-                            api_resp = requests.get(api_url, params={"by": "topic_id", "val": val_str}, timeout=15)
-                            
-                            if api_resp.status_code == 200:
-                                result = api_resp.json().get("result", {})
-                                
-                                for tid_str, data in result.items():
-                                    if not data: continue
-                                    
-                                    # data: {seeders: 3, topic_title: "...", size: 1234, ...}
-                                    seeds = data.get("seeders", 0)
-                                    # Leechers not in API?
-                                    # User said "seed too", implied API has it.
-                                    # We don't have leechers. Set to "?"
-                                    leech = "?" 
-                                    
-                                    if seeds <= max_seeds:
-                                        t = {
-                                            "id": tid_str,
-                                            "name": data.get("topic_title", "Unknown"),
-                                            "size_str": format_size(data.get("size", 0)),
-                                            "seeds": seeds,
-                                            "leech": leech,
-                                            "raw_size": data.get("size", 0)
-                                        }
-                                        
-                                        can_keep = "Normal"
-                                        if self.db_manager.is_torrent_kept(tid_str):
-                                            can_keep = "Kept"
-                                        
-                                        found_count += 1
-                                        self.root.after(0, self._keepers_insert_tree, t, can_keep)
-                            else:
-                                 self.keepers_log(f"  API Error: {api_resp.status_code}")
-                                 
-                        except Exception as ex:
-                             self.keepers_log(f"  API Request Error: {ex}")
-                        
-                        time.sleep(0.5)
+                    # Filter by seeds immediately
+                    filtered = [c for c in candidates if c['seeds'] <= max_seeds]
+                    self.keepers_log(f"  {len(filtered)} match criteria.")
+                    
+                    # 2. Enrich with API data (Optional - for "In Client" check)
+                    ids_to_fetch = [str(c['id']) for c in filtered]
+                    fetched_hashes = {} 
+                    
+                    if ids_to_fetch:
+                         api_url = "https://api.rutracker.cc/v1/get_tor_topic_data"
+                         params = {"by": "topic_id", "val": ",".join(ids_to_fetch)}
+                         
+                         try:
+                             api_resp = self.cat_manager.session.get(api_url, params=params, timeout=10)
+                             if api_resp.status_code == 200:
+                                 res = api_resp.json().get("result")
+                                 if res:
+                                     for tid_str, info in res.items():
+                                         if info and "info_hash" in info:
+                                             fetched_hashes[int(tid_str)] = info["info_hash"]
+                                             
+                         except Exception as e:
+                             self.keepers_log(f"  API Warning: {e}")
+
+                    # 3. Add to Tree
+                    for t in filtered:
+                         if self.keepers_stop_event.is_set(): break
+                         
+                         status = "Normal"
+                         if self.db_manager.is_torrent_kept(t['id']):
+                             status = "Kept (DB)"
+                         
+                         # Check Client
+                         tid = t['id']
+                         if tid in fetched_hashes:
+                             t_hash = fetched_hashes[tid]
+                             if t_hash:
+                                 h_lower = t_hash.lower()
+                                 if h_lower in client_data:
+                                     c_info = client_data[h_lower]
+                                     state = c_info['state']
+                                     progress = c_info['progress'] * 100
+                                     status = f"{state} ({progress:.1f}%)"
+                         
+                         self.root.after(0, self._keepers_insert_tree, t, status)
+                         found_count += 1
+                     
+                except Exception as e:
+                    self.keepers_log(f"Error scanning page {page}: {e}")
+                    break
 
                 # Find "Next" button
                 if 'class="pg">След.' not in resp.text and '&nbsp;След.&nbsp;' not in resp.text:
@@ -5348,6 +5511,12 @@ class QBitAdderApp:
         self.keepers_tree.insert("", "end", values=(
             t['id'], t['name'], t['size_str'], t['seeds'], t['leech'], status, link
         ))
+
+    def _keepers_toggle_cat_input(self):
+        if self.keepers_cat_mode.get() == "custom":
+            self.keepers_custom_cat_entry.config(state="normal")
+        else:
+            self.keepers_custom_cat_entry.config(state="disabled")
 
     def _keepers_on_double_click(self, event):
         item = self.keepers_tree.identify('item', event.x, event.y)
@@ -5409,8 +5578,11 @@ class QBitAdderApp:
         if not selected:
             return
 
-        # Get client
-        client_conf = self.config["clients"][self.config["last_selected_client_index"]]
+        # Get client from combo
+        client_idx = self.keepers_client_combo.current()
+        if client_idx < 0: client_idx = 0
+        client_conf = self.config["clients"][client_idx]
+        
         s = self._get_qbit_session(client_conf)
         if not s:
             self.keepers_log("Could not connect to qBittorrent.")
@@ -5419,17 +5591,12 @@ class QBitAdderApp:
         count = 0
         for item in selected:
             vals = self.keepers_tree.item(item, "values")
-            # vals = (id, name, size, seeds, leech, status)
             tid = vals[0]
             name = vals[1]
-            try:
-                seeds = int(vals[3])
-            except:
-                seeds = 0
-            try:
-                leech = int(vals[4])
-            except:
-                leech = 0
+            try: seeds = int(vals[3])
+            except: seeds = 0
+            try: leech = int(vals[4])
+            except: leech = 0
             
             self.keepers_log(f"Adding {tid}...")
             
@@ -5439,18 +5606,36 @@ class QBitAdderApp:
                 continue
                 
             # Send to qBit
+            save_path = f"{client_conf['base_save_path']}"
+            
+            # Determine Category
+            qbit_cat = "Keepers" # Default
+            if self.keepers_cat_mode.get() == "custom":
+                custom_cat = self.keepers_custom_cat_entry.get().strip()
+                if custom_cat: qbit_cat = custom_cat
+            else:
+                # Preserve Forum Category
+                # We need to lookup category name for this TID
+                # It might be in cache or we fetch it
+                cat_info = self.cat_manager.get_category_for_topic(tid)
+                if cat_info:
+                    qbit_cat = cat_info.get("category", "Keepers")
                 
-            # Send to qBit
-            # Construct separate category save path?
-            # User config usage:
-            save_path = f"{client_conf['base_save_path']}/Keepers"
+            # Append category to save path if configured?
+            # qBit usually handles category save paths if 'Automatic Torrent Management' is on or we set save_path manually.
+            # If we set save_path manually, we might want to append category?
+            # User didn't specify save path logic, but standard qBit behavior is:
+            # If category has a save path, use it. If not, use default.
+            # We are sending `savepath` param which OVERRIDES category path usually.
+            # Let's append category to base path for organization
+            save_path = os.path.join(save_path, qbit_cat).replace("\\", "/")
             
             start_paused = self.keepers_paused_var.get()
             
             files = {'torrents': (f'{tid}.torrent', t_content, 'application/x-bittorrent')}
             data = {
                 'savepath': save_path,
-                'category': 'Keepers',
+                'category': qbit_cat,
                 'paused': 'true' if start_paused else 'false',
                 'tags': 'Keepers'
             }
@@ -5466,9 +5651,7 @@ class QBitAdderApp:
                     t_info = parse_torrent_info(t_content) 
                     size_bytes = t_info.get('total_size', 0)
                     
-                    # Add to DB (we use empty string for hash as we can't easily calc it without bencode lib here)
-                    # kept_torrents: topic_id, info_hash, name, size, seeds, leech, date, cat_id
-                    
+                    # Add to DB
                     # Extract Category ID from combobox string "Name (123)"
                     try:
                         cat_str = self.keepers_cat_combo.get()
@@ -5478,9 +5661,8 @@ class QBitAdderApp:
 
                     self.db_manager.add_kept_torrent(tid, "", name, size_bytes, seeds, leech, cat_id)
                     
-                    # Update Treeview Status
-                    self.keepers_tree.set(item, "status", "Kept")
-                    
+                    self.keepers_tree.set(item, "status", "Added")
+                    count += 1
                 else:
                     self.keepers_log(f"  qBit Error: {resp.status_code} - {resp.text}")
 

@@ -6,3 +6,4 @@ docs.html
 /.debug
 /.tests
 /__pycache__
+/changelog

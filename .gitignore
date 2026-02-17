@@ -5,3 +5,4 @@ docs.html
 /temp_torrents
 /.debug
 /.tests
+/__pycache__

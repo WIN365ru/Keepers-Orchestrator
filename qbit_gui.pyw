@@ -664,7 +664,6 @@ class QBitAdderApp:
         self.remover_tab = tk.Frame(self.notebook)
         self.repair_tab = tk.Frame(self.notebook)
         self.mover_tab = tk.Frame(self.notebook)
-        self.statistics_tab = tk.Frame(self.notebook) # New Tab
         self.settings_tab = tk.Frame(self.notebook)
 
         self.notebook.add(self.adder_tab, text="Add Torrents")
@@ -673,7 +672,6 @@ class QBitAdderApp:
         self.notebook.add(self.remover_tab, text="Remove Torrents")
         self.notebook.add(self.repair_tab, text="Repair Categories")
         self.notebook.add(self.mover_tab, text="Move Torrents")
-        self.notebook.add(self.statistics_tab, text="Statistics") # New Tab
         self.notebook.add(self.settings_tab, text="Settings")
 
         self.create_adder_ui()
@@ -709,9 +707,7 @@ class QBitAdderApp:
         self.keepers_scan_active = False
         self.create_keepers_ui()
 
-        # Statistics tab state
-        self.create_statistics_ui()
-        self.create_repair_ui()
+
 
         # Mover tab state
         self.mover_all_torrents = []
@@ -802,17 +798,17 @@ class QBitAdderApp:
             print(message)
 
     # --- Helper Methods ---
+    # --- Helper Methods ---
     def sort_tree(self, tree, col, reverse):
         """Sort treeview contents when a column header is clicked."""
         l = [(tree.set(k, col), k) for k in tree.get_children('')]
         
-        # Try to sort as numbers if possible (e.g. Size)
-        # Size format: "1.23 GB"
-        # We might need custom sort key for size.
-        if col.lower() in ("size", "uploaded", "free space", "current load", "target load", "free", "current", "target"):
+        col_lower = col.lower()
+        
+        # Numeric size formatting
+        if col_lower in ("size", "uploaded", "free space", "current load", "target load", "free", "current", "target"):
             def size_to_bytes(s):
-                if not s: return 0
-                # s = "2.11 GB"
+                if not s or s == "?": return -1
                 parts = s.split()
                 if len(parts) != 2: return 0
                 try:
@@ -823,6 +819,14 @@ class QBitAdderApp:
                 return val * mult.get(unit, 1)
 
             l.sort(key=lambda t: size_to_bytes(t[0]), reverse=reverse)
+            
+        # Integer columns
+        elif col_lower in ("id", "seeds", "leech", "seeds_snapshot", "leechers_snapshot"):
+            def safe_int(s):
+                try: return int(s)
+                except: return -1
+            l.sort(key=lambda t: safe_int(t[0]), reverse=reverse)
+            
         else:
             try:
                 l.sort(key=lambda t: t[0].lower(), reverse=reverse)
@@ -835,6 +839,21 @@ class QBitAdderApp:
 
         # Reverse sort next time
         tree.heading(col, command=lambda: self.sort_tree(tree, col, not reverse))
+
+
+    # ... (rest of code)
+
+    # In create_keepers_ui:
+    # ...
+        cols = ("id", "name", "size", "seeds", "leech", "status")
+        self.keepers_tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
+        self.keepers_tree.heading("id", text="ID", command=lambda: self.sort_tree(self.keepers_tree, "id", False))
+        self.keepers_tree.heading("name", text="Name", command=lambda: self.sort_tree(self.keepers_tree, "name", False))
+        self.keepers_tree.heading("size", text="Size", command=lambda: self.sort_tree(self.keepers_tree, "size", False))
+        self.keepers_tree.heading("seeds", text="Seeds", command=lambda: self.sort_tree(self.keepers_tree, "seeds", False))
+        self.keepers_tree.heading("leech", text="Leech", command=lambda: self.sort_tree(self.keepers_tree, "leech", False))
+        self.keepers_tree.heading("status", text="Status", command=lambda: self.sort_tree(self.keepers_tree, "status", False))
+
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -1400,6 +1419,27 @@ class QBitAdderApp:
         self.current_client_index = -1
         self.refresh_client_list()
 
+        # 5. Statistics (Bottom Left)
+        stats_frame = tk.LabelFrame(self.settings_tab, text="Statistics")
+        stats_frame.pack(side="bottom", anchor="sw", padx=10, pady=5, fill="x")
+
+        s_grid = tk.Frame(stats_frame)
+        s_grid.pack(fill="x", padx=5, pady=2)
+
+        self.stats_label_count = tk.Label(s_grid, text="Torrents Kept: 0", font=("", 9))
+        self.stats_label_count.pack(side="left", padx=10)
+        
+        self.stats_label_size = tk.Label(s_grid, text="Total Size Saved: 0 B", font=("", 9))
+        self.stats_label_size.pack(side="left", padx=10)
+
+        self.stats_label_active = tk.Label(s_grid, text="Active Seeding Size: 0 B", font=("", 9))
+        self.stats_label_active.pack(side="left", padx=10)
+        
+        tk.Button(s_grid, text="Refresh", command=self.refresh_statistics, height=1).pack(side="right", padx=5)
+
+        # Refresh stats on load
+        self.root.after(1000, self.refresh_statistics)
+
     def check_github_updates(self, silent=True):
         """Check GitHub for new releases. silent=False for manual check feedback."""
         try:
@@ -1618,7 +1658,9 @@ class QBitAdderApp:
         except ValueError:
             self.config["category_ttl_hours"] = 24
         self.save_config()
-        self.log(f"Rutracker settings saved. TTL: {self.config['category_ttl_hours']}h")
+        # Clear session to force re-login with new credentials
+        self.cat_manager.session.cookies.clear()
+        self.log(f"Rutracker settings saved. Session cleared. TTL: {self.config['category_ttl_hours']}h")
 
     def refresh_client_list(self):
         self.client_listbox.delete(0, tk.END)
@@ -5102,12 +5144,12 @@ class QBitAdderApp:
 
         cols = ("id", "name", "size", "seeds", "leech", "status")
         self.keepers_tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
-        self.keepers_tree.heading("id", text="ID")
-        self.keepers_tree.heading("name", text="Name")
-        self.keepers_tree.heading("size", text="Size")
-        self.keepers_tree.heading("seeds", text="Seeds")
-        self.keepers_tree.heading("leech", text="Leech")
-        self.keepers_tree.heading("status", text="Status")
+        self.keepers_tree.heading("id", text="ID", command=lambda: self.sort_tree(self.keepers_tree, "id", False))
+        self.keepers_tree.heading("name", text="Name", command=lambda: self.sort_tree(self.keepers_tree, "name", False))
+        self.keepers_tree.heading("size", text="Size", command=lambda: self.sort_tree(self.keepers_tree, "size", False))
+        self.keepers_tree.heading("seeds", text="Seeds", command=lambda: self.sort_tree(self.keepers_tree, "seeds", False))
+        self.keepers_tree.heading("leech", text="Leech", command=lambda: self.sort_tree(self.keepers_tree, "leech", False))
+        self.keepers_tree.heading("status", text="Status", command=lambda: self.sort_tree(self.keepers_tree, "status", False))
 
         self.keepers_tree.column("id", width=60)
         self.keepers_tree.column("name", width=400)
@@ -5185,6 +5227,7 @@ class QBitAdderApp:
         page = 0
         limit_pages = 5 # Safety limit
         found_count = 0 
+        login_retried = False 
         
         try:
             while page < limit_pages and not self.keepers_stop_event.is_set():
@@ -5196,8 +5239,24 @@ class QBitAdderApp:
                 
                 # Check if we are on login page? 
                 if 'login_username' in resp.text:
-                     self.keepers_log("Scraping failed: redirect to login page.")
-                     break
+                     if not login_retried:
+                         self.keepers_log("Session expired. Attempting login...")
+                         user, pwd = self._get_rutracker_creds()
+                         if user and pwd:
+                             if self.cat_manager.login(user, pwd):
+                                 login_retried = True
+                                 continue
+                             else:
+                                 self.keepers_log("Login failed.")
+                         else:
+                             self.keepers_log("No Rutracker credentials configured.")
+                         break
+                     else:
+                         self.keepers_log("Scraping failed: redirect to login page (persistent).")
+                         break
+
+                # Reset retry flag on success
+                login_retried = False
 
                 # 1. Scrape only IDs first (most robust)
                 topic_ids = self._keepers_scrape_ids(resp.text)
@@ -5319,8 +5378,19 @@ class QBitAdderApp:
             
             # Download .torrent
             try:
-                t_content = self.cat_manager.session.get(f"https://rutracker.org/forum/dl.php?t={tid}").content
-                if b'bbtitle' in t_content: # Login page or error
+                dl_url = f"https://rutracker.org/forum/dl.php?t={tid}"
+                t_content = self.cat_manager.session.get(dl_url).content
+                
+                if b'login_username' in t_content or b'login.php' in t_content:
+                     self.keepers_log(f"  Session expired. Logging in...")
+                     user, pwd = self._get_rutracker_creds()
+                     if user and pwd and self.cat_manager.login(user, pwd):
+                          t_content = self.cat_manager.session.get(dl_url).content
+                     else:
+                          self.keepers_log(f"  Login failed. Skipping {tid}.")
+                          continue
+
+                if b'bbtitle' in t_content: # Login page or error remaining
                      self.keepers_log(f"  Failed to download .torrent for {tid}")
                      continue
                 
@@ -5379,24 +5449,7 @@ class QBitAdderApp:
         
         messagebox.showinfo("Done", f"Added {count} torrents to Keepers.")
 
-    # ===================================================================
-    # STATISTICS TAB (Basic)
-    # ===================================================================
 
-    def create_statistics_ui(self):
-        f = tk.Frame(self.statistics_tab)
-        f.pack(fill="both", expand=True, padx=20, pady=20)
-        
-        self.stats_label_count = tk.Label(f, text="Torrents Kept: 0", font=("Arial", 14))
-        self.stats_label_count.pack(anchor="w")
-        
-        self.stats_label_size = tk.Label(f, text="Total Size Saved: 0 B", font=("Arial", 14))
-        self.stats_label_size.pack(anchor="w")
-
-        self.stats_label_active = tk.Label(f, text="Active Seeding Size: 0 B (Calculating...)", font=("Arial", 14))
-        self.stats_label_active.pack(anchor="w")
-        
-        tk.Button(f, text="Refresh Statistics", command=self.refresh_statistics).pack(anchor="w", pady=10)
 
     def refresh_statistics(self):
         count, size = self.db_manager.get_kept_stats()

@@ -47,7 +47,7 @@ CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "
 DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_data.db")
 
 # App Version & Update Info
-APP_VERSION = "0.7.0-beta1"
+APP_VERSION = "0.7.1-beta1"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -732,6 +732,9 @@ class QBitAdderApp:
         self.mover_selected_client = None
         self.mover_stop_event = threading.Event()
         self.mover_busy = False
+        # Resume state for category mover
+        self.mover_cat_remaining = []    # Torrents still to move after stop
+        self.mover_cat_last_params = {}  # {new_root, cat_name, create_cat, keep_id, strip_id, create_id, hash_to_topic}
         self.create_mover_ui()
 
         # --- Torrent List Cache (per client) ---
@@ -4288,9 +4291,23 @@ class QBitAdderApp:
         self.mover_cat_summary = tk.Label(cat_frame, text="Select a category to see details.", fg="gray")
         self.mover_cat_summary.pack(anchor="w", pady=3)
 
-        self.mover_cat_move_btn = tk.Button(cat_frame, text="Move Category", state="disabled",
+        cat_btn_frame = tk.Frame(cat_frame)
+        cat_btn_frame.pack(anchor="w", pady=3)
+
+        self.mover_cat_move_btn = tk.Button(cat_btn_frame, text="Move Category", state="disabled",
             command=self._mover_start_category_move)
-        self.mover_cat_move_btn.pack(anchor="w", pady=3)
+        self.mover_cat_move_btn.pack(side="left")
+
+        self.mover_cat_stop_btn = tk.Button(cat_btn_frame, text="Stop", state="disabled",
+            command=self._mover_stop)
+        self.mover_cat_stop_btn.pack(side="left", padx=5)
+
+        self.mover_cat_resume_btn = tk.Button(cat_btn_frame, text="Resume", state="disabled",
+            command=self._mover_resume_category_move)
+        self.mover_cat_resume_btn.pack(side="left", padx=5)
+
+        self.mover_cat_progress_label = tk.Label(cat_btn_frame, text="", fg="gray")
+        self.mover_cat_progress_label.pack(side="left", padx=10)
 
         # --- Section C: Disk Auto-Balancer ---
         bal_frame = tk.LabelFrame(parent, text="Auto-Balance Across Disks", padx=10, pady=5)
@@ -4703,20 +4720,57 @@ class QBitAdderApp:
 
         self.mover_busy = True
         self.mover_cat_move_btn.config(state="disabled")
+        self.mover_cat_stop_btn.config(state="normal")
+        self.mover_cat_resume_btn.config(state="disabled")
+        self.mover_cat_remaining = []
         self.mover_stop_event.clear()
         self._mover_show_progress()
 
         threading.Thread(target=self._mover_category_thread,
             args=(cat_torrents, new_path, cat_name, create_cat, keep_id, strip_id, create_id), daemon=True).start()
 
-    def _mover_category_thread(self, torrents, new_root, cat_name, create_cat, keep_id, strip_id, create_id):
+    def _mover_stop(self):
+        """Stop the current mover operation."""
+        self.mover_stop_event.set()
+        self.mover_cat_stop_btn.config(state="disabled")
+
+    def _mover_resume_category_move(self):
+        """Resume a previously stopped category move from where it left off."""
+        if self.mover_busy or not self.mover_cat_remaining:
+            return
+
+        remaining = self.mover_cat_remaining
+        params = self.mover_cat_last_params
+        total_size = sum(t.get("size", 0) for t in remaining)
+
+        if not messagebox.askyesno("Resume Move",
+            f"Resume moving {len(remaining)} remaining torrents ({format_size(total_size)}) "
+            f"to: {params['new_root']}?"):
+            return
+
+        self.mover_busy = True
+        self.mover_cat_move_btn.config(state="disabled")
+        self.mover_cat_stop_btn.config(state="normal")
+        self.mover_cat_resume_btn.config(state="disabled")
+        self.mover_stop_event.clear()
+        self._mover_show_progress()
+
+        threading.Thread(target=self._mover_category_thread,
+            args=(remaining, params["new_root"], params["cat_name"],
+                  params["create_cat"], params["keep_id"], params["strip_id"],
+                  params["create_id"]),
+            kwargs={"preresolved_topics": params.get("hash_to_topic", {})},
+            daemon=True).start()
+
+    def _mover_category_thread(self, torrents, new_root, cat_name, create_cat, keep_id, strip_id, create_id,
+                                preresolved_topics=None):
         start_time = time.time()
         s = self._get_qbit_session(self.mover_selected_client)
         if not s:
             self.mover_log("Connection failed.")
             self.mover_busy = False
             self._mover_hide_progress()
-            self.root.after(0, lambda: self.mover_cat_move_btn.config(state="normal"))
+            self.root.after(0, self._mover_cat_reset_buttons)
             return
 
         url = self.mover_selected_client["url"].rstrip("/")
@@ -4724,16 +4778,83 @@ class QBitAdderApp:
         new_root = new_root.rstrip("/")
         success = 0
         fail = 0
+        stopped_at = -1  # Track where we stopped for resume
 
         opts = []
         if create_cat: opts.append("+ category folder")
-        if keep_id: opts.append("+ ID folder")
+        if keep_id: opts.append("keep ID folder")
+        if create_id: opts.append("+ create ID folder")
         if strip_id: opts.append("- strip ID folder")
         self.mover_log(f"Moving {len(torrents)} torrents of '{cat_name}' to {new_root} [{', '.join(opts)}]")
 
+        # --- Pre-resolve topic_ids when "Create ID folder" is needed ---
+        hash_to_topic = dict(preresolved_topics) if preresolved_topics else {}
+        if create_id and not preresolved_topics:
+            # First check which torrents lack an ID in their path
+            need_id_hashes = []
+            for t in torrents:
+                old_path = t.get("save_path", "").replace("\\", "/").rstrip("/")
+                _, _, old_id, _ = self._mover_parse_path_parts(old_path, base_save_path)
+                if not old_id:
+                    need_id_hashes.append(t["hash"].upper())
+
+            if need_id_hashes:
+                self.mover_log(f"Resolving topic IDs for {len(need_id_hashes)} torrents without ID folders...")
+                # Batch API: get_topic_id by hash (100 per request)
+                for batch_start in range(0, len(need_id_hashes), 100):
+                    if self.mover_stop_event.is_set():
+                        break
+                    batch = need_id_hashes[batch_start:batch_start + 100]
+                    self._mover_update_progress(batch_start + len(batch), len(need_id_hashes), "Resolving IDs")
+                    try:
+                        api_resp = requests.get(
+                            "https://api.rutracker.cc/v1/get_topic_id",
+                            params={"by": "hash", "val": ",".join(batch)},
+                            timeout=15)
+                        if api_resp.status_code == 200:
+                            result = api_resp.json().get("result", {})
+                            hash_to_topic.update(result)
+                    except Exception as e:
+                        self.mover_log(f"API error (get_topic_id): {e}")
+
+                # Fallback: read qBit properties comment for unresolved hashes
+                unresolved = [h for h in need_id_hashes if h not in hash_to_topic]
+                if unresolved and not self.mover_stop_event.is_set():
+                    self.mover_log(f"Fallback: reading qBit properties for {len(unresolved)} unresolved...")
+                    for j, h_upper in enumerate(unresolved):
+                        if self.mover_stop_event.is_set():
+                            break
+                        try:
+                            prop_resp = s.get(f"{url}/api/v2/torrents/properties",
+                                params={"hash": h_upper.lower()}, timeout=10)
+                            if prop_resp.status_code == 200:
+                                comment = prop_resp.json().get("comment", "")
+                                m = re.search(r'viewtopic\.php\?t=(\d+)', comment)
+                                if not m:
+                                    m = re.search(r'rutracker\.org/forum/.*?t=(\d+)', comment)
+                                if m:
+                                    hash_to_topic[h_upper] = m.group(1)
+                        except Exception:
+                            pass
+
+                resolved = sum(1 for h in need_id_hashes if h in hash_to_topic)
+                self.mover_log(f"Resolved {resolved}/{len(need_id_hashes)} topic IDs.")
+
+        if self.mover_stop_event.is_set():
+            self.mover_log("Stopped by user during ID resolution.")
+            # Save state for resume — all torrents still need moving
+            self._mover_save_resume_state(torrents, 0, new_root, cat_name,
+                create_cat, keep_id, strip_id, create_id, hash_to_topic)
+            self.mover_busy = False
+            self._mover_hide_progress()
+            self.root.after(0, self._mover_cat_reset_buttons)
+            return
+
+        # --- Move torrents ---
         for i, t in enumerate(torrents):
             if self.mover_stop_event.is_set():
-                self.mover_log("Stopped by user.")
+                stopped_at = i
+                self.mover_log(f"Stopped by user at {i}/{len(torrents)}.")
                 break
 
             self._mover_update_progress(i + 1, len(torrents), "Moving")
@@ -4743,9 +4864,17 @@ class QBitAdderApp:
 
             # Parse current path to extract category/ID parts
             _, old_cat, old_id, rest = self._mover_parse_path_parts(old_path, base_save_path)
+
+            # Resolve topic_id for this torrent
+            topic_id = old_id  # Use existing ID from path if available
+            if create_id and not old_id:
+                # Look up from resolved map
+                resolved_tid = hash_to_topic.get(t_hash.upper())
+                topic_id = str(resolved_tid) if resolved_tid else ""
+
             # Build new location based on options
             new_location = self._mover_build_path(new_root, cat_name, old_id, rest,
-                create_cat, keep_id, strip_id, create_id=create_id, topic_id=old_id)
+                create_cat, keep_id, strip_id, create_id=create_id, topic_id=topic_id)
 
             try:
                 resp = s.post(f"{url}/api/v2/torrents/setLocation",
@@ -4764,13 +4893,46 @@ class QBitAdderApp:
         if success > 0:
             self._cache_invalidate(self.mover_selected_client["name"])
 
+        # Save resume state if stopped mid-move
+        if stopped_at >= 0:
+            remaining = torrents[stopped_at:]
+            self._mover_save_resume_state(remaining, 0, new_root, cat_name,
+                create_cat, keep_id, strip_id, create_id, hash_to_topic)
+
         elapsed = time.time() - start_time
-        summary = f"Category move done: {success} moved, {fail} failed (Elapsed: {elapsed:.1f}s)"
+        if stopped_at >= 0:
+            summary = f"Stopped: {success} moved, {fail} failed, {len(torrents) - stopped_at} remaining (Elapsed: {elapsed:.1f}s)"
+        else:
+            summary = f"Category move done: {success} moved, {fail} failed (Elapsed: {elapsed:.1f}s)"
         self.mover_log(summary)
         self.mover_busy = False
         self._mover_hide_progress()
-        self.root.after(0, lambda: self.mover_cat_move_btn.config(state="normal"))
-        self.root.after(0, lambda: messagebox.showinfo("Move Complete", summary))
+        self.root.after(0, self._mover_cat_reset_buttons)
+        if stopped_at < 0:
+            self.root.after(0, lambda: messagebox.showinfo("Move Complete", summary))
+
+    def _mover_save_resume_state(self, remaining, offset, new_root, cat_name,
+                                  create_cat, keep_id, strip_id, create_id, hash_to_topic):
+        """Save state so the category move can be resumed later."""
+        self.mover_cat_remaining = remaining
+        self.mover_cat_last_params = {
+            "new_root": new_root, "cat_name": cat_name,
+            "create_cat": create_cat, "keep_id": keep_id,
+            "strip_id": strip_id, "create_id": create_id,
+            "hash_to_topic": hash_to_topic,
+        }
+
+    def _mover_cat_reset_buttons(self):
+        """Reset mover category buttons based on current state."""
+        self.mover_cat_move_btn.config(state="normal")
+        self.mover_cat_stop_btn.config(state="disabled")
+        if self.mover_cat_remaining:
+            self.mover_cat_resume_btn.config(state="normal")
+            self.mover_cat_progress_label.config(
+                text=f"{len(self.mover_cat_remaining)} torrents remaining", fg="orange")
+        else:
+            self.mover_cat_resume_btn.config(state="disabled")
+            self.mover_cat_progress_label.config(text="")
 
     # --- Disk Auto-Balancer ---
 
@@ -4965,6 +5127,38 @@ class QBitAdderApp:
         strip_id = bal_id_action == "strip"
         create_id = bal_id_action == "create"
 
+        # Pre-resolve topic_ids if "Create ID folder" is selected
+        bal_hash_to_topic = {}
+        if create_id:
+            need_ids = []
+            for t in sorted_torrents:
+                target_disk = assignments[t["hash"]]
+                if target_disk == t["current_disk"]:
+                    continue
+                old_disk = t["current_disk"]
+                relative = t["save_path"][len(old_disk):].strip("/")
+                rel_parts = relative.split("/") if relative else []
+                id_part = rel_parts[1] if len(rel_parts) >= 2 and rel_parts[1].isdigit() else ""
+                if not id_part:
+                    need_ids.append(t["hash"].upper())
+
+            if need_ids:
+                self.mover_log(f"Balance preview: resolving {len(need_ids)} topic IDs...")
+                for batch_start in range(0, len(need_ids), 100):
+                    batch = need_ids[batch_start:batch_start + 100]
+                    try:
+                        api_resp = requests.get(
+                            "https://api.rutracker.cc/v1/get_topic_id",
+                            params={"by": "hash", "val": ",".join(batch)},
+                            timeout=15)
+                        if api_resp.status_code == 200:
+                            result = api_resp.json().get("result", {})
+                            bal_hash_to_topic.update(result)
+                    except Exception as e:
+                        self.mover_log(f"API error (get_topic_id): {e}")
+                resolved = sum(1 for h in need_ids if h in bal_hash_to_topic)
+                self.mover_log(f"Resolved {resolved}/{len(need_ids)} topic IDs for balance preview.")
+
         # Build move plan (only torrents that need to move)
         plan = []
         for t in sorted_torrents:
@@ -4986,9 +5180,15 @@ class QBitAdderApp:
                 rest_parts = rel_parts[1:] if len(rel_parts) > 1 else []
             rest = "/".join(rest_parts)
 
+            # Resolve topic_id for Create ID folder
+            topic_id = id_part
+            if create_id and not id_part:
+                resolved_tid = bal_hash_to_topic.get(t["hash"].upper())
+                topic_id = str(resolved_tid) if resolved_tid else ""
+
             new_path = self._mover_build_path(target_disk.rstrip("/"), cat_part, id_part, rest,
                                                keep_cat, keep_id, strip_id,
-                                               create_id=create_id, topic_id=id_part)
+                                               create_id=create_id, topic_id=topic_id)
 
             plan.append({
                 "hash": t["hash"],

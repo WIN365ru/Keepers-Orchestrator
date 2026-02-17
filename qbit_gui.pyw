@@ -45,7 +45,7 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_
 CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rutracker_categories.json")
 
 # App Version & Update Info
-APP_VERSION = "0.6.3"
+APP_VERSION = "0.6.4"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1659,22 +1659,39 @@ class QBitAdderApp:
         custom_frame = tk.LabelFrame(self.adder_tab, text="Custom Options", padx=10, pady=5)
         custom_frame.pack(fill="x", padx=10, pady=5)
 
-        self.use_custom_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(custom_frame, text="Use Custom Category & Path", variable=self.use_custom_var, command=self.toggle_custom_options).pack(anchor="w")
+        # Folder Structure Options
+        fs_frame = tk.LabelFrame(custom_frame, text="Folder Structure", padx=5, pady=5)
+        fs_frame.pack(fill="x", padx=5, pady=5)
 
+        self.add_create_cat_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(fs_frame, text="Create Category Subfolder", variable=self.add_create_cat_var).pack(anchor="w")
+        
+        self.add_create_id_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(fs_frame, text="Create ID Subfolder", variable=self.add_create_id_var).pack(anchor="w")
+
+        # Custom Path/Cat/Tags
         opts_frame = tk.Frame(custom_frame)
-        opts_frame.pack(fill="x", padx=20, pady=5)
+        opts_frame.pack(fill="x", padx=5, pady=5)
 
-        tk.Label(opts_frame, text="Category:").grid(row=0, column=0, sticky="w")
+        self.use_custom_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(opts_frame, text="Override Category & Path", variable=self.use_custom_var, command=self.toggle_custom_options).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
+
+        tk.Label(opts_frame, text="Category:").grid(row=1, column=0, sticky="w")
         self.custom_cat_entry = tk.Entry(opts_frame, width=30)
-        self.custom_cat_entry.grid(row=0, column=1, padx=5, pady=2)
+        self.custom_cat_entry.grid(row=1, column=1, padx=5, pady=2)
 
-        tk.Label(opts_frame, text="Save Path:").grid(row=1, column=0, sticky="w")
+        tk.Label(opts_frame, text="Save Path:").grid(row=2, column=0, sticky="w")
         self.custom_path_entry = tk.Entry(opts_frame, width=30)
-        self.custom_path_entry.grid(row=1, column=1, padx=5, pady=2)
+        self.custom_path_entry.grid(row=2, column=1, padx=5, pady=2)
         
         self.browse_custom_path_btn = tk.Button(opts_frame, text="Browse...", command=self.browse_custom_path, width=10)
-        self.browse_custom_path_btn.grid(row=1, column=2, padx=5)
+        self.browse_custom_path_btn.grid(row=2, column=2, padx=5)
+
+        # Tags
+        tk.Label(opts_frame, text="Tags:").grid(row=3, column=0, sticky="w", pady=(5,0))
+        self.add_custom_tags_entry = tk.Entry(opts_frame, width=30)
+        self.add_custom_tags_entry.grid(row=3, column=1, padx=5, pady=(5,0))
+        tk.Label(opts_frame, text="(comma separated)", fg="gray").grid(row=3, column=2, sticky="w", pady=(5,0))
 
         self.toggle_custom_options() # Initialize state
 
@@ -1713,6 +1730,7 @@ class QBitAdderApp:
         self.custom_cat_entry.config(state=state)
         self.custom_path_entry.config(state=state)
         self.browse_custom_path_btn.config(state=state)
+        self.add_custom_tags_entry.config(state=state)
 
     def browse_custom_path(self):
         path = filedialog.askdirectory()
@@ -2005,8 +2023,11 @@ class QBitAdderApp:
         use_custom = self.use_custom_var.get()
         custom_cat = self.custom_cat_entry.get().strip()
         custom_path = self.custom_path_entry.get().strip()
+        create_cat = self.add_create_cat_var.get()
+        create_id = self.add_create_id_var.get()
+        custom_tags = self.add_custom_tags_entry.get().strip()
 
-        threading.Thread(target=self._process_thread, args=(use_custom, custom_cat, custom_path)).start()
+        threading.Thread(target=self._process_thread, args=(use_custom, custom_cat, custom_path, create_cat, create_id, custom_tags)).start()
 
     def stop_processing(self):
         if messagebox.askyesno("Stop", "Are you sure you want to stop processing?"):
@@ -2079,7 +2100,7 @@ class QBitAdderApp:
             updated_text = base_info_text.replace("Total size: calculating...", "Total size: error")
             self.root.after(0, lambda: self.file_label.config(text=updated_text))
 
-    def _process_thread(self, use_custom, custom_cat, custom_path):
+    def _process_thread(self, use_custom, custom_cat, custom_path, create_cat, create_id, custom_tags):
         # Determine targets
         selected_idx = self.client_selector.current()
         num_options = len(self.client_selector['values'])
@@ -2171,7 +2192,7 @@ class QBitAdderApp:
                     if self.stop_event.is_set(): break
                     self.log("Resuming...")
 
-                ok = self._add_torrent_content_to_client(client, torrent_content, torrent_path, category_subpath, extracted_id, use_custom, custom_cat, custom_path)
+                ok = self._add_torrent_content_to_client(client, torrent_content, torrent_path, category_subpath, extracted_id, use_custom, custom_cat, custom_path, create_cat, create_id, custom_tags)
                 if ok:
                     success_count += 1
                 else:
@@ -2275,6 +2296,7 @@ class QBitAdderApp:
     def extract_id_from_bytes(self, content, filename_for_log):
         """Extract topic ID from torrent bytes using proper bencode parsing."""
         try:
+            info = parse_torrent_info(content)
             topic_id = info.get('topic_id')
             if topic_id:
                 return topic_id
@@ -2282,7 +2304,7 @@ class QBitAdderApp:
             pass
         return None
 
-    def _add_torrent_content_to_client(self, client, content, filename_display, category_subpath, extracted_id, use_custom, custom_cat, custom_path):
+    def _add_torrent_content_to_client(self, client, content, filename_display, category_subpath, extracted_id, use_custom, custom_cat, custom_path, create_cat, create_id, custom_tags):
         name = client["name"]
         url = client["url"]
         base_path = client["base_save_path"]
@@ -2310,48 +2332,48 @@ class QBitAdderApp:
                     resp = session.post(f"{url}/api/v2/auth/login", data={"username": user, "password": pw}, timeout=10)
                     if resp.status_code != 200 or resp.text != "Ok.":
                         self.log(f"[{name}] Auth Failed!")
-                        return
+                        return False
             except Exception as e:
                 self.log(f"[{name}] Connection Error: {e}")
-                return
+                return False
 
-            # Construct Path
+            # Construct Path and Category
             save_path = ""
             final_cat = ""
 
             if use_custom:
                 # Custom Override Logic
-                if custom_path:
-                    save_path = custom_path.replace("\\", "/")
-                else:
-                    # If custom path is empty, maybe fallback to base path? 
-                    # For now, let's use client base path if custom is empty but checked
-                    save_path = base_path.replace("\\", "/")
+                # Use custom path if provided, else base
+                save_path = custom_path.replace("\\", "/") if custom_path else base_path.replace("\\", "/")
                 
-                if custom_cat:
-                    final_cat = custom_cat
-                else:
-                    # If custom cat is empty but checked, maybe no category or keep detected?
-                    # Let's keep detected if custom content is empty
-                    final_cat = category_subpath
+                # Use custom cat if provided, else detected
+                final_cat = custom_cat if custom_cat else category_subpath
                 
                 self.log(f"  -> Using Custom Path: {save_path}")
                 self.log(f"  -> Using Custom Cat: {final_cat}")
 
             else:
-                # Standard Logic
-                final_path_list = [base_path]
-                if category_subpath:
-                    final_path_list.append(category_subpath)
+                # Standard Logic with Folder Structure Options
+                # Start with base path
+                path_parts = [base_path]
                 
-                if extracted_id:
-                    final_path_list.append(extracted_id)
-                else:
-                    # Fallback to filename without extension
+                # Append category subfolder if enabled and available
+                if create_cat and category_subpath:
+                    path_parts.append(category_subpath)
+                
+                # Append ID subfolder if enabled and available
+                if create_id and extracted_id:
+                    path_parts.append(extracted_id)
+                elif create_id and not extracted_id:
+                    # Fallback if ID wanted but not found: check if filename resembles ID or just skip?
+                    # Current behavior: fallback to filename for folder? 
+                    # The original behavior was: if extracted_id, use it. Else use filename.
+                    # Let's keep logic: if create_id is true, we want a per-torrent subfolder.
+                    # If we have ID, use ID. If not, use filename (without ext).
                     fname = os.path.basename(filename_display)
-                    final_path_list.append(os.path.splitext(fname)[0])
+                    path_parts.append(os.path.splitext(fname)[0])
                     
-                save_path = os.path.join(*final_path_list).replace("\\", "/")
+                save_path = os.path.join(*path_parts).replace("\\", "/")
                 final_cat = category_subpath
 
             files = {'torrents': (os.path.basename(filename_display), content)}
@@ -2360,6 +2382,10 @@ class QBitAdderApp:
             # Set qBittorrent category
             if final_cat:
                 data['category'] = final_cat
+
+            # Set Tags
+            if custom_tags:
+                data['tags'] = custom_tags
             
             resp = session.post(f"{url}/api/v2/torrents/add", files=files, data=data, timeout=30)
             

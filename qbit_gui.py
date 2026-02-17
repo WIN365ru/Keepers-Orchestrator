@@ -9,6 +9,7 @@ import re
 import zipfile
 import time
 import io
+import datetime
 
 # Default Configuration (New Structure)
 DEFAULT_CONFIG = {
@@ -123,12 +124,30 @@ class QBitAdderApp:
         self.notebook.add(self.settings_tab, text="Settings")
 
         self.create_adder_ui()
+        
+        # Initialize Category Manager (needs log from adder_ui)
+        self.cat_manager = CategoryManager(self.log)
+        
         self.create_settings_ui()
         
         self.is_initializing = False
         
-        # Initialize Category Manager (delayed to avoid UI lag on startup if we were doing async stuff, but it's just file io)
-        self.cat_manager = CategoryManager(self.log)
+        self.status_bar = tk.Label(self.root, text="Ready", bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar.pack(side="bottom", fill="x")
+
+        # Start Category Manager (Auto-fetch if needed)
+        threading.Thread(target=self._initial_category_fetch, daemon=True).start()
+
+    def _initial_category_fetch(self):
+        # If cache is empty or never updated, try to fetch
+        if self.cat_manager.cache.get('last_updated', 0) == 0:
+            self.log("First run detected: Fetching Rutracker categories...")
+            try:
+                self.cat_manager.refresh_cache()
+                self.log("Categories fetched successfully.")
+            except Exception as e:
+                self.log(f"Failed to fetch initial categories: {e}")
+        self.root.after(0, self.update_cats_ui)
 
     def log(self, message):
         if hasattr(self, 'log_area'):
@@ -184,26 +203,30 @@ class QBitAdderApp:
 
     # --- Settings Tab UI ---
     def create_settings_ui(self):
-        # Global Auth Section
+        # 1. Global Auth Section
         global_frame = tk.LabelFrame(self.settings_tab, text="Global Authentication", padx=10, pady=10)
         global_frame.pack(fill="x", padx=10, pady=5)
 
-        self.use_global_var = tk.BooleanVar(value=self.config["global_auth"]["enabled"])
-        tk.Checkbutton(global_frame, text="Use Global Credentials for enabled clients", variable=self.use_global_var, command=self.update_settings_model).grid(row=0, column=0, columnspan=2, sticky="w")
+        self.global_auth_var = tk.BooleanVar(value=self.config["global_auth"]["enabled"])
+        tk.Checkbutton(global_frame, text="Use Global Authentication for All Clients", 
+                      variable=self.global_auth_var, command=self.toggle_global_auth).pack(anchor="w", padx=5)
 
-        tk.Label(global_frame, text="Global Username:").grid(row=1, column=0, sticky="w")
-        self.global_user_entry = tk.Entry(global_frame, width=30)
-        self.global_user_entry.insert(0, self.config["global_auth"]["username"])
-        self.global_user_entry.grid(row=1, column=1, padx=5, pady=2)
-        self.global_user_entry.bind("<FocusOut>", self.update_settings_model)
+        auth_frame = tk.Frame(global_frame)
+        auth_frame.pack(fill="x", padx=20, pady=2)
 
-        tk.Label(global_frame, text="Global Password:").grid(row=2, column=0, sticky="w")
-        self.global_pass_entry = tk.Entry(global_frame, width=30, show="*")
-        self.global_pass_entry.insert(0, self.config["global_auth"]["password"])
-        self.global_pass_entry.grid(row=2, column=1, padx=5, pady=2)
-        self.global_pass_entry.bind("<FocusOut>", self.update_settings_model)
+        tk.Label(auth_frame, text="Global User:").pack(side="left")
+        self.entry_global_user = tk.Entry(auth_frame, width=15)
+        self.entry_global_user.pack(side="left", padx=5)
+        self.entry_global_user.insert(0, self.config["global_auth"]["username"])
 
-        # Clients List Section
+        tk.Label(auth_frame, text="Global Pass:").pack(side="left")
+        self.entry_global_pass = tk.Entry(auth_frame, show="*", width=15)
+        self.entry_global_pass.pack(side="left", padx=5)
+        self.entry_global_pass.insert(0, self.config["global_auth"]["password"])
+        
+        tk.Button(global_frame, text="Save Global Settings", command=self.save_global_settings).pack(pady=5)
+
+        # 2. Clients List Section
         clients_frame = tk.LabelFrame(self.settings_tab, text="qBittorrent Clients", padx=10, pady=10)
         clients_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
@@ -219,75 +242,160 @@ class QBitAdderApp:
         tk.Button(btn_box, text="+", width=3, command=self.add_client).pack(side="left")
         tk.Button(btn_box, text="-", width=3, command=self.remove_client).pack(side="left")
 
-        # Client Details Editor
+        # 3. Client Details Editor
         details_frame = tk.Frame(clients_frame)
         details_frame.pack(side="left", fill="both", expand=True, padx=10)
 
         tk.Label(details_frame, text="Name:").grid(row=0, column=0, sticky="w")
-        self.c_name = tk.Entry(details_frame, width=30)
-        self.c_name.grid(row=0, column=1, pady=2)
-        self.c_name.bind("<FocusOut>", self.save_current_client_details)
+        self.entry_name = tk.Entry(details_frame, width=30)
+        self.entry_name.grid(row=0, column=1, pady=2)
+        self.entry_name.bind("<FocusOut>", lambda e: self.save_current_client())
 
         tk.Label(details_frame, text="URL:").grid(row=1, column=0, sticky="w")
-        self.c_url = tk.Entry(details_frame, width=30)
-        self.c_url.grid(row=1, column=1, pady=2)
-        self.c_url.bind("<FocusOut>", self.save_current_client_details)
+        self.entry_url = tk.Entry(details_frame, width=30)
+        self.entry_url.grid(row=1, column=1, pady=2)
+        self.entry_url.bind("<FocusOut>", lambda e: self.save_current_client())
 
         tk.Label(details_frame, text="Base Path:").grid(row=2, column=0, sticky="w")
-        self.c_path = tk.Entry(details_frame, width=30)
-        self.c_path.grid(row=2, column=1, pady=2)
-        self.c_path.bind("<FocusOut>", self.save_current_client_details)
-
-        self.c_use_global = tk.BooleanVar()
-        tk.Checkbutton(details_frame, text="Use Global Auth", variable=self.c_use_global, command=self.toggle_client_auth_fields).grid(row=3, column=0, columnspan=2, sticky="w")
+        self.entry_path = tk.Entry(details_frame, width=30)
+        self.entry_path.grid(row=2, column=1, pady=2)
+        self.entry_path.bind("<FocusOut>", lambda e: self.save_current_client())
 
         tk.Label(details_frame, text="Username:").grid(row=4, column=0, sticky="w")
-        self.c_user = tk.Entry(details_frame, width=30)
-        self.c_user.grid(row=4, column=1, pady=2)
-        self.c_user.bind("<FocusOut>", self.save_current_client_details)
+        self.entry_user = tk.Entry(details_frame, width=30)
+        self.entry_user.grid(row=4, column=1, pady=2)
+        self.entry_user.bind("<FocusOut>", lambda e: self.save_current_client())
 
         tk.Label(details_frame, text="Password:").grid(row=5, column=0, sticky="w")
-        self.c_pass = tk.Entry(details_frame, width=30, show="*")
-        self.c_pass.grid(row=5, column=1, pady=2)
-        self.c_pass.bind("<FocusOut>", self.save_current_client_details)
-        
+        self.entry_pass = tk.Entry(details_frame, width=30, show="*")
+        self.entry_pass.grid(row=5, column=1, pady=2)
+        self.entry_pass.bind("<FocusOut>", lambda e: self.save_current_client())
+
+        self.client_use_global_auth_var = tk.BooleanVar()
+        tk.Checkbutton(details_frame, text="Use Global Auth", variable=self.client_use_global_auth_var, command=self.on_global_auth_check_toggle).grid(row=6, column=0, columnspan=2, sticky="w")
+
+        tk.Button(details_frame, text="Save Client Details", command=self.save_current_client).grid(row=7, column=1, sticky="e", pady=10)
+
+
+        # Data Sources Section
+        data_frame = tk.LabelFrame(self.settings_tab, text="Data Sources")
+        data_frame.pack(fill="x", padx=10, pady=5)
+
+        self.refresh_cats_btn = tk.Button(data_frame, text="Refresh Rutracker Categories", command=self.refresh_categories)
+        self.refresh_cats_btn.pack(side="left", padx=5, pady=5)
+
+        self.cats_status_label = tk.Label(data_frame, text=self.get_cats_status_text())
+        self.cats_status_label.pack(side="left", padx=5)
+
         self.current_client_index = -1
         self.refresh_client_list()
+
+    def update_client_dropdown(self):
+        if hasattr(self, 'client_selector'):
+            options = [c["name"] for c in self.config["clients"]] + ["All Clients"]
+            self.client_selector['values'] = options
+
+            # Simple restore logic
+            target_idx = self.config.get("last_selected_client_index", 0)
+            if target_idx < len(options):
+                self.client_selector.current(target_idx)
+            else:
+                 self.client_selector.current(0)
+
+    def get_cats_status_text(self):
+        last_updated = self.cat_manager.cache.get('last_updated', 0)
+        count = len(self.cat_manager.cache.get('categories', {}))
+        if last_updated == 0:
+            return "Categories: Not loaded"
+        dt = datetime.datetime.fromtimestamp(last_updated).strftime('%Y-%m-%d %H:%M')
+        return f"Categories: {count} loaded (Updated: {dt})"
+
+    def refresh_categories(self):
+        self.refresh_cats_btn.config(state="disabled", text="Refreshing...")
+        threading.Thread(target=self._refresh_cats_thread).start()
+
+    def _refresh_cats_thread(self):
+        try:
+            self.cat_manager.refresh_cache()
+            self.root.after(0, lambda: messagebox.showinfo("Success", "Categories refreshed successfully!"))
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to refresh categories: {e}"))
+        finally:
+            self.root.after(0, self.update_cats_ui)
+
+    def update_cats_ui(self):
+        self.refresh_cats_btn.config(state="normal", text="Refresh Rutracker Categories")
+        self.cats_status_label.config(text=self.get_cats_status_text())
+
+    def toggle_global_auth(self):
+        enabled = self.global_auth_var.get()
+        state = "normal" if enabled else "disabled"
+        self.entry_global_user.config(state=state)
+        self.entry_global_pass.config(state=state)
+
+        # When toggling off, re-enable individual fields if strictly needed,
+        # but simpler to just save the pref.
+        # self.save_global_settings() # Auto-save or wait for button? Wait for button.
+
+    def save_global_settings(self):
+        self.config["global_auth"]["enabled"] = self.global_auth_var.get()
+        self.config["global_auth"]["username"] = self.entry_global_user.get()
+        self.config["global_auth"]["password"] = self.entry_global_pass.get()
+        self.save_config()
+        messagebox.showinfo("Saved", "Global settings saved.")
 
     def refresh_client_list(self):
         self.client_listbox.delete(0, tk.END)
         for c in self.config["clients"]:
             self.client_listbox.insert(tk.END, c["name"])
         
-        # Select first if exists
+        # Select first if exists or reset
         if self.config["clients"]:
-            self.client_listbox.select_set(0)
+            if self.current_client_index == -1:
+                self.current_client_index = 0
+            self.client_listbox.select_set(self.current_client_index)
             self.on_client_select(None)
+        else:
+            self.clear_client_details()
 
     def on_client_select(self, event):
         selection = self.client_listbox.curselection()
         if not selection:
             return
+            
+        index = selection[0]
+        self.current_client_index = index
+        client = self.config["clients"][index]
         
-        idx = selection[0]
-        self.current_client_index = idx
-        client = self.config["clients"][idx]
+        self.entry_name.delete(0, tk.END)
+        self.entry_name.insert(0, client["name"])
+        
+        self.entry_url.delete(0, tk.END)
+        self.entry_url.insert(0, client["url"])
+        
+        self.entry_user.delete(0, tk.END)
+        self.entry_user.insert(0, client.get("username", ""))
+        
+        self.entry_pass.delete(0, tk.END)
+        self.entry_pass.insert(0, client.get("password", ""))
+        
+        self.entry_path.delete(0, tk.END)
+        self.entry_path.insert(0, client["base_save_path"])
 
-        self.c_name.delete(0, tk.END); self.c_name.insert(0, client["name"])
-        self.c_url.delete(0, tk.END); self.c_url.insert(0, client["url"])
-        self.c_path.delete(0, tk.END); self.c_path.insert(0, client["base_save_path"])
-        self.c_use_global.set(client["use_global_auth"])
-        self.c_user.delete(0, tk.END); self.c_user.insert(0, client["username"])
-        self.c_pass.delete(0, tk.END); self.c_pass.insert(0, client["password"])
-        
+        self.client_use_global_auth_var.set(client.get("use_global_auth", True))
         self.toggle_client_auth_fields()
+
+    def on_global_auth_check_toggle(self):
+        self.toggle_client_auth_fields()
+        self.save_current_client()
 
     def toggle_client_auth_fields(self):
         # If Using Global Auth, disable specific fields
-        state = "disabled" if self.c_use_global.get() else "normal"
-        self.c_user.config(state=state)
-        self.c_pass.config(state=state)
-        self.save_current_client_details()
+        enabled = not self.client_use_global_auth_var.get()
+        state = "normal" if enabled else "disabled"
+        self.entry_user.config(state=state)
+        self.entry_pass.config(state=state)
+        # self.save_current_client() # Removed to prevent recursion loop
 
     def update_settings_model(self, event=None):
         if self.is_initializing: return
@@ -296,25 +404,28 @@ class QBitAdderApp:
         self.config["global_auth"]["password"] = self.global_pass_entry.get()
         self.save_config()
 
-    def save_current_client_details(self, event=None):
+    def save_current_client(self, event=None):
         if self.current_client_index < 0: return
-        if self.is_initializing: return
+        # if self.is_initializing: return # This check might be problematic if called from FocusOut during init
         
         idx = self.current_client_index
-        self.config["clients"][idx]["name"] = self.c_name.get()
-        self.config["clients"][idx]["url"] = self.c_url.get()
-        self.config["clients"][idx]["base_save_path"] = self.c_path.get()
-        self.config["clients"][idx]["use_global_auth"] = self.c_use_global.get()
-        self.config["clients"][idx]["username"] = self.c_user.get()
-        self.config["clients"][idx]["password"] = self.c_pass.get()
+        self.config["clients"][idx]["name"] = self.entry_name.get()
+        self.config["clients"][idx]["url"] = self.entry_url.get()
+        self.config["clients"][idx]["base_save_path"] = self.entry_path.get()
+        self.config["clients"][idx]["use_global_auth"] = self.client_use_global_auth_var.get()
+        self.config["clients"][idx]["username"] = self.entry_user.get()
+        self.config["clients"][idx]["password"] = self.entry_pass.get()
         
         # Refresh list name if changed
         self.client_listbox.delete(idx)
-        self.client_listbox.insert(idx, self.c_name.get())
+        self.client_listbox.insert(idx, self.entry_name.get())
         self.client_listbox.select_set(idx)
         
         self.save_config()
         self.update_client_dropdown()
+        if event is None: 
+             self.refresh_client_list()
+             messagebox.showinfo("Saved", "Client details saved.")
 
     def add_client(self):
         new_client = {
@@ -326,20 +437,36 @@ class QBitAdderApp:
             "base_save_path": "C:/Downloads/"
         }
         self.config["clients"].append(new_client)
-        self.refresh_client_list()
-        self.client_listbox.select_set(len(self.config["clients"])-1)
-        self.on_client_select(None)
+        self.current_client_index = len(self.config["clients"]) - 1
         self.save_config()
+        self.refresh_client_list()
+        # Select the new one
+        self.client_listbox.selection_clear(0, tk.END)
+        self.client_listbox.select_set(self.current_client_index)
+        self.on_client_select(None)
         self.update_client_dropdown()
 
     def remove_client(self):
-        if self.current_client_index < 0: return
-        if not messagebox.askyesno("Confirm", "Delete this client?"): return
-        
-        del self.config["clients"][self.current_client_index]
-        self.refresh_client_list()
-        self.save_config()
-        self.update_client_dropdown()
+        selection = self.client_listbox.curselection()
+        if not selection:
+            return
+            
+        if messagebox.askyesno("Confirm", "Remove selected client?"):
+            index = selection[0]
+            del self.config["clients"][index]
+            self.save_config()
+            self.current_client_index = -1
+            self.refresh_client_list()
+            self.update_client_dropdown()
+
+    def clear_client_details(self):
+        self.entry_name.delete(0, tk.END)
+        self.entry_url.delete(0, tk.END)
+        self.entry_path.delete(0, tk.END)
+        self.entry_user.delete(0, tk.END)
+        self.entry_pass.delete(0, tk.END)
+        # self.c_use_global.set(False) # This is not defined in the current context
+        # self.toggle_client_auth_fields() # This is not defined in the current context
 
 
     # --- Adder Tab UI ---
@@ -401,8 +528,19 @@ class QBitAdderApp:
         if filepath:
             self.selected_file_path = filepath
             self.selected_folder_path = None
-            self.file_label.config(text=f"File: {os.path.basename(filepath)}", fg="black")
-            self.log(f"Selected file: {filepath}")
+            
+            filename = os.path.basename(filepath)
+            
+            if filepath.lower().endswith('.zip'):
+                cat_name, cat_id, count = self._extract_zip_info(filename)
+                
+                info_text = f"ZIP: {filename}\nCategory: {cat_name} (ID: {cat_id})\nTorrents: {count}"
+                self.file_label.config(text=info_text, fg="black")
+                self.log(f"Selected ZIP: {filepath}")
+                self.log(f" -> Category: {cat_name}, Count: {count}")
+            else:
+                self.file_label.config(text=f"File: {filename}", fg="black")
+                self.log(f"Selected file: {filepath}")
 
     def select_folder(self):
         folderpath = filedialog.askdirectory()
@@ -418,6 +556,7 @@ class QBitAdderApp:
                 self.file_label.config(text=f"Folder: {folderpath} (Error reading)", fg="red")
                 self.log(f"Error reading folder: {e}")
 
+    # --- Logic ---
     # --- Logic ---
     def process_torrent(self):
         if not self.selected_file_path and not self.selected_folder_path:
@@ -454,6 +593,34 @@ class QBitAdderApp:
             self.pause_btn.config(text="Pause")
             self.log("Resuming...")
 
+    def _extract_zip_info(self, filename):
+        # Format: torrents_UID_CID_[Count].zip
+        # Regex: torrents_\d+_(\d+)_\[(\d+)\]
+        match = re.search(r'torrents_\d+_(\d+)_\[(\d+)\]', filename)
+        
+        cat_name = "Unknown"
+        cat_id = "?"
+        count = "?"
+        
+        if match:
+            cat_id = match.group(1)
+            count_str = match.group(2)
+            
+            cat_name = self.cat_manager.get_category_name(cat_id)
+            # Remove characters invalid for Windows paths
+            cat_name = re.sub(r'[<>:"/\\|?*]', '_', cat_name)
+            count = count_str
+        else:
+            # Fallback for old format or just torrents_UID_CID_ without count in brackets?
+            # Try just CID
+            match_simple = re.search(r'torrents_\d+_(\d+)_', filename)
+            if match_simple:
+                cat_id = match_simple.group(1)
+                cat_name = self.cat_manager.get_category_name(cat_id)
+                cat_name = re.sub(r'[<>:"/\\|?*]', '_', cat_name)
+        
+        return cat_name, cat_id, count
+
     def _process_thread(self):
         # Determine targets
         selected_idx = self.client_selector.current()
@@ -469,14 +636,14 @@ class QBitAdderApp:
             self.log("No clients configured!")
             self.reset_buttons()
             return
-
+            
         # Prepare workload
         # Structure: list of items to process. Item = {'type': 'file'|'zip_entry', 'path': ..., 'content': bytes, 'category_subpath': str}
         work_items = []
 
         if self.selected_file_path:
             if self.selected_file_path.lower().endswith('.zip'):
-                # Handle Single ZIP
+                # Handle Single ZIP - Updated to use helper
                 items = self._parse_zip_file(self.selected_file_path)
                 work_items.extend(items)
             else:
@@ -489,8 +656,6 @@ class QBitAdderApp:
                     full_path = os.path.join(self.selected_folder_path, f)
                     if f.lower().endswith(".torrent"):
                         work_items.append({'type': 'file', 'path': full_path, 'content': None, 'category_subpath': ''})
-                    # Optional: Handle ZIPs inside folder? User didn't explicitly ask, but good robustness.
-                    # elif f.lower().endswith(".zip"): ...
             except Exception as e:
                 self.log(f"Error reading folder: {e}")
                 self.reset_buttons()
@@ -547,16 +712,11 @@ class QBitAdderApp:
         items = []
         filename = os.path.basename(zip_path)
         
-        # Parse Filename: torrents_UID_CID_[Count].zip
-        # Regex: torrents_\d+_(\d+)_
-        match = re.search(r'torrents_\d+_(\d+)_', filename)
-        category_subpath = ""
+        # Use helper to get category info
+        cat_name, cat_id, count = self._extract_zip_info(filename)
         
-        if match:
-            cat_id = match.group(1)
-            cat_name = self.cat_manager.get_category_name(cat_id)
-            # Remove characters invalid for Windows paths
-            cat_name = re.sub(r'[<>:"/\\|?*]', '_', cat_name)
+        category_subpath = ""
+        if cat_name != "Unknown":
             category_subpath = cat_name
             self.log(f"ZIP Detected: Category ID {cat_id} -> '{cat_name}'")
         else:
@@ -564,8 +724,11 @@ class QBitAdderApp:
 
         try:
             with zipfile.ZipFile(zip_path, 'r') as z:
+                # Optional: Verify actual count vs filename count?
+                # detected_count = 0
                 for name in z.namelist():
                     if name.lower().endswith('.torrent'):
+                        # detected_count += 1
                         content = z.read(name)
                         items.append({
                             'type': 'zip_entry',

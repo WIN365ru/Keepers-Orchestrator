@@ -2238,6 +2238,7 @@ class QBitAdderApp:
         return base + "/" + "/".join(parts)
 
     def _repair_scan_thread(self):
+        scan_start = time.time()
         client = self.repair_selected_client
         url = client["url"]
         base_save_path = client["base_save_path"]
@@ -2465,7 +2466,8 @@ class QBitAdderApp:
                 fg="red" if count > 0 else "green")
         self.root.after(0, _populate)
 
-        self.repair_log(f"Scan complete. {len(mismatches)} mismatches found.")
+        elapsed = time.time() - scan_start
+        self.repair_log(f"Scan complete. {len(mismatches)} mismatches found. (Elapsed: {elapsed:.1f}s)")
         self._repair_scan_finished()
 
     # --- Repair Actions ---
@@ -2493,6 +2495,7 @@ class QBitAdderApp:
         threading.Thread(target=self._repair_action_thread, args=(hashes,), daemon=True).start()
 
     def _repair_action_thread(self, hashes):
+        repair_start = time.time()
         client = self.repair_selected_client
         url = client["url"]
 
@@ -2588,7 +2591,8 @@ class QBitAdderApp:
                 self.repair_log(f"  Error: {e}")
                 self.root.after(0, lambda h=t_hash: self.repair_tree.item(h, tags=("error",)))
 
-        summary = f"Done: {success} repaired, {fail} failed"
+        elapsed = time.time() - repair_start
+        summary = f"Done: {success} repaired, {fail} failed (Elapsed: {elapsed:.1f}s)"
         self.repair_log(summary)
         self.root.after(0, lambda: messagebox.showinfo("Repair Complete", summary))
         self.root.after(0, lambda: self._repair_set_action_buttons(

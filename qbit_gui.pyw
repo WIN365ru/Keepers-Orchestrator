@@ -14,6 +14,7 @@ import html
 import webbrowser
 import hashlib
 import shutil
+import sqlite3
 
 # Default Configuration (New Structure)
 DEFAULT_CONFIG = {
@@ -43,9 +44,10 @@ DEFAULT_CONFIG = {
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
 CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rutracker_categories.json")
+DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_data.db")
 
 # App Version & Update Info
-APP_VERSION = "0.6.4"
+APP_VERSION = "0.7.0-alpha1"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -197,6 +199,111 @@ def parse_torrent_info(file_path_or_bytes):
         return result
     except Exception as e:
         return {'name': '', 'comment': '', 'topic_id': None, 'total_size': 0, 'file_count': 0, 'created_by': '', 'creation_date': '', 'tracker': '', 'piece_size': 0, 'private': False, 'source': '', 'files': [], 'error': str(e)}
+
+
+class DatabaseManager:
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self._init_db()
+
+    def _get_conn(self):
+        return sqlite3.connect(self.db_path)
+
+    def _init_db(self):
+        try:
+            with self._get_conn() as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS kept_torrents (
+                        topic_id INTEGER PRIMARY KEY,
+                        info_hash TEXT,
+                        name TEXT,
+                        size INTEGER,
+                        seeds_snapshot INTEGER,
+                        leechers_snapshot INTEGER,
+                        added_date TIMESTAMP,
+                        category_id INTEGER
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS scan_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TIMESTAMP,
+                        category_id INTEGER,
+                        torrents_scanned INTEGER,
+                        torrents_added INTEGER,
+                        found_low_seeds INTEGER
+                    )
+                """)
+        except Exception as e:
+            print(f"DB Init Error: {e}")
+
+    def add_kept_torrent(self, topic_id, info_hash, name, size, seeds, leechers, cat_id):
+        try:
+            with self._get_conn() as conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO kept_torrents 
+                    (topic_id, info_hash, name, size, seeds_snapshot, leechers_snapshot, added_date, category_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (topic_id, info_hash, name, size, seeds, leechers, datetime.datetime.now(), cat_id))
+        except Exception as e:
+            print(f"DB Error (add_kept): {e}")
+
+    def is_torrent_kept(self, topic_id):
+        try:
+            with self._get_conn() as conn:
+                cu = conn.execute("SELECT 1 FROM kept_torrents WHERE topic_id=?", (topic_id,))
+                return cu.fetchone() is not None
+        except:
+            return False
+
+    def get_kept_stats(self):
+        try:
+            with self._get_conn() as conn:
+                # Count
+                count = conn.execute("SELECT COUNT(*) FROM kept_torrents").fetchone()[0]
+                # Total Size
+                total_size = conn.execute("SELECT SUM(size) FROM kept_torrents").fetchone()[0] or 0
+                return count, total_size
+        except:
+            return 0, 0
+    
+    def get_top_categories(self, limit=5):
+        try:
+            with self._get_conn() as conn:
+                # Group by category_id
+                rows = conn.execute(f"""
+                    SELECT category_id, COUNT(*) as cnt 
+                    FROM kept_torrents 
+                    GROUP BY category_id 
+                    ORDER BY cnt DESC 
+                    LIMIT {limit}
+                """).fetchall()
+                return rows
+        except:
+            return []
+
+    def log_scan(self, cat_id, scanned, added, low_seeds):
+        try:
+            with self._get_conn() as conn:
+                conn.execute("""
+                    INSERT INTO scan_history (timestamp, category_id, torrents_scanned, torrents_added, found_low_seeds)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (datetime.datetime.now(), cat_id, scanned, added, low_seeds))
+        except Exception as e:
+            print(f"DB Error (log_scan): {e}")
+
+    def get_recent_activity(self, limit=10):
+        try:
+            with self._get_conn() as conn:
+                rows = conn.execute(f"""
+                    SELECT timestamp, category_id, torrents_scanned, torrents_added 
+                    FROM scan_history 
+                    ORDER BY id DESC 
+                    LIMIT {limit}
+                """).fetchall()
+                return rows
+        except:
+            return []
 
 class CategoryManager:
     def __init__(self, log_func, keys_callback=None):
@@ -538,6 +645,7 @@ class QBitAdderApp:
         self.root.geometry("1000x825")
         
         self.config = self.load_config()
+        self.db_manager = DatabaseManager(DATA_DB_FILE)
         self.selected_files = [] # List of file paths
         self.selected_folder_path = None
         self.stop_event = threading.Event()
@@ -551,17 +659,21 @@ class QBitAdderApp:
         self.notebook.pack(fill="both", expand=True, padx=5, pady=5)
 
         self.adder_tab = tk.Frame(self.notebook)
+        self.keepers_tab = tk.Frame(self.notebook) # New Tab
         self.updater_tab = tk.Frame(self.notebook)
-        self.remover_tab = tk.Frame(self.notebook) # New Tab
+        self.remover_tab = tk.Frame(self.notebook)
         self.repair_tab = tk.Frame(self.notebook)
         self.mover_tab = tk.Frame(self.notebook)
+        self.statistics_tab = tk.Frame(self.notebook) # New Tab
         self.settings_tab = tk.Frame(self.notebook)
 
-        self.notebook.add(self.adder_tab, text="Add Torrents from file")
+        self.notebook.add(self.adder_tab, text="Add Torrents")
+        self.notebook.add(self.keepers_tab, text="Keepers") # New Tab
         self.notebook.add(self.updater_tab, text="Update Torrents")
-        self.notebook.add(self.remover_tab, text="Remove Torrents") # New Tab
+        self.notebook.add(self.remover_tab, text="Remove Torrents")
         self.notebook.add(self.repair_tab, text="Repair Categories")
         self.notebook.add(self.mover_tab, text="Move Torrents")
+        self.notebook.add(self.statistics_tab, text="Statistics") # New Tab
         self.notebook.add(self.settings_tab, text="Settings")
 
         self.create_adder_ui()
@@ -590,6 +702,15 @@ class QBitAdderApp:
         self.repair_scan_results = []
         self.repair_selected_client = None
         self.repair_stop_event = threading.Event()
+        self.create_repair_ui()
+
+        # Keepers tab state
+        self.keepers_stop_event = threading.Event()
+        self.keepers_scan_active = False
+        self.create_keepers_ui()
+
+        # Statistics tab state
+        self.create_statistics_ui()
         self.create_repair_ui()
 
         # Mover tab state
@@ -4933,7 +5054,356 @@ class QBitAdderApp:
         self.root.after(0, lambda: messagebox.showinfo("Balance Complete", summary))
 
 
+
+    # ===================================================================
+    # KEEPERS TAB
+    # ===================================================================
+
+    def create_keepers_ui(self):
+        # Top controls
+        top_frame = tk.Frame(self.keepers_tab)
+        top_frame.pack(fill="x", padx=5, pady=5)
+
+        tk.Label(top_frame, text="Category:").pack(side="left")
+        
+        # Category Combobox
+        self.keepers_cat_var = tk.StringVar()
+        self.keepers_cat_combo = ttk.Combobox(top_frame, textvariable=self.keepers_cat_var, width=50)
+        self.keepers_cat_combo.pack(side="left", padx=5)
+        
+        # Populate categories
+        cats = self.cat_manager.cache.get("categories", {})
+        # Sort by name, exclude sections 'c'
+        cat_list = sorted(
+            [f"{name} ({cid})" for cid, name in cats.items() if not str(cid).startswith("c")],
+            key=lambda x: x.lower()
+        )
+        self.keepers_cat_combo['values'] = cat_list
+        if cat_list:
+            self.keepers_cat_combo.current(0)
+
+        tk.Label(top_frame, text="Max Seeds:").pack(side="left", padx=5)
+        self.keepers_max_seeds = tk.IntVar(value=5)
+        seeds_spin = tk.Spinbox(top_frame, from_=0, to=100, textvariable=self.keepers_max_seeds, width=5)
+        seeds_spin.pack(side="left")
+
+        self.keepers_scan_btn = tk.Button(top_frame, text="Scan", command=self.keepers_start_scan, bg="#dddddd")
+        self.keepers_scan_btn.pack(side="left", padx=5)
+
+        self.keepers_stop_btn = tk.Button(top_frame, text="Stop", command=self.keepers_stop_scan, state="disabled")
+        self.keepers_stop_btn.pack(side="left")
+
+        # Results Treeview
+        tree_frame = tk.Frame(self.keepers_tab)
+        tree_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        cols = ("id", "name", "size", "seeds", "leech", "status")
+        self.keepers_tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
+        self.keepers_tree.heading("id", text="ID")
+        self.keepers_tree.heading("name", text="Name")
+        self.keepers_tree.heading("size", text="Size")
+        self.keepers_tree.heading("seeds", text="Seeds")
+        self.keepers_tree.heading("leech", text="Leech")
+        self.keepers_tree.heading("status", text="Status")
+
+        self.keepers_tree.column("id", width=60)
+        self.keepers_tree.column("name", width=400)
+        self.keepers_tree.column("size", width=80)
+        self.keepers_tree.column("seeds", width=50)
+        self.keepers_tree.column("leech", width=50)
+        self.keepers_tree.column("status", width=100)
+
+        top_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.keepers_tree.yview)
+        self.keepers_tree.configure(yscrollcommand=top_scroll.set)
+        
+        self.keepers_tree.pack(side="left", fill="both", expand=True)
+        top_scroll.pack(side="right", fill="y")
+
+        # Bottom Actions
+        action_frame = tk.Frame(self.keepers_tab)
+        action_frame.pack(fill="x", padx=5, pady=5)
+
+        self.keepers_paused_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(action_frame, text="Start Paused", variable=self.keepers_paused_var).pack(side="left")
+
+        self.keepers_add_btn = tk.Button(action_frame, text="Add Selected", command=self._keepers_add_selected, state="normal")
+        self.keepers_add_btn.pack(side="left", padx=10)
+
+        # Log
+        self.keepers_log_area = scrolledtext.ScrolledText(self.keepers_tab, height=6, state='disabled')
+        self.keepers_log_area.pack(fill="x", padx=5, pady=5)
+
+    def keepers_log(self, msg):
+        self.keepers_log_area.config(state='normal')
+        self.keepers_log_area.insert(tk.END, f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}\n")
+        self.keepers_log_area.see(tk.END)
+        self.keepers_log_area.config(state='disabled')
+
+    def keepers_start_scan(self):
+        cat_str = self.keepers_cat_var.get()
+        if not cat_str:
+            messagebox.showerror("Error", "Select a category")
+            return
+        
+        # Extract ID "Name (123)" -> 123
+        try:
+            cat_id = int(re.search(r'\((\d+)\)$', cat_str).group(1))
+        except:
+            messagebox.showerror("Error", "Invalid category format")
+            return
+
+        self.keepers_scan_active = True
+        self.keepers_stop_event.clear()
+        self.keepers_scan_btn.config(state="disabled")
+        self.keepers_stop_btn.config(state="normal")
+        self.keepers_tree.delete(*self.keepers_tree.get_children())
+        
+        threading.Thread(target=self._keepers_scan_thread, args=(cat_id, self.keepers_max_seeds.get()), daemon=True).start()
+
+    def keepers_stop_scan(self):
+        self.keepers_stop_event.set()
+        self.keepers_log("Stopping scan...")
+
+    def _keepers_scan_thread(self, cat_id, max_seeds):
+        self.keepers_log(f"Scanning category {cat_id} for max {max_seeds} seeds...")
+        
+        page = 0
+        limit_pages = 5 # Safety limit
+        found_count = 0 
+        
+        try:
+            while page < limit_pages and not self.keepers_stop_event.is_set():
+                url = f"https://rutracker.org/forum/viewforum.php?f={cat_id}&start={page*50}"
+                self.keepers_log(f"Fetching page {page+1}...")
+                
+                resp = self.cat_manager.session.get(url, timeout=15)
+                if resp.encoding == 'ISO-8859-1': resp.encoding = 'cp1251'
+                
+                # Parse
+                topics = self._keepers_parse_viewforum(resp.text)
+                if not topics:
+                    self.keepers_log("No topics found on this page.")
+                    break
+                
+                # Filter and Add to Tree
+                for t in topics:
+                    if t['seeds'] <= max_seeds:
+                        # Check DB
+                        can_keep = "Normal"
+                        if self.db_manager.is_torrent_kept(t['id']):
+                            can_keep = "Kept"
+                        
+                        found_count += 1
+                        self.root.after(0, self._keepers_insert_tree, t, can_keep)
+
+                # Find "Next" button to confirm if more pages exist
+                if 'class="pg">След.' not in resp.text and '&nbsp;След.&nbsp;' not in resp.text:
+                   self.keepers_log("End of forum reached.")
+                   break
+
+                page += 1
+                time.sleep(1) # Be polite
+                
+        except Exception as e:
+            self.keepers_log(f"Scan error: {e}")
+        
+        self.keepers_log(f"Scan finished. Found {found_count} candidates.")
+        self.db_manager.log_scan(cat_id, page*50, 0, found_count) # Rough stats
+        
+        self.keepers_scan_active = False
+        self.root.after(0, lambda: self.keepers_scan_btn.config(state="normal"))
+        self.root.after(0, lambda: self.keepers_stop_btn.config(state="disabled"))
+
+    def _keepers_insert_tree(self, t, status):
+        self.keepers_tree.insert("", "end", values=(
+            t['id'], t['name'], t['size_str'], t['seeds'], t['leech'], status
+        ))
+
+    def _keepers_parse_viewforum(self, html_content):
+        """Parse viewforum.php for topics."""
+        topics = []
+        # Regex for topic rows. Very fragile!
+        # <tr id="tr-123"> ... <div class="torTopic"> ... <a id="tt-123" ... >Name</a>
+        # Look for table rows with class="hl-tr" or containing topic links
+        
+        # Simple approach: find all <tr id="tr-\d+"> and parse inside
+        # Note: Rutracker structure is complex.
+        
+        # We will split by <tr id="tr-
+        parts = html_content.split('<tr id="tr-')
+        for p in parts[1:]:
+             try:
+                # Topic ID (from start of string)
+                tid_match = re.match(r'^(\d+)', p)
+                if not tid_match: continue
+                tid = int(tid_match.group(1))
+                
+                # Title
+                title_match = re.search(r'<a id="tt-\d+"[^>]+>([^<]+)</a>', p)
+                title = title_match.group(1) if title_match else "Unknown"
+                
+                # Size (class="f-name" -> next td -> <a ...>Size</a> sometimes, or just text)
+                # Actually size is in <td class="row4Small" ... use regex
+                # <a class="med tr-dl" ...> 1.2 GB </a> OR just text
+                
+                # Seeds: <b class="seedmed">123</b>
+                seed_match = re.search(r'<b class="seedmed">(\d+)</b>', p)
+                seeds = int(seed_match.group(1)) if seed_match else 0
+                
+                # Leech: <span class="leechmed">123</span>
+                leech_match = re.search(r'<span class="leechmed">(\d+)</span>', p)
+                leech = int(leech_match.group(1)) if leech_match else 0
+                
+                # Size: <div class="tor-size" data-ts_text="123456">123 KB</div> or similar
+                # Recent layout: <td class="row4Small" ... > ... <a class="small tr-dl" ...>1.36 GB</a>
+                size_match = re.search(r'class="(?:small|med) tr-dl"[^>]*>([^<]+)</a>', p)
+                size_str = size_match.group(1) if size_match else "?"
+                
+                topics.append({
+                    "id": tid, "name": title, "seeds": seeds, "leech": leech, "size_str": size_str
+                })
+             except:
+                 pass
+        return topics
+
+    def _keepers_add_selected(self):
+        selected = self.keepers_tree.selection()
+        if not selected:
+            return
+
+        # Get client
+        client_conf = self.config["clients"][self.config["last_selected_client_index"]]
+        s = self._get_qbit_session(client_conf)
+        if not s:
+            self.keepers_log("Could not connect to qBittorrent.")
+            return
+
+        count = 0
+        for item in selected:
+            vals = self.keepers_tree.item(item, "values")
+            # vals = (id, name, size, seeds, leech, status)
+            tid = vals[0]
+            name = vals[1]
+            seeds = int(vals[3])
+            leech = int(vals[4])
+            
+            self.keepers_log(f"Adding {tid}...")
+            
+            # Download .torrent
+            try:
+                t_content = self.cat_manager.session.get(f"https://rutracker.org/forum/dl.php?t={tid}").content
+                if b'bbtitle' in t_content: # Login page or error
+                     self.keepers_log(f"  Failed to download .torrent for {tid}")
+                     continue
+                
+                # Send to qBit
+                # Construct separate category save path?
+                # User config usage:
+                save_path = f"{client_conf['base_save_path']}/Keepers"
+                
+                start_paused = self.keepers_paused_var.get()
+                
+                files = {'torrents': (f'{tid}.torrent', t_content, 'application/x-bittorrent')}
+                data = {
+                    'savepath': save_path,
+                    'category': 'Keepers',
+                    'paused': 'true' if start_paused else 'false',
+                    'tags': 'Keepers'
+                }
+                
+                url = client_conf["url"].rstrip("/")
+                resp = s.post(f"{url}/api/v2/torrents/add", files=files, data=data)
+                
+                if resp.status_code == 200:
+                    self.keepers_log(f"  Added successfully.")
+                    # Add to DB
+                    # We need info_hash and size_bytes. 
+                    # parse_torrent_info gives us this.
+                    t_info = parse_torrent_info(t_content) # Reuse existing func
+                    
+                    # Need info_hash? qBit returns "Ok." 
+                    # To get hash we'd need to bdecode header. 
+                    # parse_torrent_info does not return hash currently?
+                    # Let's verify parse_torrent_info.
+                    # It calls bdecode. 
+                    # Hash calculation is missing in parse_torrent_info usually unless added.
+                    # I will add hash calculation here locally.
+                    
+                    hasher = hashlib.sha1()
+                    t_decoded, _ = bdecode(t_content)
+                    info_dict = t_decoded.get('info')
+                    # Need updates bencode function to easily extract raw info dict bytes...
+                    # Or just rely on qBit? 
+                    # We'll skip hash for now or add "waiting" logic.
+                    # Actually, let's just store what we have.
+                    
+                    self.db_manager.add_kept_torrent(
+                        tid, "HASH_PENDING", name, t_info.get('total_size', 0), seeds, leech, 0
+                    )
+                    
+                    self.keepers_tree.set(item, "status", "Added")
+                    count += 1
+                else:
+                    self.keepers_log(f"  Failed to add to client.")
+
+            except Exception as e:
+                self.keepers_log(f"  Error: {e}")
+        
+        messagebox.showinfo("Done", f"Added {count} torrents to Keepers.")
+
+    # ===================================================================
+    # STATISTICS TAB (Basic)
+    # ===================================================================
+
+    def create_statistics_ui(self):
+        f = tk.Frame(self.statistics_tab)
+        f.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        self.stats_label_count = tk.Label(f, text="Torrents Kept: 0", font=("Arial", 14))
+        self.stats_label_count.pack(anchor="w")
+        
+        self.stats_label_size = tk.Label(f, text="Total Size Saved: 0 B", font=("Arial", 14))
+        self.stats_label_size.pack(anchor="w")
+
+        self.stats_label_active = tk.Label(f, text="Active Seeding Size: 0 B (Calculating...)", font=("Arial", 14))
+        self.stats_label_active.pack(anchor="w")
+        
+        tk.Button(f, text="Refresh Statistics", command=self.refresh_statistics).pack(anchor="w", pady=10)
+
+    def refresh_statistics(self):
+        count, size = self.db_manager.get_kept_stats()
+        self.stats_label_count.config(text=f"Torrents Kept: {count}")
+        self.stats_label_size.config(text=f"Total Size Saved: {format_size(size)}")
+        
+        # Calculate Active Size
+        active_size = 0
+        try:
+            client_conf = self.config["clients"][self.config["last_selected_client_index"]]
+            s = self._get_qbit_session(client_conf)
+            
+            if s:
+                url = client_conf["url"].rstrip("/")
+                # Get all torrents in 'Keepers' category
+                resp = s.get(f"{url}/api/v2/torrents/info", params={"category": "Keepers"}, timeout=10)
+                if resp.status_code == 200:
+                    torrents = resp.json()
+                    for t in torrents:
+                        # Count size of torrents that are arguably "active" or just present under Keepers
+                        active_size += t.get('size', 0)
+                    
+                    self.stats_label_active.config(text=f"Active Seeding Size: {format_size(active_size)}")
+                else:
+                    self.stats_label_active.config(text=f"Active Seeding Size: (Client Error {resp.status_code})")
+            else:
+                self.stats_label_active.config(text="Active Seeding Size: (Not connected)")
+        except Exception as e:
+            self.stats_label_active.config(text=f"Active Seeding Size: (Error)")
+            print(f"Stats Error: {e}")
+
+
 if __name__ == "__main__":
     root = tk.Tk()
     app = QBitAdderApp(root)
     root.mainloop()
+
+

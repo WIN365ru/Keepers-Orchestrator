@@ -498,20 +498,33 @@ class QBitAdderApp:
         self.notebook.pack(fill="both", expand=True, padx=5, pady=5)
 
         self.adder_tab = tk.Frame(self.notebook)
+        self.updater_tab = tk.Frame(self.notebook)
         self.settings_tab = tk.Frame(self.notebook)
-        
+
         self.notebook.add(self.adder_tab, text="Add Torrents")
+        self.notebook.add(self.updater_tab, text="Update Torrents")
         self.notebook.add(self.settings_tab, text="Settings")
 
         self.create_adder_ui()
-        
+
         # Initialize Category Manager (needs log from adder_ui)
         self.cat_manager = CategoryManager(self.log)
-        
+
+        # Updater tab state
+        self.updater_scanning = False
+        self.updater_scan_results = []
+        self.updater_qbit_session = None
+        self.updater_selected_client = None
+        self.updater_stop_event = threading.Event()
+        self.create_updater_ui()
+
         self.create_settings_ui()
-        
+
         self.is_initializing = False
-        
+
+        # Auto-scan when switching to Update tab
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
         self.status_bar = tk.Label(self.root, text="Ready", bd=1, relief=tk.SUNKEN, anchor=tk.W)
         self.status_bar.pack(side="bottom", fill="x")
 
@@ -724,6 +737,7 @@ class QBitAdderApp:
                 self.client_selector.current(target_idx)
             else:
                  self.client_selector.current(0)
+        self.update_updater_client_dropdown()
 
     def get_cats_status_text(self):
         last_updated = self.cat_manager.cache.get('last_updated', '')
@@ -1265,6 +1279,9 @@ class QBitAdderApp:
         self.log(f"Starting job: {len(work_items)} item(s) on {len(target_clients)} client(s)...")
 
         # Processing Loop
+        job_start = time.time()
+        success_count = 0
+        fail_count = 0
         for item in work_items:
             # Extract content if needed
             torrent_content = item.get('content')
@@ -1301,14 +1318,25 @@ class QBitAdderApp:
                     if self.stop_event.is_set(): break
                     self.log("Resuming...")
 
-                self._add_torrent_content_to_client(client, torrent_content, torrent_path, category_subpath, extracted_id)
+                ok = self._add_torrent_content_to_client(client, torrent_content, torrent_path, category_subpath, extracted_id)
+                if ok:
+                    success_count += 1
+                else:
+                    fail_count += 1
 
-            if self.stop_event.is_set(): 
+            if self.stop_event.is_set():
                 self.log("Stopped by user.")
                 break
 
-        self.log("Job finished.")
-        messagebox.showinfo("Done", "Processing complete.")
+        elapsed = time.time() - job_start
+        minutes, seconds = divmod(int(elapsed), 60)
+        time_str = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+        summary = f"Done: {success_count} added"
+        if fail_count:
+            summary += f", {fail_count} failed"
+        summary += f" ({time_str})"
+        self.log(summary)
+        messagebox.showinfo("Done", summary)
         
         self.reset_buttons()
 
@@ -1416,16 +1444,586 @@ class QBitAdderApp:
             
             if resp.status_code == 200 and resp.text == "Ok.":
                 self.log(f"[{name}] Success -> {save_path}")
+                return True
             else:
                 self.log(f"[{name}] Failed: {resp.text}")
+                return False
 
         except Exception as e:
             self.log(f"[{name}] Error: {e}")
+            return False
 
     def reset_buttons(self):
         self.add_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.pause_btn.config(state="disabled", text="Pause")
+
+    # ===================================================================
+    # UPDATE TORRENTS TAB
+    # ===================================================================
+
+    def create_updater_ui(self):
+        # --- Scan Controls ---
+        ctrl_frame = tk.LabelFrame(self.updater_tab, text="Scan Controls", padx=10, pady=5)
+        ctrl_frame.pack(fill="x", padx=10, pady=5)
+
+        tk.Label(ctrl_frame, text="Client:").pack(side="left")
+        self.updater_client_selector = ttk.Combobox(ctrl_frame, state="readonly", width=25)
+        self.updater_client_selector.pack(side="left", padx=5)
+
+        self.updater_scan_btn = tk.Button(ctrl_frame, text="Scan Now", command=self.updater_start_scan)
+        self.updater_scan_btn.pack(side="left", padx=5)
+
+        self.updater_stop_btn = tk.Button(ctrl_frame, text="Stop", command=self.updater_stop_scan, state="disabled")
+        self.updater_stop_btn.pack(side="left", padx=5)
+
+        # --- Progress (hidden until scan) ---
+        self.updater_prog_frame = tk.Frame(self.updater_tab)
+        self.updater_progress = ttk.Progressbar(self.updater_prog_frame, mode='determinate')
+        self.updater_progress.pack(fill="x", padx=5, pady=(2, 0))
+        self.updater_progress_label = tk.Label(self.updater_prog_frame, text="", fg="gray")
+        self.updater_progress_label.pack(fill="x", padx=5, pady=(0, 2))
+
+        # --- Results Treeview ---
+        results_frame = tk.LabelFrame(self.updater_tab, text="Unregistered Torrents", padx=5, pady=5)
+        results_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        tree_container = tk.Frame(results_frame)
+        tree_container.pack(fill="both", expand=True)
+
+        self.updater_tree = ttk.Treeview(
+            tree_container,
+            columns=("name", "status", "topic_id"),
+            show="headings",
+            selectmode="extended"
+        )
+        self.updater_tree.heading("name", text="Torrent Name")
+        self.updater_tree.heading("status", text="Status")
+        self.updater_tree.heading("topic_id", text="Topic ID")
+        self.updater_tree.column("name", width=350, minwidth=150)
+        self.updater_tree.column("status", width=80, anchor="center")
+        self.updater_tree.column("topic_id", width=80, anchor="center")
+
+        tree_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.updater_tree.yview)
+        self.updater_tree.configure(yscrollcommand=tree_scroll.set)
+        self.updater_tree.pack(side="left", fill="both", expand=True)
+        tree_scroll.pack(side="right", fill="y")
+
+        # Tag colors
+        self.updater_tree.tag_configure("updated", foreground="dark green")
+        self.updater_tree.tag_configure("deleted", foreground="red")
+        self.updater_tree.tag_configure("unknown", foreground="gray")
+
+        self.updater_summary_label = tk.Label(results_frame, text="Switch to this tab to scan.", fg="gray")
+        self.updater_summary_label.pack(anchor="w", pady=(5, 0))
+
+        # --- Action Buttons ---
+        action_frame = tk.Frame(self.updater_tab)
+        action_frame.pack(fill="x", padx=10, pady=5)
+
+        self.updater_readd_keep_btn = tk.Button(
+            action_frame, text="Re-add (Keep Files)",
+            command=lambda: self.updater_perform_action("readd_keep"), state="disabled")
+        self.updater_readd_keep_btn.pack(side="left", padx=3, fill="x", expand=True)
+
+        self.updater_readd_redown_btn = tk.Button(
+            action_frame, text="Re-add (Re-download)",
+            command=lambda: self.updater_perform_action("readd_redownload"), state="disabled")
+        self.updater_readd_redown_btn.pack(side="left", padx=3, fill="x", expand=True)
+
+        self.updater_skip_btn = tk.Button(
+            action_frame, text="Skip / Delete Entry",
+            command=lambda: self.updater_perform_action("skip_delete"), state="disabled", fg="red")
+        self.updater_skip_btn.pack(side="left", padx=3, fill="x", expand=True)
+
+        # --- Updater Log ---
+        log_frame = tk.LabelFrame(self.updater_tab, text="Update Log", padx=1, pady=1)
+        log_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        self.updater_log_area = scrolledtext.ScrolledText(log_frame, height=6, state="disabled")
+        self.updater_log_area.pack(fill="both", expand=True)
+
+        self.update_updater_client_dropdown()
+
+    def updater_log(self, message):
+        """Log to the updater tab's own log area (thread-safe)."""
+        def _write():
+            self.updater_log_area.config(state="normal")
+            self.updater_log_area.insert(tk.END, message + "\n")
+            self.updater_log_area.see(tk.END)
+            self.updater_log_area.config(state="disabled")
+        self.root.after(0, _write)
+
+    def _on_tab_changed(self, event):
+        if self.is_initializing:
+            return
+        current_tab = self.notebook.index(self.notebook.select())
+        # Update Torrents tab is index 1
+        if current_tab == 1 and not self.updater_scanning:
+            self.updater_start_scan()
+
+    def update_updater_client_dropdown(self):
+        if hasattr(self, 'updater_client_selector'):
+            names = [c["name"] for c in self.config["clients"]]
+            self.updater_client_selector['values'] = names
+            idx = self.config.get("last_selected_client_index", 0)
+            if idx >= len(names):
+                idx = 0
+            if names:
+                self.updater_client_selector.current(idx)
+
+    def _updater_set_action_buttons(self, state):
+        self.updater_readd_keep_btn.config(state=state)
+        self.updater_readd_redown_btn.config(state=state)
+        self.updater_skip_btn.config(state=state)
+
+    def _updater_update_progress(self, current, total, phase):
+        pct = int(current / total * 100) if total > 0 else 0
+        def _update(p=pct, c=current, t=total, ph=phase):
+            self.updater_progress.configure(value=p)
+            self.updater_progress_label.config(text=f"{ph}... {c}/{t} ({p}%)")
+        self.root.after(0, _update)
+
+    def _updater_add_tree_row(self, entry):
+        status = entry.get("topic_status", "Unknown")
+        topic_id = entry.get("topic_id") or "N/A"
+        iid = entry["hash"]
+        self.updater_tree.insert("", "end", iid=iid,
+            values=(entry["name"], status, topic_id))
+        tag = {"Updated": "updated", "Deleted": "deleted"}.get(status, "unknown")
+        self.updater_tree.item(iid, tags=(tag,))
+
+    def _updater_remove_tree_row(self, t_hash):
+        try:
+            self.updater_tree.delete(t_hash)
+        except tk.TclError:
+            pass
+        self.updater_scan_results = [e for e in self.updater_scan_results if e["hash"] != t_hash]
+
+    def _updater_scan_finished(self):
+        self.updater_scanning = False
+        def _reset():
+            self.updater_scan_btn.config(state="normal")
+            self.updater_stop_btn.config(state="disabled")
+            self.updater_prog_frame.pack_forget()
+            if self.updater_scan_results:
+                self._updater_set_action_buttons("normal")
+        self.root.after(0, _reset)
+
+    def updater_stop_scan(self):
+        self.updater_stop_event.set()
+        self.updater_log("Stopping scan...")
+        self.updater_stop_btn.config(state="disabled")
+
+    def _updater_ensure_rutracker_login(self):
+        cookies = self.cat_manager.session.cookies.get_dict()
+        if 'bb_session' in cookies:
+            return True
+        user, pwd = self._get_rutracker_creds()
+        if not user or not pwd:
+            self.updater_log("No Rutracker credentials configured. Go to Settings.")
+            return False
+        result = self.cat_manager.login(user, pwd)
+        if result:
+            self.updater_log("Rutracker login successful.")
+        else:
+            self.updater_log("Rutracker login FAILED. Check credentials in Settings.")
+        return result
+
+    # --- Scan ---
+
+    def updater_start_scan(self):
+        if self.updater_scanning:
+            return
+
+        sel = self.updater_client_selector.current()
+        if sel < 0 or sel >= len(self.config["clients"]):
+            self.updater_log("No client selected.")
+            return
+
+        self.updater_scanning = True
+        self.updater_scan_results = []
+        self.updater_stop_event.clear()
+
+        # Clear treeview
+        for item in self.updater_tree.get_children():
+            self.updater_tree.delete(item)
+
+        # UI state
+        self.updater_scan_btn.config(state="disabled")
+        self.updater_stop_btn.config(state="normal")
+        self._updater_set_action_buttons("disabled")
+        self.updater_summary_label.config(text="Scanning...", fg="black")
+
+        # Show progress
+        self.updater_prog_frame.pack(fill="x", padx=10, after=self.updater_tab.winfo_children()[0])
+        self.updater_progress['value'] = 0
+        self.updater_progress_label.config(text="Connecting...")
+
+        self.updater_selected_client = self.config["clients"][sel]
+        threading.Thread(target=self._updater_scan_thread, daemon=True).start()
+
+    def _updater_scan_thread(self):
+        client = self.updater_selected_client
+        url = client["url"]
+
+        # Resolve auth
+        if client["use_global_auth"] and self.config["global_auth"]["enabled"]:
+            user = self.config["global_auth"]["username"]
+            pw = self.config["global_auth"]["password"]
+        else:
+            user = client["username"]
+            pw = client["password"]
+
+        try:
+            # Phase 1: Connect and get torrent list
+            session = requests.Session()
+            self.updater_qbit_session = session
+            self.updater_log(f"Connecting to {client['name']} ({url})...")
+
+            try:
+                resp = session.get(f"{url}/api/v2/app/version", timeout=10)
+                if resp.status_code != 200:
+                    resp = session.post(f"{url}/api/v2/auth/login",
+                        data={"username": user, "password": pw}, timeout=10)
+                    if resp.status_code != 200 or resp.text != "Ok.":
+                        self.updater_log("Authentication failed!")
+                        self._updater_scan_finished()
+                        return
+            except Exception as e:
+                self.updater_log(f"Connection error: {e}")
+                self._updater_scan_finished()
+                return
+
+            self.updater_log("Connected. Fetching torrent list...")
+            resp = session.get(f"{url}/api/v2/torrents/info", timeout=30)
+            if resp.status_code != 200:
+                self.updater_log(f"Failed to get torrent list: HTTP {resp.status_code}")
+                self._updater_scan_finished()
+                return
+
+            all_torrents = resp.json()
+            total = len(all_torrents)
+            self.updater_log(f"Found {total} torrents. Checking trackers...")
+
+            # Check trackers for each torrent
+            unregistered = []
+            for i, torrent in enumerate(all_torrents):
+                if self.updater_stop_event.is_set():
+                    break
+
+                self._updater_update_progress(i + 1, total, "Checking trackers")
+
+                t_hash = torrent["hash"]
+                try:
+                    tr_resp = session.get(f"{url}/api/v2/torrents/trackers",
+                        params={"hash": t_hash}, timeout=10)
+                    if tr_resp.status_code != 200:
+                        continue
+
+                    for tracker in tr_resp.json():
+                        msg = tracker.get("msg", "") or tracker.get("message", "")
+                        if "not registered" in msg.lower():
+                            unregistered.append({
+                                "hash": t_hash,
+                                "name": torrent.get("name", "Unknown"),
+                                "save_path": torrent.get("save_path", torrent.get("content_path", "")),
+                                "category": torrent.get("category", ""),
+                            })
+                            break
+                except Exception:
+                    pass
+
+            if self.updater_stop_event.is_set():
+                self.updater_log("Scan stopped by user.")
+                self._updater_scan_finished()
+                return
+
+            self.updater_log(f"Found {len(unregistered)} unregistered torrents.")
+            if not unregistered:
+                self.root.after(0, lambda: self.updater_summary_label.config(
+                    text=f"All {total} torrents OK. No unregistered found.", fg="green"))
+                self._updater_scan_finished()
+                return
+
+            # Phase 2: Batch-resolve topic IDs via Rutracker API
+            self.updater_log("Resolving topic IDs via Rutracker API...")
+            self._updater_update_progress(0, 1, "Resolving topic IDs")
+
+            hashes_upper = [e["hash"].upper() for e in unregistered]
+            hash_to_topic = {}
+            # Batch in groups of 100
+            for batch_start in range(0, len(hashes_upper), 100):
+                batch = hashes_upper[batch_start:batch_start + 100]
+                try:
+                    api_resp = requests.get(
+                        "https://api.rutracker.cc/v1/get_topic_id",
+                        params={"by": "hash", "val": ",".join(batch)},
+                        timeout=15)
+                    if api_resp.status_code == 200:
+                        result = api_resp.json().get("result", {})
+                        hash_to_topic.update(result)
+                except Exception as e:
+                    self.updater_log(f"API error (get_topic_id): {e}")
+
+            # Map back to entries
+            for entry in unregistered:
+                h = entry["hash"].upper()
+                tid = hash_to_topic.get(h)
+                entry["topic_id"] = str(tid) if tid else None
+
+            # Fallback: get topic_id from qBit properties comment for entries without topic_id
+            no_topic = [e for e in unregistered if not e.get("topic_id")]
+            if no_topic:
+                self.updater_log(f"Falling back to qBit properties for {len(no_topic)} torrents...")
+                for entry in no_topic:
+                    try:
+                        prop_resp = session.get(f"{url}/api/v2/torrents/properties",
+                            params={"hash": entry["hash"]}, timeout=10)
+                        if prop_resp.status_code == 200:
+                            comment = prop_resp.json().get("comment", "")
+                            m = re.search(r'viewtopic\.php\?t=(\d+)', comment)
+                            if not m:
+                                m = re.search(r'rutracker\.org/forum/.*?t=(\d+)', comment)
+                            if m:
+                                entry["topic_id"] = m.group(1)
+                    except Exception:
+                        pass
+
+            # Phase 3: Batch-check topic status
+            topic_ids = list(set(str(e["topic_id"]) for e in unregistered if e.get("topic_id")))
+            self.updater_log(f"Checking status for {len(topic_ids)} topics via Rutracker API...")
+            self._updater_update_progress(0, 1, "Checking topic status")
+
+            topic_data = {}
+            for batch_start in range(0, len(topic_ids), 100):
+                batch = topic_ids[batch_start:batch_start + 100]
+                try:
+                    api_resp = requests.get(
+                        "https://api.rutracker.cc/v1/get_tor_topic_data",
+                        params={"by": "topic_id", "val": ",".join(batch)},
+                        timeout=15)
+                    if api_resp.status_code == 200:
+                        result = api_resp.json().get("result", {})
+                        topic_data.update(result)
+                except Exception as e:
+                    self.updater_log(f"API error (get_tor_topic_data): {e}")
+
+            # Determine status for each entry
+            updated_count = 0
+            deleted_count = 0
+            unknown_count = 0
+
+            for entry in unregistered:
+                tid = entry.get("topic_id")
+                if not tid:
+                    entry["topic_status"] = "No Topic ID"
+                    unknown_count += 1
+                elif str(tid) in topic_data:
+                    data = topic_data[str(tid)]
+                    current_hash = data.get("info_hash", "").upper()
+                    qbit_hash = entry["hash"].upper()
+                    if current_hash != qbit_hash:
+                        entry["topic_status"] = "Updated"
+                        entry["new_hash"] = current_hash
+                        updated_count += 1
+                    else:
+                        entry["topic_status"] = "Unknown"
+                        unknown_count += 1
+                else:
+                    entry["topic_status"] = "Deleted"
+                    deleted_count += 1
+
+            # Phase 4: Populate treeview
+            self.updater_scan_results = unregistered
+            for entry in unregistered:
+                self.root.after(0, lambda e=entry: self._updater_add_tree_row(e))
+
+            summary = (f"Found {len(unregistered)} unregistered: "
+                       f"{updated_count} updated, {deleted_count} deleted, "
+                       f"{unknown_count} unknown")
+            self.root.after(0, lambda s=summary: self.updater_summary_label.config(text=s, fg="black"))
+            self.updater_log(summary)
+
+        except Exception as e:
+            self.updater_log(f"Scan error: {e}")
+        finally:
+            self._updater_scan_finished()
+
+    # --- Actions ---
+
+    def updater_perform_action(self, action_type):
+        selected = self.updater_tree.selection()
+        if not selected:
+            messagebox.showwarning("No Selection", "Select one or more torrents from the list.")
+            return
+
+        selected_entries = []
+        for iid in selected:
+            for entry in self.updater_scan_results:
+                if entry["hash"] == iid:
+                    selected_entries.append(entry)
+                    break
+
+        count = len(selected_entries)
+
+        if action_type == "readd_keep":
+            msg = (f"Re-add {count} torrent(s) from Rutracker?\n\n"
+                   "Old entries will be removed.\n"
+                   "Downloaded files will be KEPT and rechecked.")
+        elif action_type == "readd_redownload":
+            msg = (f"Re-add {count} torrent(s) from Rutracker?\n\n"
+                   "Old entries AND files will be DELETED.\n"
+                   "Torrents will re-download from scratch.")
+        elif action_type == "skip_delete":
+            msg = (f"Delete {count} torrent entry/entries from qBittorrent?\n\n"
+                   "Downloaded files will be KEPT on disk.")
+        else:
+            return
+
+        if not messagebox.askyesno("Confirm Action", msg):
+            return
+
+        self._updater_set_action_buttons("disabled")
+        threading.Thread(target=self._updater_action_thread,
+            args=(action_type, selected_entries), daemon=True).start()
+
+    def _updater_action_thread(self, action_type, entries):
+        client = self.updater_selected_client
+        url = client["url"]
+        session = self.updater_qbit_session
+
+        # Re-auth if needed
+        if client["use_global_auth"] and self.config["global_auth"]["enabled"]:
+            user = self.config["global_auth"]["username"]
+            pw = self.config["global_auth"]["password"]
+        else:
+            user = client["username"]
+            pw = client["password"]
+
+        try:
+            resp = session.get(f"{url}/api/v2/app/version", timeout=10)
+            if resp.status_code != 200:
+                session.post(f"{url}/api/v2/auth/login",
+                    data={"username": user, "password": pw}, timeout=10)
+        except Exception:
+            pass
+
+        success = 0
+        fail = 0
+
+        for entry in entries:
+            t_hash = entry["hash"]
+            t_name = entry["name"]
+            topic_id = entry.get("topic_id")
+            save_path = entry.get("save_path", "")
+            category = entry.get("category", "")
+
+            try:
+                if action_type == "skip_delete":
+                    self.updater_log(f"Deleting entry: {t_name[:60]}")
+                    resp = session.post(f"{url}/api/v2/torrents/delete",
+                        data={"hashes": t_hash, "deleteFiles": "false"}, timeout=15)
+                    if resp.status_code == 200:
+                        success += 1
+                        self.root.after(0, lambda h=t_hash: self._updater_remove_tree_row(h))
+                    else:
+                        fail += 1
+                        self.updater_log(f"  Delete failed: HTTP {resp.status_code}")
+
+                elif action_type in ("readd_keep", "readd_redownload"):
+                    if not topic_id:
+                        self.updater_log(f"Skipping {t_name[:60]}: no topic ID")
+                        fail += 1
+                        continue
+
+                    # Download new .torrent from Rutracker
+                    self.updater_log(f"Downloading .torrent for topic {topic_id}...")
+                    if not self._updater_ensure_rutracker_login():
+                        fail += 1
+                        continue
+
+                    dl_resp = self.cat_manager.session.get(
+                        f"https://rutracker.org/forum/dl.php?t={topic_id}", timeout=30)
+
+                    if dl_resp.status_code != 200 or len(dl_resp.content) < 100:
+                        self.updater_log(f"  Download failed: HTTP {dl_resp.status_code}")
+                        fail += 1
+                        continue
+
+                    torrent_content = dl_resp.content
+                    if not torrent_content.startswith(b'd'):
+                        self.updater_log(f"  Downloaded content is not a valid torrent")
+                        fail += 1
+                        continue
+
+                    # Delete old torrent
+                    delete_files = "true" if action_type == "readd_redownload" else "false"
+                    self.updater_log(f"Removing old entry: {t_name[:60]} (delete files={delete_files})")
+                    session.post(f"{url}/api/v2/torrents/delete",
+                        data={"hashes": t_hash, "deleteFiles": delete_files}, timeout=15)
+
+                    time.sleep(1)
+
+                    # Add new torrent
+                    self.updater_log(f"Adding new torrent for topic {topic_id}...")
+                    files = {'torrents': (f'{topic_id}.torrent', torrent_content)}
+                    add_data = {
+                        'savepath': save_path,
+                        'root_folder': 'true',
+                    }
+                    if action_type == "readd_keep":
+                        add_data['paused'] = 'true'
+                    else:
+                        add_data['paused'] = 'false'
+                    if category:
+                        add_data['category'] = category
+
+                    resp = session.post(f"{url}/api/v2/torrents/add",
+                        files=files, data=add_data, timeout=30)
+
+                    if resp.status_code == 200 and resp.text == "Ok.":
+                        self.updater_log(f"  Added successfully -> {save_path}")
+
+                        # For keep-files: find new torrent and trigger recheck
+                        if action_type == "readd_keep":
+                            time.sleep(2)
+                            try:
+                                # Get new hash from the added torrent content
+                                new_info = parse_torrent_info(torrent_content)
+                                new_name = new_info.get("name", "")
+                                # Find it in qBit by name
+                                list_resp = session.get(f"{url}/api/v2/torrents/info", timeout=15)
+                                if list_resp.status_code == 200:
+                                    for t in list_resp.json():
+                                        if t.get("name") == new_name:
+                                            new_hash = t["hash"]
+                                            session.post(f"{url}/api/v2/torrents/recheck",
+                                                data={"hashes": new_hash}, timeout=15)
+                                            self.updater_log(f"  Recheck triggered.")
+                                            # Resume after recheck starts
+                                            time.sleep(1)
+                                            session.post(f"{url}/api/v2/torrents/resume",
+                                                data={"hashes": new_hash}, timeout=15)
+                                            break
+                            except Exception as e:
+                                self.updater_log(f"  Recheck/resume skipped: {e}")
+
+                        success += 1
+                        self.root.after(0, lambda h=t_hash: self._updater_remove_tree_row(h))
+                    else:
+                        fail += 1
+                        self.updater_log(f"  Add failed: {resp.text}")
+
+            except Exception as e:
+                fail += 1
+                self.updater_log(f"Error processing {t_name[:60]}: {e}")
+
+        summary = f"Done: {success} succeeded, {fail} failed"
+        self.updater_log(summary)
+        self.root.after(0, lambda: messagebox.showinfo("Done", summary))
+        self.root.after(0, lambda: self._updater_set_action_buttons(
+            "normal" if self.updater_scan_results else "disabled"))
 
 if __name__ == "__main__":
     root = tk.Tk()

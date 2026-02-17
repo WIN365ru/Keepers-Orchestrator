@@ -5066,7 +5066,7 @@ class QBitAdderApp:
 
         tk.Label(top_frame, text="Category:").pack(side="left")
         
-        # Category Combobox
+        # Category Combobox with Search
         self.keepers_cat_var = tk.StringVar()
         self.keepers_cat_combo = ttk.Combobox(top_frame, textvariable=self.keepers_cat_var, width=50)
         self.keepers_cat_combo.pack(side="left", padx=5)
@@ -5074,13 +5074,16 @@ class QBitAdderApp:
         # Populate categories
         cats = self.cat_manager.cache.get("categories", {})
         # Sort by name, exclude sections 'c'
-        cat_list = sorted(
+        self.keepers_all_cats = sorted(
             [f"{name} ({cid})" for cid, name in cats.items() if not str(cid).startswith("c")],
             key=lambda x: x.lower()
         )
-        self.keepers_cat_combo['values'] = cat_list
-        if cat_list:
+        self.keepers_cat_combo['values'] = self.keepers_all_cats
+        if self.keepers_all_cats:
             self.keepers_cat_combo.current(0)
+            
+        # Bind key release for filtering
+        self.keepers_cat_combo.bind('<KeyRelease>', self._keepers_filter_cats)
 
         tk.Label(top_frame, text="Max Seeds:").pack(side="left", padx=5)
         self.keepers_max_seeds = tk.IntVar(value=5)
@@ -5133,6 +5136,14 @@ class QBitAdderApp:
         self.keepers_log_area = scrolledtext.ScrolledText(self.keepers_tab, height=6, state='disabled')
         self.keepers_log_area.pack(fill="x", padx=5, pady=5)
 
+    def _keepers_filter_cats(self, event):
+        typed = self.keepers_cat_var.get().lower()
+        if not typed:
+            self.keepers_cat_combo['values'] = self.keepers_all_cats
+        else:
+            filtered = [c for c in self.keepers_all_cats if typed in c.lower()]
+            self.keepers_cat_combo['values'] = filtered
+
     def keepers_log(self, msg):
         self.keepers_log_area.config(state='normal')
         self.keepers_log_area.insert(tk.END, f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}\n")
@@ -5149,8 +5160,12 @@ class QBitAdderApp:
         try:
             cat_id = int(re.search(r'\((\d+)\)$', cat_str).group(1))
         except:
-            messagebox.showerror("Error", "Invalid category format")
-            return
+            # Maybe user typed just ID?
+            try:
+                 cat_id = int(cat_str)
+            except:
+                messagebox.showerror("Error", "Invalid category format")
+                return
 
         self.keepers_scan_active = True
         self.keepers_stop_event.clear()
@@ -5179,24 +5194,71 @@ class QBitAdderApp:
                 resp = self.cat_manager.session.get(url, timeout=15)
                 if resp.encoding == 'ISO-8859-1': resp.encoding = 'cp1251'
                 
-                # Parse
-                topics = self._keepers_parse_viewforum(resp.text)
-                if not topics:
-                    self.keepers_log("No topics found on this page.")
-                    break
-                
-                # Filter and Add to Tree
-                for t in topics:
-                    if t['seeds'] <= max_seeds:
-                        # Check DB
-                        can_keep = "Normal"
-                        if self.db_manager.is_torrent_kept(t['id']):
-                            can_keep = "Kept"
-                        
-                        found_count += 1
-                        self.root.after(0, self._keepers_insert_tree, t, can_keep)
+                # Check if we are on login page? 
+                if 'login_username' in resp.text:
+                     self.keepers_log("Scraping failed: redirect to login page.")
+                     break
 
-                # Find "Next" button to confirm if more pages exist
+                # 1. Scrape only IDs first (most robust)
+                topic_ids = self._keepers_scrape_ids(resp.text)
+                
+                if not topic_ids:
+                    self.keepers_log("No topics found on this page. (Regex mismatch or empty)")
+                
+                else:
+                    self.keepers_log(f"  Found {len(topic_ids)} topics. Fetching details via API...")
+                    # 2. Fetch details from API
+                    
+                    # chunking (API limit might exist, usually 50-100 is ok)
+                    chunks = [topic_ids[i:i + 50] for i in range(0, len(topic_ids), 50)]
+                    
+                    for chunk in chunks:
+                        if self.keepers_stop_event.is_set(): break
+                        
+                        api_url = "https://api.rutracker.cc/v1/get_tor_topic_data"
+                        try:
+                            # API expects comma-separated IDs
+                            val_str = ",".join(map(str, chunk))
+                            api_resp = requests.get(api_url, params={"by": "topic_id", "val": val_str}, timeout=15)
+                            
+                            if api_resp.status_code == 200:
+                                result = api_resp.json().get("result", {})
+                                
+                                for tid_str, data in result.items():
+                                    if not data: continue
+                                    
+                                    # data: {seeders: 3, topic_title: "...", size: 1234, ...}
+                                    seeds = data.get("seeders", 0)
+                                    # Leechers not in API?
+                                    # User said "seed too", implied API has it.
+                                    # We don't have leechers. Set to "?"
+                                    leech = "?" 
+                                    
+                                    if seeds <= max_seeds:
+                                        t = {
+                                            "id": tid_str,
+                                            "name": data.get("topic_title", "Unknown"),
+                                            "size_str": format_size(data.get("size", 0)),
+                                            "seeds": seeds,
+                                            "leech": leech,
+                                            "raw_size": data.get("size", 0)
+                                        }
+                                        
+                                        can_keep = "Normal"
+                                        if self.db_manager.is_torrent_kept(tid_str):
+                                            can_keep = "Kept"
+                                        
+                                        found_count += 1
+                                        self.root.after(0, self._keepers_insert_tree, t, can_keep)
+                            else:
+                                 self.keepers_log(f"  API Error: {api_resp.status_code}")
+                                 
+                        except Exception as ex:
+                             self.keepers_log(f"  API Request Error: {ex}")
+                        
+                        time.sleep(0.5)
+
+                # Find "Next" button
                 if 'class="pg">След.' not in resp.text and '&nbsp;След.&nbsp;' not in resp.text:
                    self.keepers_log("End of forum reached.")
                    break
@@ -5208,7 +5270,7 @@ class QBitAdderApp:
             self.keepers_log(f"Scan error: {e}")
         
         self.keepers_log(f"Scan finished. Found {found_count} candidates.")
-        self.db_manager.log_scan(cat_id, page*50, 0, found_count) # Rough stats
+        self.db_manager.log_scan(cat_id, page*50, 0, found_count)
         
         self.keepers_scan_active = False
         self.root.after(0, lambda: self.keepers_scan_btn.config(state="normal"))
@@ -5219,52 +5281,18 @@ class QBitAdderApp:
             t['id'], t['name'], t['size_str'], t['seeds'], t['leech'], status
         ))
 
-    def _keepers_parse_viewforum(self, html_content):
-        """Parse viewforum.php for topics."""
-        topics = []
-        # Regex for topic rows. Very fragile!
-        # <tr id="tr-123"> ... <div class="torTopic"> ... <a id="tt-123" ... >Name</a>
-        # Look for table rows with class="hl-tr" or containing topic links
-        
-        # Simple approach: find all <tr id="tr-\d+"> and parse inside
-        # Note: Rutracker structure is complex.
-        
-        # We will split by <tr id="tr-
-        parts = html_content.split('<tr id="tr-')
-        for p in parts[1:]:
-             try:
-                # Topic ID (from start of string)
-                tid_match = re.match(r'^(\d+)', p)
-                if not tid_match: continue
-                tid = int(tid_match.group(1))
-                
-                # Title
-                title_match = re.search(r'<a id="tt-\d+"[^>]+>([^<]+)</a>', p)
-                title = title_match.group(1) if title_match else "Unknown"
-                
-                # Size (class="f-name" -> next td -> <a ...>Size</a> sometimes, or just text)
-                # Actually size is in <td class="row4Small" ... use regex
-                # <a class="med tr-dl" ...> 1.2 GB </a> OR just text
-                
-                # Seeds: <b class="seedmed">123</b>
-                seed_match = re.search(r'<b class="seedmed">(\d+)</b>', p)
-                seeds = int(seed_match.group(1)) if seed_match else 0
-                
-                # Leech: <span class="leechmed">123</span>
-                leech_match = re.search(r'<span class="leechmed">(\d+)</span>', p)
-                leech = int(leech_match.group(1)) if leech_match else 0
-                
-                # Size: <div class="tor-size" data-ts_text="123456">123 KB</div> or similar
-                # Recent layout: <td class="row4Small" ... > ... <a class="small tr-dl" ...>1.36 GB</a>
-                size_match = re.search(r'class="(?:small|med) tr-dl"[^>]*>([^<]+)</a>', p)
-                size_str = size_match.group(1) if size_match else "?"
-                
-                topics.append({
-                    "id": tid, "name": title, "seeds": seeds, "leech": leech, "size_str": size_str
-                })
-             except:
-                 pass
-        return topics
+    def _keepers_scrape_ids(self, html_content):
+        """Extract just topic IDs from viewforum."""
+        # Look for <a id="tt-123" ... or viewtopic.php?t=123
+        ids = []
+        # Robust regex for topic links
+        matches = re.findall(r'viewtopic\.php\?t=(\d+)', html_content)
+        # Deduplicate and convert to int
+        for m in matches:
+            if m not in ids:
+                ids.append(int(m))
+        return ids
+
 
     def _keepers_add_selected(self):
         selected = self.keepers_tree.selection()

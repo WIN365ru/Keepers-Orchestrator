@@ -24,7 +24,7 @@ DEFAULT_CONFIG = {
         "username": "",
         "password": ""
     },
-    "category_ttl_hours": 24,
+    "category_ttl_hours": 2160,
     "clients": [
         {
             "name": "Localhost",
@@ -392,23 +392,33 @@ class CategoryManager:
             self.log(f"Login error: {e}")
             return False
 
-    def refresh_cache(self, username=None, password=None):
+    def refresh_cache(self, username=None, password=None, progress_callback=None):
+        """Refresh the category cache. progress_callback(current, total) is called during crawling."""
         self.log("Refreshing Rutracker category cache...")
-        
+
         if username and password:
             self.login(username, password)
-            
+
         try:
             # Use session
             resp = self.session.get("https://rutracker.org/forum/index.php", timeout=30)
-            
+
             # fix encoding for russian characters
             if resp.encoding == 'ISO-8859-1':
                 resp.encoding = 'cp1251'
-            
-            # Parse links like <a href="viewforum.php?f=123">Category Name</a>
+
+            # Parse top-level sections (index.php?c=) - these are section headers like "Спорт", "Кино"
+            temp_sections = {}
+            section_matches = re.findall(r'href=["\'](?:.*?)index\.php\?c=(\d+)["\'][^>]*>(.*?)</a>', resp.text, re.IGNORECASE | re.DOTALL)
+            for sec_id, raw_name in section_matches:
+                clean_name = re.sub(r'<[^>]+>', '', raw_name).strip()
+                if clean_name:
+                    clean_name = html.unescape(clean_name)
+                    temp_sections[f"c{sec_id}"] = clean_name
+
+            # Parse forum categories (viewforum.php?f=)
             matches = re.findall(r'href=["\'](?:.*?)viewforum\.php\?f=(\d+)["\'][^>]*>(.*?)</a>', resp.text, re.IGNORECASE | re.DOTALL)
-            
+
             # Use int keys for sorting, then convert back to str for JSON
             temp_cats = {}
             for cat_id, raw_name in matches:
@@ -416,18 +426,20 @@ class CategoryManager:
                 if clean_name:
                     clean_name = html.unescape(clean_name)
                     temp_cats[int(cat_id)] = clean_name
-            
+
             top_level_count = len(temp_cats)
-            self.log(f"Found {top_level_count} top-level categories. Crawling sub-categories...")
-            
+            self.log(f"Found {len(temp_sections)} sections, {top_level_count} top-level categories. Crawling sub-categories...")
+
             # Crawl each top-level category for sub-forums
             top_ids = list(temp_cats.keys())
             for i, forum_id in enumerate(top_ids):
+                if progress_callback:
+                    progress_callback(i, top_level_count)
                 try:
                     sub_resp = self.session.get(f"https://rutracker.org/forum/viewforum.php?f={forum_id}", timeout=15)
                     if sub_resp.encoding == 'ISO-8859-1':
                         sub_resp.encoding = 'cp1251'
-                    
+
                     sub_matches = re.findall(r'href=["\'](?:.*?)viewforum\.php\?f=(\d+)["\'][^>]*>(.*?)</a>', sub_resp.text, re.IGNORECASE | re.DOTALL)
                     for sub_id, sub_name in sub_matches:
                         sub_id_int = int(sub_id)
@@ -436,24 +448,31 @@ class CategoryManager:
                             if clean:
                                 clean = html.unescape(clean)
                                 temp_cats[sub_id_int] = clean
-                    
+
                     # Log progress every 50 categories
                     if (i + 1) % 50 == 0:
                         self.log(f"  Crawled {i+1}/{top_level_count} categories ({len(temp_cats)} total found)...")
-                        
+
                 except Exception as e:
                     pass  # Skip failed sub-category pages silently
-            
+
+            if progress_callback:
+                progress_callback(top_level_count, top_level_count)
+
             # Sort by ID (numeric)
             sorted_cats = {}
             for cid in sorted(temp_cats.keys()):
                 sorted_cats[str(cid)] = temp_cats[cid]
-            
+
+            # Add top-level sections with "c" prefix to distinguish from forum IDs
+            for sec_key, sec_name in temp_sections.items():
+                sorted_cats[sec_key] = sec_name
+
             self.cache["categories"] = sorted_cats
             self.cache["last_updated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.save_cache()
-            self.log(f"Category cache updated. Found {len(sorted_cats)} categories ({top_level_count} top-level + {len(sorted_cats) - top_level_count} sub-categories).")
-            
+            self.log(f"Category cache updated. Found {len(sorted_cats)} categories ({len(temp_sections)} sections + {top_level_count} top-level + {len(sorted_cats) - top_level_count - len(temp_sections)} sub-categories).")
+
         except Exception as e:
             self.log(f"Failed to refresh category cache: {e}")
 
@@ -679,11 +698,17 @@ class QBitAdderApp:
         data_frame = tk.LabelFrame(self.settings_tab, text="Data Sources")
         data_frame.pack(fill="x", padx=10, pady=5)
 
-        self.refresh_cats_btn = tk.Button(data_frame, text="Refresh Rutracker Categories", command=self.refresh_categories)
-        self.refresh_cats_btn.pack(side="left", padx=5, pady=5)
+        top_row = tk.Frame(data_frame)
+        top_row.pack(fill="x", padx=5, pady=5)
 
-        self.cats_status_label = tk.Label(data_frame, text=self.get_cats_status_text())
-        self.cats_status_label.pack(side="left", padx=5)
+        self.refresh_cats_btn = tk.Button(top_row, text="Refresh Rutracker Categories", command=self.refresh_categories)
+        self.refresh_cats_btn.pack(side="left")
+
+        self.cats_status_label = tk.Label(top_row, text=self.get_cats_status_text())
+        self.cats_status_label.pack(side="left", padx=10)
+
+        self.cats_progress = ttk.Progressbar(data_frame, mode='determinate', length=300)
+        self.cats_progress_label = tk.Label(data_frame, text="", fg="gray")
 
         self.current_client_index = -1
         self.refresh_client_list()
@@ -708,13 +733,30 @@ class QBitAdderApp:
         return f"Categories: {count} loaded (Updated: {last_updated})"
 
     def refresh_categories(self):
+        if not messagebox.askyesno("Refresh Categories",
+                "This will crawl all Rutracker forum pages to rebuild the category cache.\n"
+                "It may take 1-2 minutes. Continue?"):
+            return
         self.refresh_cats_btn.config(state="disabled", text="Refreshing...")
-        threading.Thread(target=self._refresh_cats_thread).start()
+        self.cats_progress.pack(fill="x", padx=5, pady=(0, 2))
+        self.cats_progress_label.pack(fill="x", padx=5, pady=(0, 5))
+        self.cats_progress['value'] = 0
+        self.cats_progress_label.config(text="Starting...")
+        threading.Thread(target=self._refresh_cats_thread, daemon=True).start()
+
+    def _refresh_progress(self, current, total):
+        """Called from refresh_cache thread to update progress bar."""
+        pct = int(current / total * 100) if total > 0 else 0
+        self.root.after(0, lambda c=current, t=total, p=pct: self._update_progress_ui(c, t, p))
+
+    def _update_progress_ui(self, current, total, pct):
+        self.cats_progress['value'] = pct
+        self.cats_progress_label.config(text=f"Crawling sub-categories... {current}/{total} ({pct}%)")
 
     def _refresh_cats_thread(self):
         try:
             user, pwd = self._get_rutracker_creds()
-            self.cat_manager.refresh_cache(username=user, password=pwd)
+            self.cat_manager.refresh_cache(username=user, password=pwd, progress_callback=self._refresh_progress)
             self.root.after(0, lambda: messagebox.showinfo("Success", "Categories refreshed successfully!"))
         except Exception as e:
             self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to refresh categories: {e}"))
@@ -724,6 +766,8 @@ class QBitAdderApp:
     def update_cats_ui(self):
         self.refresh_cats_btn.config(state="normal", text="Refresh Rutracker Categories")
         self.cats_status_label.config(text=self.get_cats_status_text())
+        self.cats_progress.pack_forget()
+        self.cats_progress_label.pack_forget()
 
     def toggle_global_auth(self):
         enabled = self.global_auth_var.get()

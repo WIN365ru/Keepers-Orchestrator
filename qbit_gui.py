@@ -72,6 +72,18 @@ def bdecode(data, idx=0):
     else:
         raise ValueError(f"Invalid bencode at index {idx}")
 
+def format_size(size_bytes):
+    """Format bytes to human-readable size."""
+    if size_bytes <= 0:
+        return "0 B"
+    units = ['B', 'KB', 'MB', 'GB', 'TB']
+    i = 0
+    size = float(size_bytes)
+    while size >= 1024 and i < len(units) - 1:
+        size /= 1024
+        i += 1
+    return f"{size:.2f} {units[i]}" if i > 0 else f"{int(size)} B"
+
 def parse_torrent_info(file_path_or_bytes):
     """Parse a .torrent file and return dict with name, comment, topic_id."""
     try:
@@ -110,9 +122,74 @@ def parse_torrent_info(file_path_or_bytes):
             topic_match = re.search(r'rutracker\.org/forum/.*?t=(\d+)', comment)
         result['topic_id'] = topic_match.group(1) if topic_match else None
         
+        # Get total download size
+        if 'length' in info:
+            # Single-file torrent
+            result['total_size'] = info['length']
+            result['file_count'] = 1
+        elif 'files' in info:
+            # Multi-file torrent
+            result['total_size'] = sum(f.get('length', 0) for f in info['files'])
+            result['file_count'] = len(info['files'])
+        else:
+            result['total_size'] = 0
+            result['file_count'] = 0
+        
+        # Additional metadata
+        created_by = torrent.get('created by', b'')
+        if isinstance(created_by, bytes):
+            created_by = created_by.decode('utf-8', errors='replace')
+        result['created_by'] = created_by
+        
+        creation_date = torrent.get('creation date', 0)
+        if creation_date:
+            try:
+                result['creation_date'] = datetime.datetime.fromtimestamp(creation_date).strftime('%Y-%m-%d %H:%M:%S')
+            except:
+                result['creation_date'] = str(creation_date)
+        else:
+            result['creation_date'] = ''
+        
+        announce = torrent.get('announce', b'')
+        if isinstance(announce, bytes):
+            announce = announce.decode('utf-8', errors='replace')
+        result['tracker'] = announce
+        
+        result['piece_size'] = info.get('piece length', 0)
+        result['private'] = bool(info.get('private', 0))
+        
+        source = info.get('source', b'')
+        if isinstance(source, bytes):
+            try:
+                source = source.decode('utf-8')
+            except UnicodeDecodeError:
+                source = source.decode('cp1251', errors='replace')
+        result['source'] = source
+        
+        # File list
+        files_list = []
+        if 'files' in info:
+            for f in info['files']:
+                path_parts = f.get('path', [])
+                decoded_parts = []
+                for p in path_parts:
+                    if isinstance(p, bytes):
+                        try:
+                            decoded_parts.append(p.decode('utf-8'))
+                        except UnicodeDecodeError:
+                            decoded_parts.append(p.decode('cp1251', errors='replace'))
+                    else:
+                        decoded_parts.append(p)
+                path_str = '/'.join(decoded_parts)
+                files_list.append({'path': path_str, 'size': f.get('length', 0)})
+        elif 'length' in info:
+            # Single-file torrent — add the single file to the list
+            files_list.append({'path': result['name'], 'size': info['length']})
+        result['files'] = files_list
+        
         return result
     except Exception as e:
-        return {'name': '', 'comment': '', 'topic_id': None, 'error': str(e)}
+        return {'name': '', 'comment': '', 'topic_id': None, 'total_size': 0, 'file_count': 0, 'created_by': '', 'creation_date': '', 'tracker': '', 'piece_size': 0, 'private': False, 'source': '', 'files': [], 'error': str(e)}
 
 class CategoryManager:
     def __init__(self, log_func):
@@ -201,37 +278,81 @@ class CategoryManager:
         return None
 
     def get_category_for_topic(self, topic_id):
-        """Given a Rutracker topic ID, fetch the topic page and extract its forum category."""
+        """Given a Rutracker topic ID, fetch the topic page and extract its direct parent forum.
+        Returns only the deepest (most specific) subcategory name.
+        Uses cached topic→category mapping when forum is unavailable."""
+        topic_key = str(topic_id)
+        
+        # Check topic cache first
+        topic_cache = self.cache.get("topics", {})
+        cached_cat = topic_cache.get(topic_key)
+        
         try:
             self.log(f"Looking up category for topic {topic_id}...")
             resp = self.session.get(f"https://rutracker.org/forum/viewtopic.php?t={topic_id}", timeout=15)
             if resp.encoding == 'ISO-8859-1':
                 resp.encoding = 'cp1251'
             
-            # Extract forum IDs from breadcrumb navigation links
-            # The breadcrumb contains parent forums in order; first match is the direct parent category
-            breadcrumb = re.findall(r'href="viewforum\.php\?f=(\d+)"[^>]*>([^<]+)', resp.text)
+            text = resp.text
             
-            if breadcrumb:
-                # Use the first breadcrumb forum link (direct parent category)
-                forum_id = breadcrumb[0][0]
-                raw_name = breadcrumb[0][1].strip()
-                # Clean HTML entities
-                cat_name = html.unescape(raw_name)
+            # Check if the forum returned a maintenance/error page (no forum links at all)
+            if 'viewforum' not in text and 'name="f"' not in text:
+                if cached_cat:
+                    self.log(f"  Forum unavailable, using cached: {cached_cat}")
+                    return cached_cat
+                self.log(f"  Forum unavailable and no cached data for topic {topic_id}")
+                return None
+            
+            forum_id = None
+            
+            # Strategy 1: Look for hidden form field with forum ID
+            m = re.search(r'name=["\']f["\'][^>]*value=["\'](\d+)["\']', text)
+            if not m:
+                m = re.search(r'value=["\'](\d+)["\'][^>]*name=["\']f["\']', text)
+            if m:
+                forum_id = m.group(1)
+            
+            # Strategy 2: Extract breadcrumb links and use the LAST one (deepest subcategory)
+            # Breadcrumb order: parent → child, so last = most specific
+            if not forum_id:
+                all_links = re.findall(r'href=["\']viewforum\.php\?f=(\d+)["\']', text)
+                # Stop at first repeated ID (marks end of breadcrumb, start of sidebar/bottom nav)
+                seen = set()
+                breadcrumb_ids = []
+                for fid in all_links:
+                    if fid in seen:
+                        break
+                    seen.add(fid)
+                    breadcrumb_ids.append(fid)
+                if breadcrumb_ids:
+                    forum_id = breadcrumb_ids[-1]  # Last = deepest subcategory
+            
+            if forum_id:
+                cat_name = self.cache["categories"].get(str(forum_id))
                 
-                self.log(f"  Topic {topic_id} -> Forum {forum_id}: {cat_name}")
+                if not cat_name:
+                    cat_name = self.fetch_single_category(forum_id)
                 
-                # Cache it
                 if cat_name:
-                    self.cache["categories"][forum_id] = cat_name
+                    self.log(f"  Topic {topic_id} -> Forum {forum_id}: {cat_name}")
+                    # Cache topic → category mapping
+                    if "topics" not in self.cache:
+                        self.cache["topics"] = {}
+                    self.cache["topics"][topic_key] = cat_name
                     self.save_cache()
-                
-                return cat_name
+                    return cat_name
+                else:
+                    self.log(f"  Topic {topic_id} -> Forum {forum_id} (name unknown)")
+                    return f"Forum_{forum_id}"
             else:
                 self.log(f"  Could not find forum for topic {topic_id}")
                 
         except Exception as e:
             self.log(f"  Error looking up topic {topic_id}: {e}")
+            # Network error — fall back to cached topic data
+            if cached_cat:
+                self.log(f"  Using cached category: {cached_cat}")
+                return cached_cat
         return None
 
     def login(self, username, password):
@@ -773,6 +894,9 @@ class QBitAdderApp:
         btn_frame.pack(pady=5)
         tk.Button(btn_frame, text="Select Torrent/ZIP File", command=self.select_file).pack(side="left", padx=5)
         tk.Button(btn_frame, text="Select Folder", command=self.select_folder).pack(side="left", padx=5)
+        self.info_btn = tk.Button(btn_frame, text="Additional Info", command=self.show_additional_info, state="disabled")
+        self.info_btn.pack(side="left", padx=5)
+        self._current_torrent_info = None
 
         # Actions
         action_frame = tk.Frame(self.adder_tab)
@@ -822,6 +946,8 @@ class QBitAdderApp:
                 self.link_label.config(text="")
                 self.log(f"Selected ZIP: {filepath}")
                 self.log(f" -> Category: {cat_name}, Count: {count}")
+                self._current_torrent_info = None
+                self.info_btn.config(state="disabled")
             else:
                 # Parse torrent metadata
                 info = parse_torrent_info(filepath)
@@ -830,12 +956,22 @@ class QBitAdderApp:
                 topic_id = info.get('topic_id')
                 
                 # Build display text (without link - that goes in link_label)
+                total_size = info.get('total_size', 0)
+                file_count = info.get('file_count', 0)
+                
                 lines = [f"Name: {torrent_name}"]
+                if total_size > 0:
+                    size_str = format_size(total_size)
+                    lines.append(f"Size: {size_str} ({file_count} file{'s' if file_count != 1 else ''})")
                 if topic_id:
                     lines.append(f"Topic ID: {topic_id}")
                     lines.append("Category: Loading...")
                 
                 self.file_label.config(text="\n".join(lines), fg="black")
+                
+                # Store full info for Additional Info button
+                self._current_torrent_info = info
+                self.info_btn.config(state="normal")
                 
                 # Set clickable link
                 if comment:
@@ -862,6 +998,8 @@ class QBitAdderApp:
             self.selected_file_path = None
             self._current_link = None
             self.link_label.config(text="")
+            self._current_torrent_info = None
+            self.info_btn.config(state="disabled")
             
             try:
                 count = sum(1 for f in os.listdir(folderpath) if f.lower().endswith('.torrent'))
@@ -875,6 +1013,58 @@ class QBitAdderApp:
         """Open the current link in the default browser."""
         if self._current_link:
             webbrowser.open(self._current_link)
+
+    def show_additional_info(self):
+        """Show a popup with all additional torrent metadata."""
+        info = self._current_torrent_info
+        if not info:
+            return
+        
+        win = tk.Toplevel(self.root)
+        win.title("Torrent Details")
+        win.geometry("550x450")
+        win.resizable(True, True)
+        
+        # Metadata section
+        meta_frame = tk.LabelFrame(win, text="Metadata", padx=10, pady=5)
+        meta_frame.pack(fill="x", padx=10, pady=5)
+        
+        fields = [
+            ("Name", info.get('name', '')),
+            ("Created by", info.get('created_by', '')),
+            ("Creation date", info.get('creation_date', '')),
+            ("Tracker", info.get('tracker', '')),
+            ("Piece size", format_size(info.get('piece_size', 0))),
+            ("Total size", format_size(info.get('total_size', 0))),
+            ("Files", str(info.get('file_count', 0))),
+            ("Private", "Yes" if info.get('private') else "No"),
+            ("Source", info.get('source', '')),
+            ("Comment", info.get('comment', '')),
+        ]
+        
+        for i, (label, value) in enumerate(fields):
+            if value:
+                tk.Label(meta_frame, text=f"{label}:", font=("TkDefaultFont", 9, "bold"), anchor="w").grid(row=i, column=0, sticky="nw", padx=(0, 10), pady=1)
+                val_label = tk.Label(meta_frame, text=value, anchor="w", wraplength=400, justify="left")
+                val_label.grid(row=i, column=1, sticky="w", pady=1)
+        
+        # File list section (for multi-file torrents)
+        files = info.get('files', [])
+        if files:
+            files_frame = tk.LabelFrame(win, text=f"File List ({len(files)} files)", padx=10, pady=5)
+            files_frame.pack(fill="both", expand=True, padx=10, pady=5)
+            
+            file_text = scrolledtext.ScrolledText(files_frame, height=12, state="normal", font=("Consolas", 9))
+            file_text.pack(fill="both", expand=True)
+            
+            for f in files:
+                size_str = format_size(f.get('size', 0))
+                file_text.insert("end", f"{f.get('path', '?')}  [{size_str}]\n")
+            
+            file_text.config(state="disabled")
+        
+        # Close button
+        tk.Button(win, text="Close", command=win.destroy, width=10).pack(pady=10)
 
     def _lookup_torrent_category(self, topic_id, display_lines):
         """Background thread: look up category for a topic ID and update the file label."""
@@ -954,7 +1144,7 @@ class QBitAdderApp:
             cat_id = match.group(1)
             count_str = match.group(2)
             
-            cat_name = self.cat_manager.get_category_name(cat_id)
+            cat_name = self.cat_manager.get_category_name(cat_id, self.config.get("category_ttl_hours", 24) * 3600)
             # Remove characters invalid for Windows paths
             cat_name = re.sub(r'[<>:"/\\|?*]', '_', cat_name)
             count = count_str
@@ -964,7 +1154,7 @@ class QBitAdderApp:
             match_simple = re.search(r'torrents_\d+_(\d+)_', filename)
             if match_simple:
                 cat_id = match_simple.group(1)
-                cat_name = self.cat_manager.get_category_name(cat_id)
+                cat_name = self.cat_manager.get_category_name(cat_id, self.config.get("category_ttl_hours", 24) * 3600)
                 cat_name = re.sub(r'[<>:"/\\|?*]', '_', cat_name)
         
         return cat_name, cat_id, count

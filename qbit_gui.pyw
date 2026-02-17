@@ -44,7 +44,7 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_
 CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rutracker_categories.json")
 
 # App Version & Update Info
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.1"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -3897,9 +3897,31 @@ class QBitAdderApp:
 
         row3 = tk.Frame(cat_frame)
         row3.pack(fill="x", pady=2)
-        tk.Label(row3, text="Limit (0=all):").pack(side="left")
+        tk.Label(row3, text="Max torrents to move (0 = all):").pack(side="left")
         self.mover_cat_limit_var = tk.IntVar(value=0)
         tk.Spinbox(row3, from_=0, to=99999, textvariable=self.mover_cat_limit_var, width=8).pack(side="left", padx=5)
+
+        # Folder structure options
+        opts_label = tk.Label(cat_frame, text="Folder structure:", font=("", 9, "bold"))
+        opts_label.pack(anchor="w", pady=(5, 0))
+
+        row4a = tk.Frame(cat_frame)
+        row4a.pack(fill="x", pady=1)
+        tk.Label(row4a, text="Category folder:").pack(side="left")
+        self.mover_cat_create_cat_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(row4a, text="Create /Category/ subfolder in target path",
+            variable=self.mover_cat_create_cat_var).pack(side="left", padx=5)
+
+        row4b = tk.Frame(cat_frame)
+        row4b.pack(fill="x", pady=1)
+        tk.Label(row4b, text="ID folder:").pack(side="left")
+        self.mover_cat_id_action = tk.StringVar(value="keep")
+        tk.Radiobutton(row4b, text="Keep existing /ID/ folder",
+            variable=self.mover_cat_id_action, value="keep").pack(side="left", padx=5)
+        tk.Radiobutton(row4b, text="Create /ID/ folder (if missing)",
+            variable=self.mover_cat_id_action, value="create").pack(side="left", padx=5)
+        tk.Radiobutton(row4b, text="Remove /ID/ folder (flatten)",
+            variable=self.mover_cat_id_action, value="strip").pack(side="left", padx=5)
 
         self.mover_cat_summary = tk.Label(cat_frame, text="Select a category to see details.", fg="gray")
         self.mover_cat_summary.pack(anchor="w", pady=3)
@@ -3962,6 +3984,15 @@ class QBitAdderApp:
         tk.Label(limit_frame, text="Limit moves (0=all):").pack(side="left")
         self.mover_bal_limit_var = tk.IntVar(value=0)
         tk.Spinbox(limit_frame, from_=0, to=99999, textvariable=self.mover_bal_limit_var, width=8).pack(side="left", padx=5)
+
+        bal_opts_frame = tk.Frame(bal_frame)
+        bal_opts_frame.pack(fill="x", pady=2)
+        self.mover_bal_keep_cat_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(bal_opts_frame, text="Preserve category subfolder", variable=self.mover_bal_keep_cat_var).pack(side="left")
+        self.mover_bal_keep_id_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(bal_opts_frame, text="Preserve ID folder", variable=self.mover_bal_keep_id_var).pack(side="left", padx=15)
+        self.mover_bal_strip_id_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(bal_opts_frame, text="Remove ID folder (flatten)", variable=self.mover_bal_strip_id_var).pack(side="left", padx=15)
 
         bal_btn_frame = tk.Frame(bal_frame)
         bal_btn_frame.pack(fill="x", pady=3)
@@ -4080,6 +4111,58 @@ class QBitAdderApp:
         if len(parts) >= 3 and parts[0] == '':
             return "/" + parts[1] + "/" + parts[2] + "/"
         return p
+
+    def _mover_parse_path_parts(self, save_path, base_path):
+        """Parse a torrent save_path into (base, category_part, id_part, rest).
+
+        Given base_path='D:/Torrents/Sport/' and save_path='D:/Torrents/Sport/Formula1/12345':
+        Returns ('D:/Torrents/Sport', 'Formula1', '12345', '')
+
+        The 'id_part' is the last purely-numeric folder segment after the category.
+        """
+        sp = save_path.replace("\\", "/").rstrip("/")
+        bp = base_path.replace("\\", "/").rstrip("/")
+
+        if not sp.startswith(bp):
+            return bp, "", "", sp
+
+        remainder = sp[len(bp):].strip("/")
+        parts = remainder.split("/") if remainder else []
+
+        cat_part = ""
+        id_part = ""
+        rest_parts = []
+
+        if len(parts) >= 1:
+            cat_part = parts[0]
+        if len(parts) >= 2 and parts[1].isdigit():
+            id_part = parts[1]
+            rest_parts = parts[2:]
+        elif len(parts) >= 2:
+            # Second part is not numeric — treat as part of the rest
+            rest_parts = parts[1:]
+
+        rest = "/".join(rest_parts) if rest_parts else ""
+        return bp, cat_part, id_part, rest
+
+    def _mover_build_path(self, base, category, id_part, rest, create_cat, keep_id, strip_id):
+        """Build a new path from parts based on folder structure options.
+
+        create_cat: include category subfolder
+        keep_id: include ID subfolder
+        strip_id: remove ID subfolder (flatten contents up)
+        """
+        parts = [base]
+        if create_cat and category:
+            parts.append(category)
+        if strip_id:
+            # Explicitly strip ID — don't add it
+            pass
+        elif keep_id and id_part:
+            parts.append(id_part)
+        if rest:
+            parts.append(rest)
+        return "/".join(parts)
 
     # --- Load Torrents ---
 
@@ -4202,15 +4285,20 @@ class QBitAdderApp:
             f"qBittorrent will physically move the files."):
             return
 
+        # Read folder structure options
+        create_cat = self.mover_cat_create_cat_var.get()
+        keep_id = self.mover_cat_keep_id_var.get()
+        strip_id = self.mover_cat_strip_id_var.get()
+
         self.mover_busy = True
         self.mover_cat_move_btn.config(state="disabled")
         self.mover_stop_event.clear()
         self._mover_show_progress()
 
         threading.Thread(target=self._mover_category_thread,
-            args=(cat_torrents, new_path, cat_name), daemon=True).start()
+            args=(cat_torrents, new_path, cat_name, create_cat, keep_id, strip_id), daemon=True).start()
 
-    def _mover_category_thread(self, torrents, new_root, cat_name):
+    def _mover_category_thread(self, torrents, new_root, cat_name, create_cat, keep_id, strip_id):
         start_time = time.time()
         s = self._get_qbit_session(self.mover_selected_client)
         if not s:
@@ -4221,14 +4309,16 @@ class QBitAdderApp:
             return
 
         url = self.mover_selected_client["url"].rstrip("/")
+        base_save_path = self.mover_selected_client.get("base_save_path", "").replace("\\", "/").rstrip("/")
         new_root = new_root.rstrip("/")
         success = 0
         fail = 0
 
-        # Find common base of current paths for this category
-        # e.g., if all paths are D:/Torrents/Sport/CatName/..., the common base is D:/Torrents/Sport/CatName
-        # We'll replace the old base with new_root
-        self.mover_log(f"Moving {len(torrents)} torrents of '{cat_name}' to {new_root}")
+        opts = []
+        if create_cat: opts.append("+ category folder")
+        if keep_id: opts.append("+ ID folder")
+        if strip_id: opts.append("- strip ID folder")
+        self.mover_log(f"Moving {len(torrents)} torrents of '{cat_name}' to {new_root} [{', '.join(opts)}]")
 
         for i, t in enumerate(torrents):
             if self.mover_stop_event.is_set():
@@ -4240,20 +4330,20 @@ class QBitAdderApp:
             t_name = t.get("name", "?")
             old_path = t.get("save_path", "").replace("\\", "/").rstrip("/")
 
-            # Compute new location: new_root + relative part after the category folder
-            # Old: D:/Tors/Sport/OldCat/12345 -> new_root/12345
-            # Or simply set location to new_root (qBit keeps content in same subfolder)
-            new_location = new_root
+            # Parse current path to extract category/ID parts
+            _, old_cat, old_id, rest = self._mover_parse_path_parts(old_path, base_save_path)
+            # Build new location based on options
+            new_location = self._mover_build_path(new_root, cat_name, old_id, rest, create_cat, keep_id, strip_id)
 
             try:
                 resp = s.post(f"{url}/api/v2/torrents/setLocation",
                     data={"hashes": t_hash, "location": new_location}, timeout=30)
                 if resp.status_code == 200:
                     success += 1
-                    self.mover_log(f"  [{i+1}/{len(torrents)}] Moved: {t_name[:60]}")
+                    self.mover_log(f"  [{i+1}/{len(torrents)}] {t_name[:50]} -> {new_location}")
                 else:
                     fail += 1
-                    self.mover_log(f"  [{i+1}/{len(torrents)}] Failed ({resp.status_code}): {t_name[:60]}")
+                    self.mover_log(f"  [{i+1}/{len(torrents)}] Failed ({resp.status_code}): {t_name[:50]}")
             except Exception as e:
                 fail += 1
                 self.mover_log(f"  [{i+1}/{len(torrents)}] Error: {e}")
@@ -4452,6 +4542,11 @@ class QBitAdderApp:
             if best_disk != t["current_disk"]:
                 disk_assigned_size[best_disk] += t["size"]
 
+        # Read folder structure options
+        keep_cat = self.mover_bal_keep_cat_var.get()
+        keep_id = self.mover_bal_keep_id_var.get()
+        strip_id = self.mover_bal_strip_id_var.get()
+
         # Build move plan (only torrents that need to move)
         plan = []
         for t in sorted_torrents:
@@ -4459,10 +4554,22 @@ class QBitAdderApp:
             if target_disk == t["current_disk"]:
                 continue  # No move needed
 
-            # Compute new path: swap disk prefix
+            # Parse old path into parts relative to old disk base
             old_disk = t["current_disk"]
-            relative = t["save_path"][len(old_disk):]
-            new_path = target_disk + relative
+            relative = t["save_path"][len(old_disk):].strip("/")
+            rel_parts = relative.split("/") if relative else []
+
+            # Extract category and ID from relative path
+            cat_part = rel_parts[0] if len(rel_parts) >= 1 else ""
+            id_part = rel_parts[1] if len(rel_parts) >= 2 and rel_parts[1].isdigit() else ""
+            if id_part:
+                rest_parts = rel_parts[2:]
+            else:
+                rest_parts = rel_parts[1:] if len(rel_parts) > 1 else []
+            rest = "/".join(rest_parts)
+
+            new_path = self._mover_build_path(target_disk.rstrip("/"), cat_part, id_part, rest,
+                                               keep_cat, keep_id, strip_id)
 
             plan.append({
                 "hash": t["hash"],

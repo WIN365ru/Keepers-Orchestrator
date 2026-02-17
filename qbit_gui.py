@@ -278,81 +278,93 @@ class CategoryManager:
         return None
 
     def get_category_for_topic(self, topic_id):
-        """Given a Rutracker topic ID, fetch the topic page and extract its direct parent forum.
-        Returns only the deepest (most specific) subcategory name.
-        Uses cached topic→category mapping when forum is unavailable."""
+        """Given a Rutracker topic ID, fetch the topic page and extract its forum breadcrumb.
+        Returns a dict: {"category": "deepest name", "full_path": "Parent > Child > Deepest"}
+        or None on failure. Uses cached topic→category mapping when forum is unavailable."""
         topic_key = str(topic_id)
-        
+
         # Check topic cache first
         topic_cache = self.cache.get("topics", {})
         cached_cat = topic_cache.get(topic_key)
-        
+
         try:
             self.log(f"Looking up category for topic {topic_id}...")
             resp = self.session.get(f"https://rutracker.org/forum/viewtopic.php?t={topic_id}", timeout=15)
             if resp.encoding == 'ISO-8859-1':
                 resp.encoding = 'cp1251'
-            
+
             text = resp.text
-            
+
             # Check if the forum returned a maintenance/error page (no forum links at all)
             if 'viewforum' not in text and 'name="f"' not in text:
                 if cached_cat:
                     self.log(f"  Forum unavailable, using cached: {cached_cat}")
-                    return cached_cat
+                    return {"category": cached_cat, "full_path": cached_cat}
                 self.log(f"  Forum unavailable and no cached data for topic {topic_id}")
                 return None
-            
+
+            # Extract breadcrumb links (both index.php?c= and viewforum.php?f=) with names
+            all_nav = re.findall(
+                r'href=["\']((?:index\.php\?c|viewforum\.php\?f)=(\d+))["\'][^>]*>(.*?)</a>',
+                text, re.DOTALL
+            )
+            seen_urls = set()
+            breadcrumb = []  # list of (url, type, id, name)
+            for full_url, nav_id, raw_name in all_nav:
+                if full_url in seen_urls:
+                    break  # second occurrence = end of breadcrumb
+                seen_urls.add(full_url)
+                clean_name = html.unescape(re.sub(r'<[^>]+>', '', raw_name).strip())
+                link_type = 'c' if 'index.php' in full_url else 'f'
+                breadcrumb.append((link_type, nav_id, clean_name))
+
+            # Extract forum IDs only (viewforum links) for category resolution
+            breadcrumb_ids = [nav_id for lt, nav_id, _ in breadcrumb if lt == 'f']
+
             forum_id = None
-            
+
             # Strategy 1: Look for hidden form field with forum ID
             m = re.search(r'name=["\']f["\'][^>]*value=["\'](\d+)["\']', text)
             if not m:
                 m = re.search(r'value=["\'](\d+)["\'][^>]*name=["\']f["\']', text)
             if m:
                 forum_id = m.group(1)
-            
-            # Strategy 2: Extract breadcrumb links and use the LAST one (deepest subcategory)
-            # Breadcrumb order: parent → child, so last = most specific
-            if not forum_id:
-                all_links = re.findall(r'href=["\']viewforum\.php\?f=(\d+)["\']', text)
-                # Stop at first repeated ID (marks end of breadcrumb, start of sidebar/bottom nav)
-                seen = set()
-                breadcrumb_ids = []
-                for fid in all_links:
-                    if fid in seen:
-                        break
-                    seen.add(fid)
-                    breadcrumb_ids.append(fid)
-                if breadcrumb_ids:
-                    forum_id = breadcrumb_ids[-1]  # Last = deepest subcategory
-            
+
+            # Strategy 2: Use last breadcrumb forum ID
+            if not forum_id and breadcrumb_ids:
+                forum_id = breadcrumb_ids[-1]
+
             if forum_id:
                 cat_name = self.cache["categories"].get(str(forum_id))
-                
+
                 if not cat_name:
                     cat_name = self.fetch_single_category(forum_id)
-                
+
                 if cat_name:
+                    # Build full breadcrumb path from extracted names
+                    path_parts = [name for _, _, name in breadcrumb if name]
+                    full_path = " > ".join(path_parts) if path_parts else cat_name
+
                     self.log(f"  Topic {topic_id} -> Forum {forum_id}: {cat_name}")
                     # Cache topic → category mapping
                     if "topics" not in self.cache:
                         self.cache["topics"] = {}
                     self.cache["topics"][topic_key] = cat_name
                     self.save_cache()
-                    return cat_name
+                    return {"category": cat_name, "full_path": full_path}
                 else:
                     self.log(f"  Topic {topic_id} -> Forum {forum_id} (name unknown)")
-                    return f"Forum_{forum_id}"
+                    fallback = f"Forum_{forum_id}"
+                    return {"category": fallback, "full_path": fallback}
             else:
                 self.log(f"  Could not find forum for topic {topic_id}")
-                
+
         except Exception as e:
             self.log(f"  Error looking up topic {topic_id}: {e}")
             # Network error — fall back to cached topic data
             if cached_cat:
                 self.log(f"  Using cached category: {cached_cat}")
-                return cached_cat
+                return {"category": cached_cat, "full_path": cached_cat}
         return None
 
     def login(self, username, password):
@@ -1069,16 +1081,17 @@ class QBitAdderApp:
     def _lookup_torrent_category(self, topic_id, display_lines):
         """Background thread: look up category for a topic ID and update the file label."""
         try:
-            cat_name = self.cat_manager.get_category_for_topic(topic_id)
-            if cat_name:
-                # Replace the "Category: Loading..." line
+            result = self.cat_manager.get_category_for_topic(topic_id)
+            if result:
+                full_path = result["full_path"]
+                # Replace the "Category: Loading..." line with full breadcrumb path
                 for i, line in enumerate(display_lines):
                     if line.startswith("Category:"):
-                        display_lines[i] = f"Category: {cat_name}"
+                        display_lines[i] = f"Category: {full_path}"
                         break
                 else:
-                    display_lines.append(f"Category: {cat_name}")
-                self.log(f"  Category: {cat_name}")
+                    display_lines.append(f"Category: {full_path}")
+                self.log(f"  Category: {full_path}")
             else:
                 for i, line in enumerate(display_lines):
                     if line.startswith("Category:"):
@@ -1229,9 +1242,9 @@ class QBitAdderApp:
             # If no category yet (individual file / folder), look it up from the topic
             if not category_subpath and extracted_id:
                 try:
-                    cat_name = self.cat_manager.get_category_for_topic(extracted_id)
-                    if cat_name:
-                        category_subpath = cat_name
+                    result = self.cat_manager.get_category_for_topic(extracted_id)
+                    if result:
+                        category_subpath = result["category"]
                 except Exception as e:
                     self.log(f"Could not resolve category for topic {extracted_id}: {e}")
 
@@ -1290,16 +1303,14 @@ class QBitAdderApp:
         return items
 
     def extract_id_from_bytes(self, content, filename_for_log):
+        """Extract topic ID from torrent bytes using proper bencode parsing."""
         try:
-            match = re.search(rb'viewforum\.php\?t=(\d+)', content) # Classic rutracker link? 
-            # User said viewtopic.php?t=...
-            if not match:
-                match = re.search(rb'viewtopic\.php\?t=(\d+)', content)
-                
-            if match:
-                return match.group(1).decode('utf-8')
-        except Exception as e:
-            pass # Silent fail
+            info = parse_torrent_info(content)
+            topic_id = info.get('topic_id')
+            if topic_id:
+                return topic_id
+        except Exception:
+            pass
         return None
 
     def _add_torrent_content_to_client(self, client, content, filename_display, category_subpath, extracted_id):

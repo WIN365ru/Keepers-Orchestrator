@@ -1009,8 +1009,8 @@ class QBitAdderApp:
             
             if filepath.lower().endswith('.zip'):
                 cat_name, cat_id, count = self._extract_zip_info(filename)
-                
-                info_text = f"ZIP: {filename}\nCategory: {cat_name} (ID: {cat_id})\nTorrents: {count}"
+
+                info_text = f"ZIP: {filename}\nCategory: {cat_name} (ID: {cat_id})\nTorrents: {count}\nTotal size: calculating..."
                 self.file_label.config(text=info_text, fg="black")
                 self._current_link = None
                 self.link_label.config(text="")
@@ -1018,6 +1018,8 @@ class QBitAdderApp:
                 self.log(f" -> Category: {cat_name}, Count: {count}")
                 self._current_torrent_info = None
                 self.info_btn.config(state="disabled")
+                # Calculate total download size in background
+                threading.Thread(target=self._calc_zip_size, args=(filepath, info_text), daemon=True).start()
             else:
                 # Parse torrent metadata
                 info = parse_torrent_info(filepath)
@@ -1230,6 +1232,31 @@ class QBitAdderApp:
         
         return cat_name, cat_id, count
 
+    def _calc_zip_size(self, zip_path, base_info_text):
+        """Background: open ZIP, parse each .torrent, sum total download sizes."""
+        try:
+            total_size = 0
+            count = 0
+            with zipfile.ZipFile(zip_path, 'r') as z:
+                for name in z.namelist():
+                    if name.lower().endswith('.torrent'):
+                        try:
+                            content = z.read(name)
+                            info = parse_torrent_info(content)
+                            total_size += info.get('total_size', 0)
+                            count += 1
+                        except Exception:
+                            pass
+            size_str = format_size(total_size)
+            updated_text = base_info_text.replace(
+                "Total size: calculating...",
+                f"Total size: {size_str} ({count} torrents)")
+            self.root.after(0, lambda: self.file_label.config(text=updated_text))
+            self.log(f" -> Total download size: {size_str}")
+        except Exception as e:
+            updated_text = base_info_text.replace("Total size: calculating...", "Total size: error")
+            self.root.after(0, lambda: self.file_label.config(text=updated_text))
+
     def _process_thread(self):
         # Determine targets
         selected_idx = self.client_selector.current()
@@ -1282,6 +1309,8 @@ class QBitAdderApp:
         job_start = time.time()
         success_count = 0
         fail_count = 0
+        processed = 0
+        total_items = len(work_items)
         for item in work_items:
             # Extract content if needed
             torrent_content = item.get('content')
@@ -1324,6 +1353,11 @@ class QBitAdderApp:
                 else:
                     fail_count += 1
 
+            processed += 1
+            pct = int(processed / total_items * 100)
+            self.root.after(0, lambda p=pct, c=processed, t=total_items:
+                self.status_bar.config(text=f"Adding: {c}/{t} ({p}%)"))
+
             if self.stop_event.is_set():
                 self.log("Stopped by user.")
                 break
@@ -1336,8 +1370,9 @@ class QBitAdderApp:
             summary += f", {fail_count} failed"
         summary += f" ({time_str})"
         self.log(summary)
+        self.root.after(0, lambda: self.status_bar.config(text="Ready"))
         messagebox.showinfo("Done", summary)
-        
+
         self.reset_buttons()
 
     def _parse_zip_file(self, zip_path):
@@ -1446,7 +1481,10 @@ class QBitAdderApp:
                 self.log(f"[{name}] Success -> {save_path}")
                 return True
             else:
-                self.log(f"[{name}] Failed: {resp.text}")
+                if resp.text.strip().lower() == "fails.":
+                    self.log(f"[{name}] Failed: Already added")
+                else:
+                    self.log(f"[{name}] Failed: {resp.text}")
                 return False
 
         except Exception as e:

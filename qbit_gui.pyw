@@ -6106,6 +6106,34 @@ class QBitAdderApp:
         tk.Checkbutton(opts_frame, text="Start paused",
             variable=self.scanner_start_paused_var).pack(side="left", padx=5)
 
+        # --- Custom Add Options ---
+        custom_frame = tk.LabelFrame(self.scanner_tab, text="Custom Add Options", padx=10, pady=5)
+        custom_frame.pack(fill="x", padx=10, pady=5)
+
+        fs_frame = tk.LabelFrame(custom_frame, text="Folder Structure", padx=5, pady=5)
+        fs_frame.pack(fill="x", padx=5, pady=5)
+
+        self.scanner_create_cat_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(fs_frame, text="Create Category Subfolder", variable=self.scanner_create_cat_var).pack(anchor="w")
+
+        self.scanner_create_id_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(fs_frame, text="Create ID Subfolder", variable=self.scanner_create_id_var).pack(anchor="w")
+
+        path_frame = tk.Frame(custom_frame)
+        path_frame.pack(fill="x", padx=5, pady=5)
+
+        self.scanner_use_custom_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(path_frame, text="Override Save Path", variable=self.scanner_use_custom_var, command=self._scanner_toggle_custom_options).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
+
+        tk.Label(path_frame, text="Save Path:").grid(row=1, column=0, sticky="w")
+        self.scanner_custom_path_entry = tk.Entry(path_frame, width=30)
+        self.scanner_custom_path_entry.grid(row=1, column=1, padx=5, pady=2)
+
+        self.scanner_browse_custom_path_btn = tk.Button(path_frame, text="Browse...", command=self._scanner_browse_custom_path, width=10)
+        self.scanner_browse_custom_path_btn.grid(row=1, column=2, padx=5)
+
+        self._scanner_toggle_custom_options()
+
         # --- Progress (hidden until scan) ---
         self.scanner_prog_frame = tk.Frame(self.scanner_tab)
         self.scanner_progress = ttk.Progressbar(self.scanner_prog_frame, mode='determinate', style="green.Horizontal.TProgressbar")
@@ -6192,6 +6220,18 @@ class QBitAdderApp:
         self.update_scanner_client_dropdown()
 
     # --- Utility Methods ---
+
+    def _scanner_toggle_custom_options(self):
+        state = "normal" if self.scanner_use_custom_var.get() else "disabled"
+        if hasattr(self, 'scanner_custom_path_entry'):
+            self.scanner_custom_path_entry.config(state=state)
+            self.scanner_browse_custom_path_btn.config(state=state)
+
+    def _scanner_browse_custom_path(self):
+        path = filedialog.askdirectory()
+        if path:
+            self.scanner_custom_path_entry.delete(0, tk.END)
+            self.scanner_custom_path_entry.insert(0, path)
 
     def scanner_log(self, message):
         def _write():
@@ -6578,6 +6618,12 @@ class QBitAdderApp:
         url = client["url"].rstrip("/")
         use_parent = self.scanner_use_parent_var.get()
         paused = self.scanner_start_paused_var.get()
+        
+        use_custom = self.scanner_use_custom_var.get()
+        custom_path = self.scanner_custom_path_entry.get().strip()
+        create_cat = self.scanner_create_cat_var.get()
+        create_id = self.scanner_create_id_var.get()
+
         added = 0
         failed = 0
 
@@ -6601,10 +6647,22 @@ class QBitAdderApp:
                 continue
 
             # Determine save_path
-            if use_parent:
-                save_path = os.path.dirname(disk_path).replace("\\", "/")
+            if use_custom:
+                base_save_path = custom_path.replace("\\", "/") if custom_path else disk_path
+            elif use_parent:
+                base_save_path = os.path.dirname(disk_path).replace("\\", "/")
             else:
-                save_path = disk_path
+                base_save_path = disk_path
+                
+            path_parts = [base_save_path]
+            
+            if create_cat and category:
+                path_parts.append(category)
+                
+            if create_id and tid:
+                path_parts.append(str(tid))
+                
+            save_path = os.path.join(*path_parts).replace("\\", "/")
 
             files = {'torrents': (f'{tid}.torrent', t_content, 'application/x-bittorrent')}
             data = {

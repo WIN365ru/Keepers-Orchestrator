@@ -48,7 +48,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.10.11"
+APP_VERSION = "0.10.12"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -6136,9 +6136,9 @@ class QBitAdderApp:
         return ids
 
     def _get_rutracker_creds(self):
-        """Extract Rutracker credentials from config if enabled."""
-        auth = self.config.get("global_auth", {})
-        if auth.get("enabled"):
+        """Extract Rutracker credentials from config."""
+        auth = self.config.get("rutracker_auth", {})
+        if auth:
             return auth.get("username", ""), auth.get("password", "")
         return "", ""
 
@@ -6839,6 +6839,13 @@ class QBitAdderApp:
                         try:
                             t_content = self._download_torrent_content(tid, log_func=self.scanner_log)
                             if t_content:
+                                try:
+                                    save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".torrent_deep_scan")
+                                    os.makedirs(save_dir, exist_ok=True)
+                                    with open(os.path.join(save_dir, f"{tid}.torrent"), "wb") as f:
+                                        f.write(t_content)
+                                except Exception as save_err:
+                                    self.scanner_log(f"Warning: Could not save .torrent to .torrent_deep_scan for {tid}: {save_err}")
                                 parsed = parse_torrent_info(t_content)
                             else:
                                 parsed = None

@@ -3105,6 +3105,14 @@ class QBitAdderApp:
         
         threading.Thread(target=self._search_thread, args=(query, s_type)).start()
 
+    def _search_on_double_click(self, event):
+        item = self.search_tree.identify('item', event.x, event.y)
+        if not item:
+            return
+        vals = self.search_tree.item(item, "values")
+        if vals and len(vals) > 0 and vals[0]:
+            webbrowser.open(f"https://rutracker.org/forum/viewtopic.php?t={vals[0]}")
+
     def _search_thread(self, query, s_type):
         results = []
         try:
@@ -4422,8 +4430,13 @@ class QBitAdderApp:
         self.mover_inner = tk.Frame(canvas)
 
         self.mover_inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=self.mover_inner, anchor="nw")
+        self._mover_canvas_win = canvas.create_window((0, 0), window=self.mover_inner, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Keep inner frame width in sync with canvas width so fill="x" works
+        def _on_canvas_resize(event):
+            canvas.itemconfigure(self._mover_canvas_win, width=event.width)
+        canvas.bind("<Configure>", _on_canvas_resize)
 
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
@@ -4455,8 +4468,8 @@ class QBitAdderApp:
         self.mover_load_status = tk.Label(client_frame, text="", fg="gray")
         self.mover_load_status.pack(side="left", padx=10)
 
-        self.mover_cache_label = tk.Label(client_frame, text="List updated: never", fg="gray")
-        self.mover_cache_label.pack(side="left", padx=5)
+        self.mover_cache_label = tk.Label(client_frame, text="List updated: never", fg="gray", anchor="w")
+        self.mover_cache_label.pack(side="left", padx=5, fill="x", expand=True)
 
         # --- Section B: Category Mover ---
         cat_frame = tk.LabelFrame(parent, text="Move by Category", padx=10, pady=5)
@@ -4465,17 +4478,17 @@ class QBitAdderApp:
         row1 = tk.Frame(cat_frame)
         row1.pack(fill="x", pady=2)
         tk.Label(row1, text="Category:").pack(side="left")
-        self.mover_cat_selector = ttk.Combobox(row1, state="readonly", width=50)
-        self.mover_cat_selector.pack(side="left", padx=5)
+        self.mover_cat_selector = ttk.Combobox(row1, state="readonly")
+        self.mover_cat_selector.pack(side="left", padx=5, fill="x", expand=True)
         self.mover_cat_selector.bind("<<ComboboxSelected>>", self._mover_on_cat_selected)
 
         row2 = tk.Frame(cat_frame)
         row2.pack(fill="x", pady=2)
         tk.Label(row2, text="New root path:").pack(side="left")
+        tk.Button(row2, text="Browse...", command=self._mover_browse_path).pack(side="right")
         self.mover_new_path_var = tk.StringVar()
-        self.mover_new_path_entry = tk.Entry(row2, textvariable=self.mover_new_path_var, width=50)
-        self.mover_new_path_entry.pack(side="left", padx=5)
-        tk.Button(row2, text="Browse...", command=self._mover_browse_path).pack(side="left")
+        self.mover_new_path_entry = tk.Entry(row2, textvariable=self.mover_new_path_var)
+        self.mover_new_path_entry.pack(side="left", padx=5, fill="x", expand=True)
 
         row3 = tk.Frame(cat_frame)
         row3.pack(fill="x", pady=2)
@@ -4509,7 +4522,7 @@ class QBitAdderApp:
         self.mover_cat_summary.pack(anchor="w", pady=3)
 
         cat_btn_frame = tk.Frame(cat_frame)
-        cat_btn_frame.pack(anchor="w", pady=3)
+        cat_btn_frame.pack(fill="x", pady=3)
 
         self.mover_cat_move_btn = tk.Button(cat_btn_frame, text="Move Category", state="disabled",
             command=self._mover_start_category_move)
@@ -4561,10 +4574,10 @@ class QBitAdderApp:
         disk_add_frame = tk.Frame(bal_frame)
         disk_add_frame.pack(fill="x", pady=2)
         tk.Label(disk_add_frame, text="Add path:").pack(side="left")
+        tk.Button(disk_add_frame, text="Add", command=self._mover_add_disk).pack(side="right", padx=(5, 0))
+        tk.Button(disk_add_frame, text="Browse...", command=self._mover_browse_disk).pack(side="right")
         self.mover_add_disk_var = tk.StringVar()
-        tk.Entry(disk_add_frame, textvariable=self.mover_add_disk_var, width=40).pack(side="left", padx=5)
-        tk.Button(disk_add_frame, text="Browse...", command=self._mover_browse_disk).pack(side="left")
-        tk.Button(disk_add_frame, text="Add", command=self._mover_add_disk).pack(side="left", padx=5)
+        tk.Entry(disk_add_frame, textvariable=self.mover_add_disk_var).pack(side="left", padx=5, fill="x", expand=True)
 
         # Strategy
         strat_frame = tk.Frame(bal_frame)

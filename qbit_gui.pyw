@@ -6554,8 +6554,9 @@ class QBitAdderApp:
         client = self.scanner_selected_client
 
         STATUS_MAP = {
-            0: "Not found", 2: "Approved", 3: "Need edit", 5: "Duplicate",
-            7: "Temp", 8: "Premod", 10: "Closed", 11: "Consumed",
+            0: "* Unchecked", 1: "Closed", 2: "Approved", 3: "? Need edit", 4: "Not formatted", 
+            5: "Duplicate", 6: "Closed (CP)", 7: "Consumed", 8: "# Doubtful", 
+            9: "Checking", 10: "T Temporary", 11: "Premod",
         }
 
         try:

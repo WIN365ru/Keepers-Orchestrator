@@ -45,9 +45,10 @@ DEFAULT_CONFIG = {
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
 CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rutracker_categories.json")
 DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_data.db")
+TORRENT_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "torrent_cache.json")
 
 # App Version & Update Info
-APP_VERSION = "0.9.1"
+APP_VERSION = "0.9.3"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -703,6 +704,11 @@ class QBitAdderApp:
         self.notebook.add(self.scanner_tab, text="Folder Scanner")
         self.notebook.add(self.settings_tab, text="Settings")
 
+        # --- Torrent List Cache (per client) ---
+        # Structure: {client_name: {"torrents": [...], "timestamp": float}}
+        self.torrent_cache = {}
+        self._cache_load_from_disk()
+
         self.create_adder_ui()
 
         # Initialize Category Manager (needs log from adder_ui)
@@ -757,10 +763,6 @@ class QBitAdderApp:
         self.scanner_selected_client = None
         self.scanner_stop_event = threading.Event()
         self.create_scanner_ui()
-
-        # --- Torrent List Cache (per client) ---
-        # Structure: {client_name: {"torrents": [...], "timestamp": float}}
-        self.torrent_cache = {}
 
         self.create_settings_ui()
         
@@ -1707,12 +1709,9 @@ class QBitAdderApp:
     def _clear_torrent_cache(self):
         self._cache_invalidate()
         # Reset all cache labels
-        if hasattr(self, 'remover_cache_label'):
-            self.remover_cache_label.config(text="List updated: never", fg="gray")
-        if hasattr(self, 'repair_cache_label'):
-            self.repair_cache_label.config(text="List updated: never", fg="gray")
-        if hasattr(self, 'mover_cache_label'):
-            self.mover_cache_label.config(text="List updated: never", fg="gray")
+        for lbl_name in ('remover_cache_label', 'repair_cache_label', 'mover_cache_label', 'scanner_cache_label'):
+            if hasattr(self, lbl_name):
+                getattr(self, lbl_name).config(text="List updated: never", fg="gray")
         messagebox.showinfo("Cache Cleared", "All cached torrent lists have been cleared.")
 
     def save_rutracker_settings(self):
@@ -2701,7 +2700,33 @@ class QBitAdderApp:
         """Store torrent list in cache for a client."""
         ts = time.time()
         self.torrent_cache[client_name] = {"torrents": torrents, "timestamp": ts}
+        self._cache_save_to_disk()
         return ts
+
+    def _cache_save_to_disk(self):
+        """Persist torrent cache to disk as JSON."""
+        try:
+            with open(TORRENT_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.torrent_cache, f)
+        except Exception:
+            pass  # Non-critical, silently ignore
+
+    def _cache_load_from_disk(self):
+        """Load torrent cache from disk on startup."""
+        try:
+            if os.path.exists(TORRENT_CACHE_FILE):
+                with open(TORRENT_CACHE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    ttl_hours = self.config.get("torrent_cache_ttl_hours", 6)
+                    now = time.time()
+                    for client_name, entry in data.items():
+                        if isinstance(entry, dict) and "torrents" in entry and "timestamp" in entry:
+                            age = now - entry["timestamp"]
+                            if age <= ttl_hours * 3600:
+                                self.torrent_cache[client_name] = entry
+        except Exception:
+            pass  # Corrupted file, start fresh
 
     def _cache_format_time(self, timestamp):
         """Format a cache timestamp to human-readable string."""
@@ -2716,6 +2741,7 @@ class QBitAdderApp:
             self.torrent_cache.pop(client_name, None)
         else:
             self.torrent_cache.clear()
+        self._cache_save_to_disk()
 
     def _update_cache_labels(self, client_name, timestamp):
         """Update all 'last updated' labels across tabs for this client."""
@@ -2755,6 +2781,30 @@ class QBitAdderApp:
             label_widget.config(text=f"List updated: {time_str}", fg="gray")
         else:
             label_widget.config(text="List updated: never", fg="gray")
+
+    def _remover_show_cache_label(self):
+        if hasattr(self, 'remover_cache_label') and hasattr(self, 'remover_client_selector'):
+            idx = self.remover_client_selector.current()
+            if 0 <= idx < len(self.config["clients"]):
+                self._show_cache_time_for_client(self.config["clients"][idx]["name"], self.remover_cache_label)
+
+    def _repair_show_cache_label(self):
+        if hasattr(self, 'repair_cache_label') and hasattr(self, 'repair_client_selector'):
+            idx = self.repair_client_selector.current()
+            if 0 <= idx < len(self.config["clients"]):
+                self._show_cache_time_for_client(self.config["clients"][idx]["name"], self.repair_cache_label)
+
+    def _mover_show_cache_label(self):
+        if hasattr(self, 'mover_cache_label') and hasattr(self, 'mover_client_selector'):
+            idx = self.mover_client_selector.current()
+            if 0 <= idx < len(self.config["clients"]):
+                self._show_cache_time_for_client(self.config["clients"][idx]["name"], self.mover_cache_label)
+
+    def _scanner_show_cache_label(self):
+        if hasattr(self, 'scanner_cache_label') and hasattr(self, 'scanner_client_selector'):
+            idx = self.scanner_client_selector.current()
+            if 0 <= idx < len(self.config["clients"]):
+                self._show_cache_time_for_client(self.config["clients"][idx]["name"], self.scanner_cache_label)
 
     def create_updater_ui(self):
         # --- Scan Controls ---
@@ -2854,18 +2904,16 @@ class QBitAdderApp:
     def _on_tab_changed(self, event):
         if self.is_initializing:
             return
-        current_tab_index = self.notebook.index(self.notebook.select())
-        if current_tab_index == 1: # Update Torrents tab
-            # Check auto-update logic
+        selected = self.notebook.select()
+        tab_widget = self.root.nametowidget(selected)
+
+        # --- Update Torrents tab: auto-scan logic ---
+        if tab_widget is self.updater_tab:
             auto_enabled = self.config.get("auto_update_enabled", False)
             interval_min = self.config.get("auto_update_interval_min", 60)
-            
             should_scan = False
             now = time.time()
-            
             if not getattr(self, 'has_initial_scan_done', False):
-                # Always scan on first visit if user wants it, OR if we want manual only initially?
-                # User asked "disable it by default". So first visit shouldn't scan if disabled.
                 self.has_initial_scan_done = True
                 if auto_enabled:
                     should_scan = True
@@ -2873,17 +2921,27 @@ class QBitAdderApp:
                  last_scan = getattr(self, 'last_update_scan_time', 0)
                  if (now - last_scan) > (interval_min * 60):
                      should_scan = True
-
             if should_scan:
                 self.last_update_scan_time = now
-                self.updater_start_scan() # Changed from scan_for_updates to updater_start_scan
+                self.updater_start_scan()
             else:
-                 # Just update dropdowns if not scanning
-                 self.update_updater_client_dropdown()
+                self.update_updater_client_dropdown()
 
-        if current_tab_index == 2: # Repair tab
-            # No specific action for repair tab yet, but placeholder is good.
-            pass
+        # --- Auto-populate tabs from cache when tree is empty ---
+        if tab_widget is self.remover_tab:
+            if not self.remover_tree.get_children():
+                self.remover_load_torrents()
+            else:
+                self._remover_show_cache_label()
+
+        elif tab_widget is self.repair_tab:
+            self._repair_show_cache_label()
+
+        elif tab_widget is self.mover_tab:
+            self._mover_show_cache_label()
+
+        elif tab_widget is self.scanner_tab:
+            self._scanner_show_cache_label()
 
     def update_updater_client_dropdown(self):
         if hasattr(self, 'updater_client_selector'):

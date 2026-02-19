@@ -8,3 +8,4 @@ docs.html
 /__pycache__
 /changelog
 q_adder_data.db
+q_adder_hashes.db

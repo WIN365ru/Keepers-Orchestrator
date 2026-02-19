@@ -47,7 +47,7 @@ CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "
 DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_data.db")
 
 # App Version & Update Info
-APP_VERSION = "0.8.0-beta1"
+APP_VERSION = "0.9.0-beta1"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -658,7 +658,19 @@ class QBitAdderApp:
         self.root = root
         self.root.title("qBittorrent Auto-Adder")
         self.root.geometry("1000x825")
-        
+
+        # Custom progress bar styling
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure("green.Horizontal.TProgressbar",
+            troughcolor="#e0e0e0", background="#4CAF50",
+            darkcolor="#388E3C", lightcolor="#66BB6A",
+            bordercolor="#bdbdbd", thickness=22)
+        style.configure("blue.Horizontal.TProgressbar",
+            troughcolor="#e0e0e0", background="#2196F3",
+            darkcolor="#1976D2", lightcolor="#42A5F5",
+            bordercolor="#bdbdbd", thickness=22)
+
         self.config = self.load_config()
         self.db_manager = DatabaseManager(DATA_DB_FILE)
         self.selected_files = [] # List of file paths
@@ -772,6 +784,35 @@ class QBitAdderApp:
 
         # Start Category Manager (Auto-fetch if needed)
         threading.Thread(target=self._initial_category_fetch, daemon=True).start()
+
+    # --- Unified progress helpers ---
+
+    def _update_progress(self, progressbar, label, current, total, phase, start_time=None):
+        """Thread-safe progress update for any tab with optional elapsed/ETA."""
+        pct = int(current / total * 100) if total > 0 else 0
+        text = f"{phase}... {current}/{total} ({pct}%)"
+        if start_time is not None:
+            elapsed = time.time() - start_time
+            elapsed_str = self._format_elapsed(elapsed)
+            text += f"  [{elapsed_str}"
+            if pct > 5 and elapsed > 3 and current > 0:
+                rate = current / elapsed
+                if rate > 0:
+                    remaining = (total - current) / rate
+                    text += f" | ~{self._format_elapsed(remaining)} left"
+            text += "]"
+        def _do(p=pct, t=text):
+            progressbar.configure(value=p)
+            label.config(text=t)
+        self.root.after(0, _do)
+
+    @staticmethod
+    def _format_elapsed(seconds):
+        """Format seconds into human-readable string."""
+        m, s = divmod(int(seconds), 60)
+        if m > 0:
+            return f"{m}m {s}s"
+        return f"{s}s"
 
     def save_user_keys(self, keys):
         """Callback to save user keys to global config."""
@@ -1001,7 +1042,7 @@ class QBitAdderApp:
         self.remover_status = tk.Label(status_frame, text="", fg="gray", anchor="w")
         self.remover_status.pack(side="left", fill="x", expand=True)
         
-        self.remover_progress = ttk.Progressbar(status_frame, mode='determinate', length=200)
+        self.remover_progress = ttk.Progressbar(status_frame, mode='determinate', length=200, style="green.Horizontal.TProgressbar")
         # self.remover_progress.pack(side="right") # Pack only when busy
         
         # 6. Main Remove Button
@@ -1423,8 +1464,8 @@ class QBitAdderApp:
         self.cats_status_label = tk.Label(top_row, text=self.get_cats_status_text())
         self.cats_status_label.pack(side="left", padx=10)
 
-        self.cats_progress = ttk.Progressbar(data_frame, mode='determinate', length=300)
-        self.cats_progress_label = tk.Label(data_frame, text="", fg="gray")
+        self.cats_progress = ttk.Progressbar(data_frame, mode='determinate', length=300, style="green.Horizontal.TProgressbar")
+        self.cats_progress_label = tk.Label(data_frame, text="", fg="#333333", font=("Segoe UI", 9))
 
         # Version & Update
         v_frame = tk.Frame(self.settings_tab)
@@ -1549,16 +1590,13 @@ class QBitAdderApp:
         self.cats_progress_label.pack(fill="x", padx=5, pady=(0, 5))
         self.cats_progress['value'] = 0
         self.cats_progress_label.config(text="Starting...")
+        self._cats_start_time = time.time()
         threading.Thread(target=self._refresh_cats_thread, daemon=True).start()
 
     def _refresh_progress(self, current, total):
         """Called from refresh_cache thread to update progress bar."""
-        pct = int(current / total * 100) if total > 0 else 0
-        self.root.after(0, lambda c=current, t=total, p=pct: self._update_progress_ui(c, t, p))
-
-    def _update_progress_ui(self, current, total, pct):
-        self.cats_progress['value'] = pct
-        self.cats_progress_label.config(text=f"Crawling sub-categories... {current}/{total} ({pct}%)")
+        self._update_progress(self.cats_progress, self.cats_progress_label,
+            current, total, "Crawling sub-categories", self._cats_start_time)
 
     def _refresh_cats_thread(self):
         try:
@@ -1899,6 +1937,15 @@ class QBitAdderApp:
         
         self.stop_btn = tk.Button(action_frame, text="Stop", command=self.stop_processing, state="disabled", fg="red", height=2)
         self.stop_btn.pack(side="left", padx=5)
+
+        # --- Adder Progress (hidden until processing) ---
+        self.adder_prog_frame = tk.Frame(self.adder_tab)
+        self.adder_progress = ttk.Progressbar(self.adder_prog_frame, mode='determinate',
+            style="green.Horizontal.TProgressbar")
+        self.adder_progress.pack(fill="x", padx=5, pady=(2, 0))
+        self.adder_progress_label = tk.Label(self.adder_prog_frame, text="",
+            fg="#333333", font=("Segoe UI", 9))
+        self.adder_progress_label.pack(fill="x", padx=5, pady=(0, 2))
 
         # Log
         log_frame = tk.LabelFrame(self.adder_tab, text="Log", padx=1, pady=1)
@@ -2344,6 +2391,9 @@ class QBitAdderApp:
 
         # Processing Loop
         job_start = time.time()
+        self._adder_start_time = job_start
+        self.root.after(0, lambda: self.adder_prog_frame.pack(fill="x", padx=10,
+            before=self.log_area.master))
         success_count = 0
         fail_count = 0
         processed = 0
@@ -2391,9 +2441,8 @@ class QBitAdderApp:
                     fail_count += 1
 
             processed += 1
-            pct = int(processed / total_items * 100)
-            self.root.after(0, lambda p=pct, c=processed, t=total_items:
-                self.status_bar.config(text=f"Adding: {c}/{t} ({p}%)"))
+            self._update_progress(self.adder_progress, self.adder_progress_label,
+                processed, total_items, "Adding", self._adder_start_time)
 
             if self.stop_event.is_set():
                 self.log("Stopped by user.")
@@ -2407,6 +2456,7 @@ class QBitAdderApp:
             summary += f", {fail_count} failed"
         summary += f" ({time_str})"
         self.log(summary)
+        self.root.after(0, self.adder_prog_frame.pack_forget)
         self.root.after(0, lambda: self.status_bar.config(text="Ready"))
         messagebox.showinfo("Done", summary)
 
@@ -2723,9 +2773,9 @@ class QBitAdderApp:
 
         # --- Progress (hidden until scan) ---
         self.updater_prog_frame = tk.Frame(self.updater_tab)
-        self.updater_progress = ttk.Progressbar(self.updater_prog_frame, mode='determinate')
+        self.updater_progress = ttk.Progressbar(self.updater_prog_frame, mode='determinate', style="green.Horizontal.TProgressbar")
         self.updater_progress.pack(fill="x", padx=5, pady=(2, 0))
-        self.updater_progress_label = tk.Label(self.updater_prog_frame, text="", fg="gray")
+        self.updater_progress_label = tk.Label(self.updater_prog_frame, text="", fg="#333333", font=("Segoe UI", 9))
         self.updater_progress_label.pack(fill="x", padx=5, pady=(0, 2))
 
         # --- Results Treeview ---
@@ -3183,11 +3233,8 @@ class QBitAdderApp:
                 threading.Thread(target=self._lookup_torrent_category, args=(topic_id, lines), daemon=True).start()
 
     def _updater_update_progress(self, current, total, phase):
-        pct = int(current / total * 100) if total > 0 else 0
-        def _update(p=pct, c=current, t=total, ph=phase):
-            self.updater_progress.configure(value=p)
-            self.updater_progress_label.config(text=f"{ph}... {c}/{t} ({p}%)")
-        self.root.after(0, _update)
+        self._update_progress(self.updater_progress, self.updater_progress_label,
+            current, total, phase, getattr(self, '_updater_start_time', None))
 
     def _updater_add_tree_row(self, entry):
         status = entry.get("topic_status", "Unknown")
@@ -3269,6 +3316,7 @@ class QBitAdderApp:
         threading.Thread(target=self._updater_scan_thread, daemon=True).start()
 
     def _updater_scan_thread(self):
+        self._updater_start_time = time.time()
         client = self.updater_selected_client
         url = client["url"]
 
@@ -3490,10 +3538,14 @@ class QBitAdderApp:
             return
 
         self._updater_set_action_buttons("disabled")
+        self.updater_prog_frame.pack(fill="x", padx=10, after=self.updater_tab.winfo_children()[0])
+        self.updater_progress['value'] = 0
+        self.updater_progress_label.config(text="Starting action...")
         threading.Thread(target=self._updater_action_thread,
             args=(action_type, selected_entries), daemon=True).start()
 
     def _updater_action_thread(self, action_type, entries):
+        action_start = time.time()
         client = self.updater_selected_client
         url = client["url"]
         session = self.updater_qbit_session
@@ -3516,8 +3568,9 @@ class QBitAdderApp:
 
         success = 0
         fail = 0
+        total = len(entries)
 
-        for entry in entries:
+        for i, entry in enumerate(entries):
             t_hash = entry["hash"]
             t_name = entry["name"]
             topic_id = entry.get("topic_id")
@@ -3624,12 +3677,17 @@ class QBitAdderApp:
                 fail += 1
                 self.updater_log(f"Error processing {t_name[:60]}: {e}")
 
+            action_label = action_type.replace("_", " ").title()
+            self._update_progress(self.updater_progress, self.updater_progress_label,
+                i + 1, total, action_label, action_start)
+
         # Invalidate cache since torrents were re-added
         if success > 0:
             self._cache_invalidate(client["name"])
 
         summary = f"Done: {success} succeeded, {fail} failed"
         self.updater_log(summary)
+        self.root.after(0, self.updater_prog_frame.pack_forget)
         self.root.after(0, lambda: messagebox.showinfo("Done", summary))
         self.root.after(0, lambda: self._updater_set_action_buttons(
             "normal" if self.updater_scan_results else "disabled"))
@@ -3659,9 +3717,9 @@ class QBitAdderApp:
 
         # --- Progress (hidden until scan) ---
         self.repair_prog_frame = tk.Frame(self.repair_tab)
-        self.repair_progress = ttk.Progressbar(self.repair_prog_frame, mode='determinate')
+        self.repair_progress = ttk.Progressbar(self.repair_prog_frame, mode='determinate', style="green.Horizontal.TProgressbar")
         self.repair_progress.pack(fill="x", padx=5, pady=(2, 0))
-        self.repair_progress_label = tk.Label(self.repair_prog_frame, text="", fg="gray")
+        self.repair_progress_label = tk.Label(self.repair_prog_frame, text="", fg="#333333", font=("Segoe UI", 9))
         self.repair_progress_label.pack(fill="x", padx=5, pady=(0, 2))
 
         # --- Results Treeview ---
@@ -3755,11 +3813,8 @@ class QBitAdderApp:
         self.repair_all_btn.config(state=state)
 
     def _repair_update_progress(self, current, total, phase):
-        pct = int(current / total * 100) if total > 0 else 0
-        def _update(p=pct, c=current, t=total, ph=phase):
-            self.repair_progress.configure(value=p)
-            self.repair_progress_label.config(text=f"{ph}... {c}/{t} ({p}%)")
-        self.root.after(0, _update)
+        self._update_progress(self.repair_progress, self.repair_progress_label,
+            current, total, phase, getattr(self, '_repair_start_time', None))
 
     def _repair_scan_finished(self):
         self.repair_scanning = False
@@ -3834,7 +3889,8 @@ class QBitAdderApp:
         return base + "/" + "/".join(parts)
 
     def _repair_scan_thread(self):
-        scan_start = time.time()
+        self._repair_start_time = time.time()
+        scan_start = self._repair_start_time
         client = self.repair_selected_client
         url = client["url"]
         base_save_path = client["base_save_path"]
@@ -4099,6 +4155,9 @@ class QBitAdderApp:
 
         self._repair_set_action_buttons("disabled")
         self.repair_scan_btn.config(state="disabled")
+        self.repair_prog_frame.pack(fill="x", padx=10, after=self.repair_tab.winfo_children()[0])
+        self.repair_progress['value'] = 0
+        self.repair_progress_label.config(text="Starting repair...")
         threading.Thread(target=self._repair_action_thread, args=(hashes,), daemon=True).start()
 
     def _repair_action_thread(self, hashes):
@@ -4198,6 +4257,9 @@ class QBitAdderApp:
                 self.repair_log(f"  Error: {e}")
                 self.root.after(0, lambda h=t_hash: self.repair_tree.item(h, tags=("error",)))
 
+            self._update_progress(self.repair_progress, self.repair_progress_label,
+                i + 1, len(hashes), "Repairing", repair_start)
+
         # Invalidate cache since torrents were modified
         if success > 0:
             self._cache_invalidate(client["name"])
@@ -4205,6 +4267,7 @@ class QBitAdderApp:
         elapsed = time.time() - repair_start
         summary = f"Done: {success} repaired, {fail} failed (Elapsed: {elapsed:.1f}s)"
         self.repair_log(summary)
+        self.root.after(0, self.repair_prog_frame.pack_forget)
         self.root.after(0, lambda: messagebox.showinfo("Repair Complete", summary))
         self.root.after(0, lambda: self._repair_set_action_buttons(
             "normal" if self.repair_scan_results else "disabled"))
@@ -4450,9 +4513,9 @@ class QBitAdderApp:
 
         # --- Progress ---
         self.mover_prog_frame = tk.Frame(parent)
-        self.mover_progress = ttk.Progressbar(self.mover_prog_frame, mode='determinate')
+        self.mover_progress = ttk.Progressbar(self.mover_prog_frame, mode='determinate', style="green.Horizontal.TProgressbar")
         self.mover_progress.pack(fill="x", padx=5, pady=(2, 0))
-        self.mover_progress_label = tk.Label(self.mover_prog_frame, text="", fg="gray")
+        self.mover_progress_label = tk.Label(self.mover_prog_frame, text="", fg="#333333", font=("Segoe UI", 9))
         self.mover_progress_label.pack(fill="x", padx=5, pady=(0, 2))
 
         # --- Log ---
@@ -4475,11 +4538,8 @@ class QBitAdderApp:
         self.root.after(0, _write)
 
     def _mover_update_progress(self, current, total, phase):
-        pct = int(current / total * 100) if total > 0 else 0
-        def _update(p=pct, c=current, t=total, ph=phase):
-            self.mover_progress.configure(value=p)
-            self.mover_progress_label.config(text=f"{ph}... {c}/{t} ({p}%)")
-        self.root.after(0, _update)
+        self._update_progress(self.mover_progress, self.mover_progress_label,
+            current, total, phase, getattr(self, '_mover_start_time', None))
 
     def _mover_show_progress(self):
         self.mover_prog_frame.pack(fill="x", padx=10, before=self.mover_log_area.master.master)
@@ -4781,7 +4841,8 @@ class QBitAdderApp:
 
     def _mover_category_thread(self, torrents, new_root, cat_name, create_cat, keep_id, strip_id, create_id,
                                 preresolved_topics=None):
-        start_time = time.time()
+        self._mover_start_time = time.time()
+        start_time = self._mover_start_time
         s = self._get_qbit_session(self.mover_selected_client)
         if not s:
             self.mover_log("Connection failed.")
@@ -5413,6 +5474,15 @@ class QBitAdderApp:
         self.keepers_stop_btn = tk.Button(top_frame, text="Stop", command=self.keepers_stop_scan, state="disabled")
         self.keepers_stop_btn.pack(side="left")
 
+        # --- Keepers Progress (hidden until scanning) ---
+        self.keepers_prog_frame = tk.Frame(self.keepers_tab)
+        self.keepers_progress = ttk.Progressbar(self.keepers_prog_frame, mode='indeterminate',
+            style="blue.Horizontal.TProgressbar")
+        self.keepers_progress.pack(fill="x", padx=5, pady=(2, 0))
+        self.keepers_progress_label = tk.Label(self.keepers_prog_frame, text="",
+            fg="#333333", font=("Segoe UI", 9))
+        self.keepers_progress_label.pack(fill="x", padx=5, pady=(0, 2))
+
         # Results Treeview
         tree_frame = tk.Frame(self.keepers_tab)
         tree_frame.pack(fill="both", expand=True, padx=5, pady=5)
@@ -5512,6 +5582,11 @@ class QBitAdderApp:
         self.keepers_log_area.config(state='normal')
         self.keepers_log_area.delete(1.0, tk.END)
         self.keepers_log_area.config(state='disabled')
+
+        # Show indeterminate progress
+        self.keepers_prog_frame.pack(fill="x", padx=5, after=self.keepers_tab.winfo_children()[0])
+        self.keepers_progress.start(15)
+        self.keepers_progress_label.config(text="Scanning...")
 
         t = threading.Thread(target=self._keepers_scan_thread, args=(cat_id, max_seeds, client_conf))
         t.daemon = True
@@ -5637,7 +5712,10 @@ class QBitAdderApp:
             while page < limit_pages and not self.keepers_stop_event.is_set():
                 url = f"https://rutracker.org/forum/viewforum.php?f={cat_id}&start={page*50}"
                 self.keepers_log(f"Fetching page {page+1}...")
-                
+                self.root.after(0, lambda p=page+1, fc=found_count:
+                    self.keepers_progress_label.config(
+                        text=f"Scanning page {p}/{limit_pages}... ({fc} found)"))
+
                 resp = self.cat_manager.session.get(url, timeout=15)
                 if resp.encoding == 'ISO-8859-1': resp.encoding = 'cp1251'
                 
@@ -5737,8 +5815,12 @@ class QBitAdderApp:
         self.db_manager.log_scan(cat_id, page*50, 0, found_count)
         
         self.keepers_scan_active = False
-        self.root.after(0, lambda: self.keepers_scan_btn.config(state="normal"))
-        self.root.after(0, lambda: self.keepers_stop_btn.config(state="disabled"))
+        def _keepers_finish():
+            self.keepers_progress.stop()
+            self.keepers_prog_frame.pack_forget()
+            self.keepers_scan_btn.config(state="normal")
+            self.keepers_stop_btn.config(state="disabled")
+        self.root.after(0, _keepers_finish)
 
     def _keepers_insert_tree(self, t, status):
         link = f"https://rutracker.org/forum/viewtopic.php?t={t['id']}"
@@ -6022,9 +6104,9 @@ class QBitAdderApp:
 
         # --- Progress (hidden until scan) ---
         self.scanner_prog_frame = tk.Frame(self.scanner_tab)
-        self.scanner_progress = ttk.Progressbar(self.scanner_prog_frame, mode='determinate')
+        self.scanner_progress = ttk.Progressbar(self.scanner_prog_frame, mode='determinate', style="green.Horizontal.TProgressbar")
         self.scanner_progress.pack(fill="x", padx=5, pady=(2, 0))
-        self.scanner_progress_label = tk.Label(self.scanner_prog_frame, text="", fg="gray")
+        self.scanner_progress_label = tk.Label(self.scanner_prog_frame, text="", fg="#333333", font=("Segoe UI", 9))
         self.scanner_progress_label.pack(fill="x", padx=5, pady=(0, 2))
 
         # --- Results Treeview ---
@@ -6137,11 +6219,8 @@ class QBitAdderApp:
             self.scanner_folder_var.set(path.replace("\\", "/"))
 
     def _scanner_update_progress(self, current, total, phase):
-        pct = int(current / total * 100) if total > 0 else 0
-        def _update(p=pct, c=current, t=total, ph=phase):
-            self.scanner_progress.configure(value=p)
-            self.scanner_progress_label.config(text=f"{ph}... {c}/{t} ({p}%)")
-        self.root.after(0, _update)
+        self._update_progress(self.scanner_progress, self.scanner_progress_label,
+            current, total, phase, getattr(self, '_scanner_start_time', None))
 
     def _scanner_scan_finished(self):
         self.scanner_scanning = False
@@ -6210,7 +6289,8 @@ class QBitAdderApp:
         threading.Thread(target=self._scanner_scan_thread, args=(folder_path,), daemon=True).start()
 
     def _scanner_scan_thread(self, root_folder):
-        scan_start = time.time()
+        self._scanner_start_time = time.time()
+        scan_start = self._scanner_start_time
         client = self.scanner_selected_client
 
         STATUS_MAP = {
@@ -6447,6 +6527,9 @@ class QBitAdderApp:
 
         self.scanner_add_btn.config(state="disabled")
         self.scanner_add_all_btn.config(state="disabled")
+        self.scanner_prog_frame.pack(fill="x", padx=10, after=self.scanner_tab.winfo_children()[0])
+        self.scanner_progress['value'] = 0
+        self.scanner_progress_label.config(text="Starting add...")
         threading.Thread(target=self._scanner_add_thread, args=(to_add,), daemon=True).start()
 
     def _scanner_add_all_missing(self):
@@ -6466,13 +6549,18 @@ class QBitAdderApp:
 
         self.scanner_add_btn.config(state="disabled")
         self.scanner_add_all_btn.config(state="disabled")
+        self.scanner_prog_frame.pack(fill="x", padx=10, after=self.scanner_tab.winfo_children()[0])
+        self.scanner_progress['value'] = 0
+        self.scanner_progress_label.config(text="Starting add...")
         threading.Thread(target=self._scanner_add_thread, args=(to_add,), daemon=True).start()
 
     def _scanner_add_thread(self, to_add):
+        add_start = time.time()
         client = self.scanner_selected_client
         session = self._get_qbit_session(client)
         if not session:
             self.scanner_log("Could not connect to qBittorrent.")
+            self.root.after(0, self.scanner_prog_frame.pack_forget)
             self.root.after(0, lambda: self.scanner_add_btn.config(state="normal"))
             self.root.after(0, lambda: self.scanner_add_all_btn.config(state="normal"))
             return
@@ -6539,10 +6627,14 @@ class QBitAdderApp:
                 self.scanner_log(f"  [{i+1}/{len(to_add)}] Error: {tid}: {e}")
                 failed += 1
 
+            self._update_progress(self.scanner_progress, self.scanner_progress_label,
+                i + 1, len(to_add), "Adding torrents", add_start)
+
         if added > 0:
             self._cache_invalidate(client["name"])
 
         self.scanner_log(f"Done: {added} added, {failed} failed.")
+        self.root.after(0, self.scanner_prog_frame.pack_forget)
         self.root.after(0, lambda: self.scanner_add_btn.config(state="normal"))
         self.root.after(0, lambda: self.scanner_add_all_btn.config(state="normal"))
 

@@ -679,14 +679,16 @@ class QBitAdderApp:
         self.remover_tab = tk.Frame(self.notebook)
         self.repair_tab = tk.Frame(self.notebook)
         self.mover_tab = tk.Frame(self.notebook)
+        self.scanner_tab = tk.Frame(self.notebook)
         self.settings_tab = tk.Frame(self.notebook)
 
         self.notebook.add(self.adder_tab, text="Add Torrents")
-        self.notebook.add(self.keepers_tab, text="Keepers") # New Tab
+        self.notebook.add(self.keepers_tab, text="Keepers")
         self.notebook.add(self.updater_tab, text="Update Torrents")
         self.notebook.add(self.remover_tab, text="Remove Torrents")
         self.notebook.add(self.repair_tab, text="Repair Categories")
         self.notebook.add(self.mover_tab, text="Move Torrents")
+        self.notebook.add(self.scanner_tab, text="Folder Scanner")
         self.notebook.add(self.settings_tab, text="Settings")
 
         self.create_adder_ui()
@@ -736,6 +738,13 @@ class QBitAdderApp:
         self.mover_cat_remaining = []    # Torrents still to move after stop
         self.mover_cat_last_params = {}  # {new_root, cat_name, create_cat, keep_id, strip_id, create_id, hash_to_topic}
         self.create_mover_ui()
+
+        # Folder Scanner tab state
+        self.scanner_scanning = False
+        self.scanner_scan_results = []
+        self.scanner_selected_client = None
+        self.scanner_stop_event = threading.Event()
+        self.create_scanner_ui()
 
         # --- Torrent List Cache (per client) ---
         # Structure: {client_name: {"torrents": [...], "timestamp": float}}
@@ -1521,6 +1530,7 @@ class QBitAdderApp:
         self.update_repair_client_dropdown()
         self.update_remover_client_dropdown()
         self.update_mover_client_dropdown()
+        self.update_scanner_client_dropdown()
 
     def get_cats_status_text(self):
         last_updated = self.cat_manager.cache.get('last_updated', '')
@@ -2681,6 +2691,12 @@ class QBitAdderApp:
                 if self.config["clients"][r_idx]["name"] == client_name:
                     self.mover_cache_label.config(text=text, fg="gray")
 
+        if hasattr(self, 'scanner_cache_label'):
+            r_idx = self.scanner_client_selector.current()
+            if r_idx >= 0 and r_idx < len(self.config["clients"]):
+                if self.config["clients"][r_idx]["name"] == client_name:
+                    self.scanner_cache_label.config(text=text, fg="gray")
+
     def _show_cache_time_for_client(self, client_name, label_widget):
         """Show the cache time on a specific label for a given client name."""
         entry = self.torrent_cache.get(client_name)
@@ -2774,6 +2790,7 @@ class QBitAdderApp:
         self.update_updater_client_dropdown()
         self.update_repair_client_dropdown()
         self.update_mover_client_dropdown()
+        self.update_scanner_client_dropdown()
 
     def updater_log(self, message):
         """Log to the updater tab's own log area (thread-safe)."""
@@ -5766,28 +5783,29 @@ class QBitAdderApp:
         return ids
 
 
-    def _download_torrent_content(self, tid):
+    def _download_torrent_content(self, tid, log_func=None):
         """Helper to download .torrent file content with auth retry."""
+        _log = log_func or self.keepers_log
         try:
             dl_url = f"https://rutracker.org/forum/dl.php?t={tid}"
             t_content = self.cat_manager.session.get(dl_url).content
-            
+
             if b'login_username' in t_content or b'login.php' in t_content:
-                    self.keepers_log(f"  Session expired. Logging in...")
+                    _log(f"  Session expired. Logging in...")
                     user, pwd = self._get_rutracker_creds()
                     if user and pwd and self.cat_manager.login(user, pwd):
                         t_content = self.cat_manager.session.get(dl_url).content
                     else:
-                        self.keepers_log(f"  Login failed. Skipping {tid}.")
+                        _log(f"  Login failed. Skipping {tid}.")
                         return None
 
             if b'bbtitle' in t_content: # Login page or error remaining
-                    self.keepers_log(f"  Failed to download .torrent for {tid}")
+                    _log(f"  Failed to download .torrent for {tid}")
                     return None
-            
+
             return t_content
         except Exception as e:
-            self.keepers_log(f"  Download error for {tid}: {e}")
+            _log(f"  Download error for {tid}: {e}")
             return None
 
     def _keepers_add_selected(self):
@@ -5952,6 +5970,605 @@ class QBitAdderApp:
         except Exception as e:
             self.stats_label_active.config(text=f"Active Seeding Size: (Error)")
             print(f"Stats Error: {e}")
+
+
+    # ===================================================================
+    # FOLDER SCANNER TAB
+    # ===================================================================
+
+    def create_scanner_ui(self):
+        # --- Scan Controls ---
+        ctrl_frame = tk.LabelFrame(self.scanner_tab, text="Scan Controls", padx=10, pady=5)
+        ctrl_frame.pack(fill="x", padx=10, pady=5)
+
+        row1 = tk.Frame(ctrl_frame)
+        row1.pack(fill="x", pady=2)
+        tk.Label(row1, text="Folder:").pack(side="left")
+        self.scanner_folder_var = tk.StringVar()
+        tk.Entry(row1, textvariable=self.scanner_folder_var, width=60).pack(side="left", padx=5)
+        tk.Button(row1, text="Browse...", command=self._scanner_browse_folder).pack(side="left")
+
+        row2 = tk.Frame(ctrl_frame)
+        row2.pack(fill="x", pady=2)
+        tk.Label(row2, text="Client:").pack(side="left")
+        self.scanner_client_selector = ttk.Combobox(row2, state="readonly", width=25)
+        self.scanner_client_selector.pack(side="left", padx=5)
+        self.scanner_client_selector.bind("<<ComboboxSelected>>", lambda e: self._scanner_on_client_changed())
+
+        self.scanner_scan_btn = tk.Button(row2, text="Scan", command=self.scanner_start_scan)
+        self.scanner_scan_btn.pack(side="left", padx=5)
+
+        self.scanner_stop_btn = tk.Button(row2, text="Stop", command=self.scanner_stop_scan, state="disabled")
+        self.scanner_stop_btn.pack(side="left", padx=5)
+
+        self.scanner_cache_label = tk.Label(row2, text="List updated: never", fg="gray")
+        self.scanner_cache_label.pack(side="left", padx=10)
+
+        # --- Options ---
+        opts_frame = tk.Frame(self.scanner_tab)
+        opts_frame.pack(fill="x", padx=10, pady=2)
+
+        self.scanner_recursive_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(opts_frame, text="Scan subfolders recursively",
+            variable=self.scanner_recursive_var).pack(side="left", padx=5)
+
+        self.scanner_use_parent_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(opts_frame, text="Use parent folder as save_path (content lives in /ID/ folder)",
+            variable=self.scanner_use_parent_var).pack(side="left", padx=5)
+
+        self.scanner_start_paused_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(opts_frame, text="Start paused",
+            variable=self.scanner_start_paused_var).pack(side="left", padx=5)
+
+        # --- Progress (hidden until scan) ---
+        self.scanner_prog_frame = tk.Frame(self.scanner_tab)
+        self.scanner_progress = ttk.Progressbar(self.scanner_prog_frame, mode='determinate')
+        self.scanner_progress.pack(fill="x", padx=5, pady=(2, 0))
+        self.scanner_progress_label = tk.Label(self.scanner_prog_frame, text="", fg="gray")
+        self.scanner_progress_label.pack(fill="x", padx=5, pady=(0, 2))
+
+        # --- Results Treeview ---
+        results_frame = tk.LabelFrame(self.scanner_tab, text="Scan Results", padx=5, pady=5)
+        results_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        tree_container = tk.Frame(results_frame)
+        tree_container.pack(fill="both", expand=True)
+
+        cols = ("topic_id", "name", "size", "seeds", "leech", "status", "category", "in_qbit", "disk_path")
+        self.scanner_tree = ttk.Treeview(tree_container, columns=cols, show="headings", selectmode="extended")
+
+        self.scanner_tree.heading("topic_id", text="Topic ID",
+            command=lambda: self.sort_tree(self.scanner_tree, "topic_id", False))
+        self.scanner_tree.heading("name", text="Name",
+            command=lambda: self.sort_tree(self.scanner_tree, "name", False))
+        self.scanner_tree.heading("size", text="Size",
+            command=lambda: self.sort_tree(self.scanner_tree, "size", False))
+        self.scanner_tree.heading("seeds", text="Seeds",
+            command=lambda: self.sort_tree(self.scanner_tree, "seeds", False))
+        self.scanner_tree.heading("leech", text="Leech",
+            command=lambda: self.sort_tree(self.scanner_tree, "leech", False))
+        self.scanner_tree.heading("status", text="RT Status",
+            command=lambda: self.sort_tree(self.scanner_tree, "status", False))
+        self.scanner_tree.heading("category", text="Category",
+            command=lambda: self.sort_tree(self.scanner_tree, "category", False))
+        self.scanner_tree.heading("in_qbit", text="In qBit",
+            command=lambda: self.sort_tree(self.scanner_tree, "in_qbit", False))
+        self.scanner_tree.heading("disk_path", text="Disk Path",
+            command=lambda: self.sort_tree(self.scanner_tree, "disk_path", False))
+
+        self.scanner_tree.column("topic_id", width=70, minwidth=50)
+        self.scanner_tree.column("name", width=280, minwidth=120)
+        self.scanner_tree.column("size", width=80, minwidth=50)
+        self.scanner_tree.column("seeds", width=50, minwidth=35)
+        self.scanner_tree.column("leech", width=50, minwidth=35)
+        self.scanner_tree.column("status", width=80, minwidth=60)
+        self.scanner_tree.column("category", width=120, minwidth=60)
+        self.scanner_tree.column("in_qbit", width=55, minwidth=40)
+        self.scanner_tree.column("disk_path", width=200, minwidth=80)
+
+        tree_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.scanner_tree.yview)
+        self.scanner_tree.configure(yscrollcommand=tree_scroll.set)
+        self.scanner_tree.pack(side="left", fill="both", expand=True)
+        tree_scroll.pack(side="right", fill="y")
+
+        self.scanner_tree.tag_configure("in_client", foreground="dark green")
+        self.scanner_tree.tag_configure("missing", foreground="dark red")
+        self.scanner_tree.tag_configure("dead", foreground="gray")
+
+        self.scanner_tree.bind("<Double-1>", self._scanner_on_double_click)
+
+        self.scanner_summary_label = tk.Label(results_frame, text="Enter a folder path and click Scan.", fg="gray")
+        self.scanner_summary_label.pack(anchor="w", padx=5)
+
+        # --- Action Buttons ---
+        btn_frame = tk.Frame(self.scanner_tab)
+        btn_frame.pack(fill="x", padx=10, pady=3)
+
+        self.scanner_add_btn = tk.Button(btn_frame, text="Add Selected to qBit",
+            command=self._scanner_add_selected, state="disabled")
+        self.scanner_add_btn.pack(side="left", padx=3)
+
+        self.scanner_add_all_btn = tk.Button(btn_frame, text="Add All Missing",
+            command=self._scanner_add_all_missing, state="disabled")
+        self.scanner_add_all_btn.pack(side="left", padx=3)
+
+        self.scanner_dl_btn = tk.Button(btn_frame, text="Download .torrent",
+            command=self._scanner_download_torrent, state="disabled")
+        self.scanner_dl_btn.pack(side="left", padx=3)
+
+        # --- Log ---
+        log_frame = tk.LabelFrame(self.scanner_tab, text="Log", padx=5, pady=5)
+        log_frame.pack(fill="x", padx=10, pady=5)
+
+        self.scanner_log_area = scrolledtext.ScrolledText(log_frame, height=6, state="disabled", wrap="word")
+        self.scanner_log_area.pack(fill="x")
+
+        self.update_scanner_client_dropdown()
+
+    # --- Utility Methods ---
+
+    def scanner_log(self, message):
+        def _write():
+            self.scanner_log_area.config(state="normal")
+            self.scanner_log_area.insert(tk.END, f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {message}\n")
+            self.scanner_log_area.see(tk.END)
+            self.scanner_log_area.config(state="disabled")
+        self.root.after(0, _write)
+
+    def update_scanner_client_dropdown(self):
+        if hasattr(self, 'scanner_client_selector'):
+            names = [c["name"] for c in self.config["clients"]]
+            self.scanner_client_selector['values'] = names
+            idx = self.config.get("last_selected_client_index", 0)
+            if idx >= len(names):
+                idx = 0
+            if names:
+                self.scanner_client_selector.current(idx)
+
+    def _scanner_on_client_changed(self):
+        idx = self.scanner_client_selector.current()
+        if 0 <= idx < len(self.config["clients"]):
+            client_name = self.config["clients"][idx]["name"]
+            self._show_cache_time_for_client(client_name, self.scanner_cache_label)
+
+    def _scanner_browse_folder(self):
+        path = filedialog.askdirectory(title="Select root folder to scan")
+        if path:
+            self.scanner_folder_var.set(path.replace("\\", "/"))
+
+    def _scanner_update_progress(self, current, total, phase):
+        pct = int(current / total * 100) if total > 0 else 0
+        def _update(p=pct, c=current, t=total, ph=phase):
+            self.scanner_progress.configure(value=p)
+            self.scanner_progress_label.config(text=f"{ph}... {c}/{t} ({p}%)")
+        self.root.after(0, _update)
+
+    def _scanner_scan_finished(self):
+        self.scanner_scanning = False
+        def _reset():
+            self.scanner_scan_btn.config(state="normal")
+            self.scanner_stop_btn.config(state="disabled")
+            self.scanner_prog_frame.pack_forget()
+            if self.scanner_scan_results:
+                self.scanner_add_btn.config(state="normal")
+                self.scanner_add_all_btn.config(state="normal")
+                self.scanner_dl_btn.config(state="normal")
+        self.root.after(0, _reset)
+
+    def scanner_stop_scan(self):
+        self.scanner_stop_event.set()
+        self.scanner_log("Stopping scan...")
+        self.scanner_stop_btn.config(state="disabled")
+
+    def _scanner_on_double_click(self, event):
+        item = self.scanner_tree.identify('item', event.x, event.y)
+        if not item:
+            return
+        vals = self.scanner_tree.item(item, "values")
+        if vals:
+            tid = vals[0]
+            webbrowser.open(f"https://rutracker.org/forum/viewtopic.php?t={tid}")
+
+    # --- Scan ---
+
+    def scanner_start_scan(self):
+        if self.scanner_scanning:
+            return
+
+        folder_path = self.scanner_folder_var.get().strip()
+        if not folder_path or not os.path.isdir(folder_path):
+            messagebox.showwarning("Folder Scanner", "Please select a valid folder path.")
+            return
+
+        sel = self.scanner_client_selector.current()
+        if sel < 0 or sel >= len(self.config["clients"]):
+            self.scanner_log("No client selected.")
+            return
+
+        self.scanner_scanning = True
+        self.scanner_scan_results = []
+        self.scanner_stop_event.clear()
+
+        # Clear treeview
+        for item in self.scanner_tree.get_children():
+            self.scanner_tree.delete(item)
+
+        # UI state
+        self.scanner_scan_btn.config(state="disabled")
+        self.scanner_stop_btn.config(state="normal")
+        self.scanner_add_btn.config(state="disabled")
+        self.scanner_add_all_btn.config(state="disabled")
+        self.scanner_dl_btn.config(state="disabled")
+        self.scanner_summary_label.config(text="Scanning...", fg="black")
+
+        # Show progress
+        self.scanner_prog_frame.pack(fill="x", padx=10, after=self.scanner_tab.winfo_children()[0])
+        self.scanner_progress['value'] = 0
+        self.scanner_progress_label.config(text="Scanning folders...")
+
+        self.scanner_selected_client = self.config["clients"][sel]
+        threading.Thread(target=self._scanner_scan_thread, args=(folder_path,), daemon=True).start()
+
+    def _scanner_scan_thread(self, root_folder):
+        scan_start = time.time()
+        client = self.scanner_selected_client
+
+        STATUS_MAP = {
+            0: "Not found", 2: "Approved", 3: "Need edit", 5: "Duplicate",
+            7: "Temp", 8: "Premod", 10: "Closed", 11: "Consumed",
+        }
+
+        try:
+            # === Phase 1: Walk folder tree ===
+            self.scanner_log(f"Scanning folder: {root_folder}")
+            found_folders = []
+            recursive = self.scanner_recursive_var.get()
+
+            if recursive:
+                for dirpath, dirnames, filenames in os.walk(root_folder):
+                    if self.scanner_stop_event.is_set():
+                        break
+                    basename = os.path.basename(dirpath)
+                    if basename.isdigit():
+                        found_folders.append({
+                            "topic_id": basename,
+                            "disk_path": dirpath.replace("\\", "/")
+                        })
+            else:
+                try:
+                    for entry in os.listdir(root_folder):
+                        full = os.path.join(root_folder, entry)
+                        if os.path.isdir(full) and entry.isdigit():
+                            found_folders.append({
+                                "topic_id": entry,
+                                "disk_path": full.replace("\\", "/")
+                            })
+                except Exception as e:
+                    self.scanner_log(f"Error listing folder: {e}")
+
+            if self.scanner_stop_event.is_set():
+                self.scanner_log("Scan stopped by user.")
+                self._scanner_scan_finished()
+                return
+
+            self.scanner_log(f"Found {len(found_folders)} numeric-named folders.")
+
+            if not found_folders:
+                self.root.after(0, lambda: self.scanner_summary_label.config(
+                    text="No numeric folders found.", fg="gray"))
+                self._scanner_scan_finished()
+                return
+
+            # === Phase 2: Batch API - get_tor_topic_data ===
+            self.scanner_log("Fetching topic data from Rutracker API...")
+            topic_ids = list(set(f["topic_id"] for f in found_folders))
+            topic_data = {}
+
+            for batch_start in range(0, len(topic_ids), 100):
+                if self.scanner_stop_event.is_set():
+                    break
+                batch = topic_ids[batch_start:batch_start + 100]
+                self._scanner_update_progress(batch_start + len(batch), len(topic_ids), "Fetching topic data")
+                try:
+                    api_resp = requests.get(
+                        "https://api.rutracker.cc/v1/get_tor_topic_data",
+                        params={"by": "topic_id", "val": ",".join(batch)},
+                        timeout=15)
+                    if api_resp.status_code == 200:
+                        result = api_resp.json().get("result", {})
+                        topic_data.update(result)
+                except Exception as e:
+                    self.scanner_log(f"API error (get_tor_topic_data): {e}")
+
+            if self.scanner_stop_event.is_set():
+                self.scanner_log("Scan stopped by user.")
+                self._scanner_scan_finished()
+                return
+
+            self.scanner_log(f"Got API data for {len(topic_data)} topics.")
+
+            # === Phase 3: Fetch qBit torrent list ===
+            client_name = client["name"]
+            cached, ts = self._cache_get(client_name)
+            if cached is not None:
+                all_torrents = cached
+                self.scanner_log(f"Using cached torrent list ({len(all_torrents)} torrents).")
+                self.root.after(0, lambda: self._show_cache_time_for_client(client_name, self.scanner_cache_label))
+            else:
+                self.scanner_log("Connecting to qBittorrent...")
+                session = self._get_qbit_session(client)
+                if not session:
+                    self.scanner_log("Could not connect to qBittorrent.")
+                    self._scanner_scan_finished()
+                    return
+                try:
+                    resp = session.get(f"{client['url'].rstrip('/')}/api/v2/torrents/info", timeout=30)
+                    if resp.status_code != 200:
+                        self.scanner_log(f"Failed to get torrent list: HTTP {resp.status_code}")
+                        self._scanner_scan_finished()
+                        return
+                    all_torrents = resp.json()
+                    ts = self._cache_put(client_name, all_torrents)
+                    self.root.after(0, lambda: self._update_cache_labels(client_name, ts))
+                except Exception as e:
+                    self.scanner_log(f"Failed to get torrent list: {e}")
+                    self._scanner_scan_finished()
+                    return
+
+            # Build hash lookup
+            qbit_hashes = {}
+            for t in all_torrents:
+                qbit_hashes[t["hash"].lower()] = t
+
+            # === Phase 4: Resolve categories ===
+            self.scanner_log("Resolving categories...")
+            forum_ids_needed = set()
+            for tid, data in topic_data.items():
+                if data and isinstance(data, dict):
+                    fid = data.get("forum_id")
+                    if fid:
+                        forum_ids_needed.add(fid)
+
+            forum_to_category = {}
+            for forum_id in forum_ids_needed:
+                try:
+                    breadcrumb = self.cat_manager._build_breadcrumb_path(forum_id)
+                    if breadcrumb:
+                        forum_to_category[forum_id] = breadcrumb["category"]
+                    else:
+                        name = self.cat_manager.cache.get("categories", {}).get(str(forum_id))
+                        if name:
+                            forum_to_category[forum_id] = name
+                except Exception:
+                    pass
+
+            # === Phase 5: Match and populate treeview ===
+            results = []
+            in_qbit_count = 0
+            missing_count = 0
+            dead_count = 0
+
+            for folder in found_folders:
+                if self.scanner_stop_event.is_set():
+                    break
+
+                tid = folder["topic_id"]
+                disk_path = folder["disk_path"]
+                api_data = topic_data.get(tid)
+
+                entry = {
+                    "topic_id": tid,
+                    "disk_path": disk_path,
+                    "name": "?",
+                    "size": 0,
+                    "size_str": "?",
+                    "seeds": "?",
+                    "leech": "?",
+                    "rt_status": "Not on RT",
+                    "category": "?",
+                    "in_qbit": "?",
+                    "info_hash": None,
+                    "forum_id": None,
+                    "tag": "dead",
+                }
+
+                if api_data and isinstance(api_data, dict):
+                    entry["info_hash"] = api_data.get("info_hash")
+                    entry["forum_id"] = api_data.get("forum_id")
+                    entry["name"] = api_data.get("topic_title", "?")
+                    entry["size"] = api_data.get("size", 0)
+                    entry["size_str"] = format_size(int(api_data.get("size", 0)))
+                    entry["seeds"] = api_data.get("seeders", "?")
+                    entry["leech"] = api_data.get("leechers", "?")
+
+                    tor_status = api_data.get("tor_status")
+                    entry["rt_status"] = STATUS_MAP.get(tor_status, f"Status {tor_status}")
+
+                    fid = api_data.get("forum_id")
+                    if fid and fid in forum_to_category:
+                        entry["category"] = forum_to_category[fid]
+
+                    h = entry["info_hash"]
+                    if h and h.lower() in qbit_hashes:
+                        entry["in_qbit"] = "Yes"
+                        entry["tag"] = "in_client"
+                        in_qbit_count += 1
+                    else:
+                        entry["in_qbit"] = "No"
+                        if tor_status == 2:
+                            entry["tag"] = "missing"
+                            missing_count += 1
+                        else:
+                            entry["tag"] = "dead"
+                            dead_count += 1
+                else:
+                    dead_count += 1
+
+                results.append(entry)
+                self.root.after(0, lambda e=entry: self.scanner_tree.insert("", "end",
+                    values=(e["topic_id"], e["name"], e["size_str"], e["seeds"], e["leech"],
+                            e["rt_status"], e["category"], e["in_qbit"], e["disk_path"]),
+                    tags=(e["tag"],)))
+
+            self.scanner_scan_results = results
+
+            elapsed = time.time() - scan_start
+            summary = (f"Found {len(found_folders)} folders: "
+                       f"{in_qbit_count} in client, "
+                       f"{missing_count} missing (alive), "
+                       f"{dead_count} dead/not on RT "
+                       f"({elapsed:.1f}s)")
+            self.scanner_log(summary)
+            self.root.after(0, lambda s=summary: self.scanner_summary_label.config(text=s, fg="black"))
+
+        except Exception as e:
+            self.scanner_log(f"Scan error: {e}")
+
+        self._scanner_scan_finished()
+
+    # --- Actions ---
+
+    def _scanner_add_selected(self):
+        selected = self.scanner_tree.selection()
+        if not selected:
+            messagebox.showinfo("Folder Scanner", "No rows selected.")
+            return
+
+        to_add = []
+        for item in selected:
+            vals = self.scanner_tree.item(item, "values")
+            if vals[7] == "No":
+                to_add.append({"item_id": item, "topic_id": vals[0],
+                               "category": vals[6], "disk_path": vals[8]})
+
+        if not to_add:
+            messagebox.showinfo("Folder Scanner", "No missing torrents in selection.")
+            return
+
+        self.scanner_add_btn.config(state="disabled")
+        self.scanner_add_all_btn.config(state="disabled")
+        threading.Thread(target=self._scanner_add_thread, args=(to_add,), daemon=True).start()
+
+    def _scanner_add_all_missing(self):
+        to_add = []
+        for item in self.scanner_tree.get_children():
+            vals = self.scanner_tree.item(item, "values")
+            if vals[7] == "No" and vals[5] == "Approved":
+                to_add.append({"item_id": item, "topic_id": vals[0],
+                               "category": vals[6], "disk_path": vals[8]})
+
+        if not to_add:
+            messagebox.showinfo("Folder Scanner", "No missing alive torrents to add.")
+            return
+
+        if not messagebox.askyesno("Confirm", f"Add {len(to_add)} missing torrents to qBit?"):
+            return
+
+        self.scanner_add_btn.config(state="disabled")
+        self.scanner_add_all_btn.config(state="disabled")
+        threading.Thread(target=self._scanner_add_thread, args=(to_add,), daemon=True).start()
+
+    def _scanner_add_thread(self, to_add):
+        client = self.scanner_selected_client
+        session = self._get_qbit_session(client)
+        if not session:
+            self.scanner_log("Could not connect to qBittorrent.")
+            self.root.after(0, lambda: self.scanner_add_btn.config(state="normal"))
+            self.root.after(0, lambda: self.scanner_add_all_btn.config(state="normal"))
+            return
+
+        url = client["url"].rstrip("/")
+        use_parent = self.scanner_use_parent_var.get()
+        paused = self.scanner_start_paused_var.get()
+        added = 0
+        failed = 0
+
+        self.scanner_log(f"Adding {len(to_add)} torrents to qBit...")
+
+        for i, entry in enumerate(to_add):
+            if self.scanner_stop_event.is_set():
+                self.scanner_log("Stopped by user.")
+                break
+
+            tid = entry["topic_id"]
+            disk_path = entry["disk_path"].replace("\\", "/").rstrip("/")
+            category = entry["category"] if entry["category"] != "?" else ""
+
+            # Download .torrent
+            t_content = self._download_torrent_content(tid, log_func=self.scanner_log)
+            if not t_content:
+                failed += 1
+                self.root.after(0, lambda item=entry["item_id"]:
+                    self.scanner_tree.set(item, "in_qbit", "Error"))
+                continue
+
+            # Determine save_path
+            if use_parent:
+                save_path = os.path.dirname(disk_path).replace("\\", "/")
+            else:
+                save_path = disk_path
+
+            files = {'torrents': (f'{tid}.torrent', t_content, 'application/x-bittorrent')}
+            data = {
+                'savepath': save_path,
+                'paused': 'true' if paused else 'false',
+                'tags': 'FolderScan',
+            }
+            if category:
+                data['category'] = category
+
+            try:
+                # Create category if needed (409 = exists, OK)
+                if category:
+                    try:
+                        session.post(f"{url}/api/v2/torrents/createCategory",
+                            data={"category": category}, timeout=10)
+                    except Exception:
+                        pass
+
+                resp = session.post(f"{url}/api/v2/torrents/add", files=files, data=data, timeout=30)
+                if resp.status_code == 200 and resp.text != "Fails.":
+                    self.scanner_log(f"  [{i+1}/{len(to_add)}] Added: {tid} -> {save_path}")
+                    self.root.after(0, lambda item=entry["item_id"]:
+                        self.scanner_tree.set(item, "in_qbit", "Added"))
+                    added += 1
+                else:
+                    self.scanner_log(f"  [{i+1}/{len(to_add)}] Failed: {tid} ({resp.text[:50]})")
+                    failed += 1
+            except Exception as e:
+                self.scanner_log(f"  [{i+1}/{len(to_add)}] Error: {tid}: {e}")
+                failed += 1
+
+        if added > 0:
+            self._cache_invalidate(client["name"])
+
+        self.scanner_log(f"Done: {added} added, {failed} failed.")
+        self.root.after(0, lambda: self.scanner_add_btn.config(state="normal"))
+        self.root.after(0, lambda: self.scanner_add_all_btn.config(state="normal"))
+
+    def _scanner_download_torrent(self):
+        selected = self.scanner_tree.selection()
+        if not selected:
+            messagebox.showinfo("Folder Scanner", "No rows selected.")
+            return
+
+        folder = filedialog.askdirectory(title="Save .torrent files to...")
+        if not folder:
+            return
+
+        count = 0
+        for item in selected:
+            vals = self.scanner_tree.item(item, "values")
+            tid = vals[0]
+            t_content = self._download_torrent_content(tid, log_func=self.scanner_log)
+            if t_content:
+                fpath = os.path.join(folder, f"{tid}.torrent")
+                with open(fpath, 'wb') as f:
+                    f.write(t_content)
+                count += 1
+
+        self.scanner_log(f"Downloaded {count} .torrent files to {folder}")
+        messagebox.showinfo("Download Complete", f"Saved {count} .torrent files to:\n{folder}")
 
 
 if __name__ == "__main__":

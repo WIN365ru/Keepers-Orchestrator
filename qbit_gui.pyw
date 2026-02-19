@@ -47,7 +47,7 @@ CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "
 DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_data.db")
 
 # App Version & Update Info
-APP_VERSION = "0.9.3"
+APP_VERSION = "0.9.4"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -715,10 +715,21 @@ class QBitAdderApp:
         # Custom progress bar styling
         style = ttk.Style()
         style.theme_use('clam')
+
+        # Override layout to remove bouncing pbar animation
+        style.layout("green.Horizontal.TProgressbar",
+            [("Horizontal.Progressbar.trough", {"children":
+                [("Horizontal.Progressbar.pbar", {"side": "left", "sticky": "ns"})],
+                "sticky": "nswe"})])
         style.configure("green.Horizontal.TProgressbar",
             troughcolor="#e0e0e0", background="#4CAF50",
             darkcolor="#388E3C", lightcolor="#66BB6A",
             bordercolor="#bdbdbd", thickness=22)
+
+        style.layout("blue.Horizontal.TProgressbar",
+            [("Horizontal.Progressbar.trough", {"children":
+                [("Horizontal.Progressbar.pbar", {"side": "left", "sticky": "ns"})],
+                "sticky": "nswe"})])
         style.configure("blue.Horizontal.TProgressbar",
             troughcolor="#e0e0e0", background="#2196F3",
             darkcolor="#1976D2", lightcolor="#42A5F5",
@@ -5831,37 +5842,54 @@ class QBitAdderApp:
                 login_retried = False
 
                 try:
-                    # 1. Scrape candidates from HTML (Reliable)
+                    # 1. Scrape candidates from HTML (get topic IDs and names)
                     candidates = self._keepers_parse_forum_page(resp.text)
                     if not candidates:
                         self.keepers_log("No topics found on this page (or parse error).")
                         break
-                    
+
                     self.keepers_log(f"  Found {len(candidates)} topics via scraping.")
-                    
-                    # Filter by seeds immediately
-                    filtered = [c for c in candidates if c['seeds'] <= max_seeds]
-                    self.keepers_log(f"  {len(filtered)} match criteria.")
-                    
-                    # 2. Enrich with API data (Optional - for "In Client" check)
-                    ids_to_fetch = [str(c['id']) for c in filtered]
-                    fetched_hashes = {} 
-                    
+
+                    # 2. Enrich ALL candidates with API data (size, seeds, leechers, hash)
+                    ids_to_fetch = [str(c['id']) for c in candidates]
+                    fetched_hashes = {}
+                    api_data = {}
+
                     if ids_to_fetch:
                          api_url = "https://api.rutracker.cc/v1/get_tor_topic_data"
                          params = {"by": "topic_id", "val": ",".join(ids_to_fetch)}
-                         
+
                          try:
                              api_resp = self.cat_manager.session.get(api_url, params=params, timeout=10)
                              if api_resp.status_code == 200:
                                  res = api_resp.json().get("result")
                                  if res:
                                      for tid_str, info in res.items():
-                                         if info and "info_hash" in info:
-                                             fetched_hashes[int(tid_str)] = info["info_hash"]
-                                             
+                                         if info:
+                                             tid_int = int(tid_str)
+                                             if "info_hash" in info:
+                                                 fetched_hashes[tid_int] = info["info_hash"]
+                                             api_data[tid_int] = info
+
                          except Exception as e:
                              self.keepers_log(f"  API Warning: {e}")
+
+                    # Overwrite scraped values with API data (more reliable)
+                    for c in candidates:
+                        info = api_data.get(c['id'])
+                        if info:
+                            c['seeds'] = int(info.get('seeders', 0) or 0)
+                            c['leech'] = int(info.get('leechers', 0) or 0)
+                            api_size = int(info.get('size', 0) or 0)
+                            if api_size > 0:
+                                c['raw_size'] = api_size
+                                c['size_str'] = format_size(api_size)
+                            if info.get('topic_title'):
+                                c['name'] = html.unescape(info['topic_title'])
+
+                    # Filter by seeds AFTER enrichment
+                    filtered = [c for c in candidates if c['seeds'] <= max_seeds]
+                    self.keepers_log(f"  {len(filtered)} match criteria (seeds <= {max_seeds}).")
 
                     # 3. Add to Tree
                     for t in filtered:

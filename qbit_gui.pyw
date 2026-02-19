@@ -47,7 +47,7 @@ CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "
 DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_data.db")
 
 # App Version & Update Info
-APP_VERSION = "0.9.0-beta1"
+APP_VERSION = "0.9.1"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -6098,6 +6098,10 @@ class QBitAdderApp:
         tk.Checkbutton(opts_frame, text="Use parent folder as save_path (content lives in /ID/ folder)",
             variable=self.scanner_use_parent_var).pack(side="left", padx=5)
 
+        self.scanner_skip_subid_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(opts_frame, text="Skip subfolders inside /ID/",
+            variable=self.scanner_skip_subid_var).pack(side="left", padx=5)
+
         self.scanner_start_paused_var = tk.BooleanVar(value=True)
         tk.Checkbutton(opts_frame, text="Start paused",
             variable=self.scanner_start_paused_var).pack(side="left", padx=5)
@@ -6304,6 +6308,8 @@ class QBitAdderApp:
             found_folders = []
             recursive = self.scanner_recursive_var.get()
 
+            skip_subid = self.scanner_skip_subid_var.get()
+
             if recursive:
                 for dirpath, dirnames, filenames in os.walk(root_folder):
                     if self.scanner_stop_event.is_set():
@@ -6314,6 +6320,10 @@ class QBitAdderApp:
                             "topic_id": basename,
                             "disk_path": dirpath.replace("\\", "/")
                         })
+                        if skip_subid:
+                            # Don't descend into subfolders of an ID folder
+                            # (avoids false positives from numeric subfolders)
+                            dirnames.clear()
             else:
                 try:
                     for entry in os.listdir(root_folder):

@@ -47,7 +47,7 @@ CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "
 DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_data.db")
 
 # App Version & Update Info
-APP_VERSION = "0.9.5"
+APP_VERSION = "0.10.0"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -241,6 +241,13 @@ class DatabaseManager:
                         torrents_json TEXT
                     )
                 """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS torrent_files_cache (
+                        topic_id INTEGER PRIMARY KEY,
+                        timestamp REAL,
+                        files_json TEXT
+                    )
+                """)
         except Exception as e:
             print(f"DB Init Error: {e}")
 
@@ -357,6 +364,39 @@ class DatabaseManager:
                     conn.execute("DELETE FROM torrent_cache")
         except Exception as e:
             print(f"DB Error (delete_cache): {e}")
+
+    # --- Torrent FILES cache persistence (for Deep Scan) ---
+
+    def save_torrent_files_cache(self, topic_id, files_dict):
+        """Save parsed file info {path: size} for a topic."""
+        try:
+            with self._get_conn() as conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO torrent_files_cache (topic_id, timestamp, files_json)
+                    VALUES (?, ?, ?)
+                """, (topic_id, time.time(), json.dumps(files_dict)))
+        except Exception as e:
+            print(f"DB Error (save_torrent_files_cache): {e}")
+
+    def get_torrent_files_cache(self, topic_id, ttl_days=30):
+        """Load parsed file info for a topic. Returns dict or None if not found/stale."""
+        try:
+            cutoff = time.time() - (ttl_days * 86400)
+            with self._get_conn() as conn:
+                row = conn.execute(
+                    "SELECT timestamp, files_json FROM torrent_files_cache WHERE topic_id = ?",
+                    (topic_id,)
+                ).fetchone()
+                if row:
+                    ts, files_json = row
+                    if ts > cutoff:
+                        try:
+                            return json.loads(files_json)
+                        except:
+                            pass
+        except Exception as e:
+            print(f"DB Error (get_torrent_files_cache): {e}")
+        return None
 
 class CategoryManager:
     def __init__(self, log_func, keys_callback=None):
@@ -6265,6 +6305,10 @@ class QBitAdderApp:
         tk.Checkbutton(opts_frame, text="Start paused",
             variable=self.scanner_start_paused_var).pack(side="left", padx=5)
 
+        self.scanner_deep_scan_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(opts_frame, text="Deep Scan (Verify Files)",
+            variable=self.scanner_deep_scan_var, fg="darkblue").pack(side="left", padx=5)
+
         # --- Custom Add Options ---
         custom_frame = tk.LabelFrame(self.scanner_tab, text="Custom Add Options", padx=10, pady=5)
         custom_frame.pack(fill="x", padx=10, pady=5)
@@ -6307,7 +6351,7 @@ class QBitAdderApp:
         tree_container = tk.Frame(results_frame)
         tree_container.pack(fill="both", expand=True)
 
-        cols = ("topic_id", "name", "size", "seeds", "leech", "status", "category", "in_qbit", "disk_path")
+        cols = ("topic_id", "name", "size", "seeds", "leech", "status", "category", "in_qbit", "extra", "missing", "mismatch", "disk_path")
         self.scanner_tree = ttk.Treeview(tree_container, columns=cols, show="headings", selectmode="extended")
 
         self.scanner_tree.heading("topic_id", text="Topic ID",
@@ -6326,6 +6370,12 @@ class QBitAdderApp:
             command=lambda: self.sort_tree(self.scanner_tree, "category", False))
         self.scanner_tree.heading("in_qbit", text="In qBit",
             command=lambda: self.sort_tree(self.scanner_tree, "in_qbit", False))
+        self.scanner_tree.heading("extra", text="Extra",
+            command=lambda: self.sort_tree(self.scanner_tree, "extra", False))
+        self.scanner_tree.heading("missing", text="Missing",
+            command=lambda: self.sort_tree(self.scanner_tree, "missing", False))
+        self.scanner_tree.heading("mismatch", text="Mismatch",
+            command=lambda: self.sort_tree(self.scanner_tree, "mismatch", False))
         self.scanner_tree.heading("disk_path", text="Disk Path",
             command=lambda: self.sort_tree(self.scanner_tree, "disk_path", False))
 
@@ -6337,6 +6387,9 @@ class QBitAdderApp:
         self.scanner_tree.column("status", width=80, minwidth=60)
         self.scanner_tree.column("category", width=120, minwidth=60)
         self.scanner_tree.column("in_qbit", width=55, minwidth=40)
+        self.scanner_tree.column("extra", width=50, minwidth=40)
+        self.scanner_tree.column("missing", width=50, minwidth=40)
+        self.scanner_tree.column("mismatch", width=60, minwidth=50)
         self.scanner_tree.column("disk_path", width=200, minwidth=80)
 
         tree_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.scanner_tree.yview)
@@ -6488,6 +6541,10 @@ class QBitAdderApp:
         self.scanner_progress['value'] = 0
         self.scanner_progress_label.config(text="Scanning folders...")
 
+        # Disable sort while scanning
+        for col in self.scanner_tree['columns']:
+            self.scanner_tree.heading(col, command=lambda: None)
+
         self.scanner_selected_client = self.config["clients"][sel]
         threading.Thread(target=self._scanner_scan_thread, args=(folder_path,), daemon=True).start()
 
@@ -6631,6 +6688,96 @@ class QBitAdderApp:
                 except Exception:
                     pass
 
+            # === Phase 4.5: Deep Scan Verification (Optional) ===
+            deep_scan = self.scanner_deep_scan_var.get()
+            deep_scan_results = {} # topic_id -> {"extra": 0, "missing": 0, "mismatch": 0}
+            
+            if deep_scan:
+                self.scanner_log("Starting Deep Scan verification...")
+                for idx, folder in enumerate(found_folders):
+                    if self.scanner_stop_event.is_set():
+                        break
+                    
+                    self._scanner_update_progress(idx + 1, len(found_folders), "Deep Scanning")
+                    tid = folder["topic_id"]
+                    disk_path = folder["disk_path"]
+                    api_data = topic_data.get(tid)
+                    
+                    if not api_data or not isinstance(api_data, dict):
+                        continue
+                        
+                    info_hash = api_data.get("info_hash")
+                    if not info_hash:
+                        continue
+                        
+                    # 1. Get Expected Files
+                    expected_files_dict = self.db_manager.get_torrent_files_cache(int(tid))
+                    
+                    if expected_files_dict is None:
+                        # Need to download and parse
+                        try:
+                            # Try ruTracker direct DL first
+                            url = f"https://rutracker.org/forum/dl.php?t={tid}"
+                            dl_resp = self.cat_manager.session.get(url, timeout=10)
+                            if dl_resp.status_code == 200 and dl_resp.content.startswith(b'd8:announce'):
+                                parsed = parse_torrent_info(dl_resp.content)
+                            else:
+                                # Fallback to rutracker.cc API
+                                api_url = f"https://api.rutracker.cc/v1/download_torrent?timestamp={int(time.time()*1000)}"
+                                params = {"by": "topic_id", "val": tid}
+                                dl_resp = requests.get(api_url, params=params, timeout=10)
+                                if dl_resp.status_code == 200 and dl_resp.content:
+                                    parsed = parse_torrent_info(dl_resp.content)
+                                else:
+                                    parsed = None
+                            
+                            if parsed and "files" in parsed:
+                                expected_files_dict = {f["path"].replace("\\", "/"): f["size"] for f in parsed["files"]}
+                                self.db_manager.save_torrent_files_cache(int(tid), expected_files_dict)
+                        except Exception as e:
+                            self.scanner_log(f"Deep Scan error downloading {tid}: {e}")
+                            
+                    if not expected_files_dict:
+                        continue
+                        
+                    # 2. Get Actual Files
+                    actual_files_dict = {}
+                    try:
+                        for dirpath, _, filenames in os.walk(disk_path):
+                            for f in filenames:
+                                full_p = os.path.join(dirpath, f)
+                                rel_p = os.path.relpath(full_p, disk_path).replace("\\", "/")
+                                try:
+                                    actual_files_dict[rel_p] = os.path.getsize(full_p)
+                                except OSError:
+                                    pass
+                    except Exception as e:
+                        self.scanner_log(f"Deep Scan error reading disk for {tid}: {e}")
+                        continue
+                        
+                    # 3. Compare
+                    extra_count = 0
+                    missing_count = 0
+                    mismatch_count = 0
+                    
+                    # Check what we have vs what's expected
+                    for actual_path, actual_size in actual_files_dict.items():
+                        if actual_path not in expected_files_dict:
+                            extra_count += 1
+                        elif expected_files_dict[actual_path] != actual_size:
+                            mismatch_count += 1
+                            
+                    # Check what's missing
+                    for expected_path in expected_files_dict.keys():
+                        if expected_path not in actual_files_dict:
+                            missing_count += 1
+                            
+                    deep_scan_results[tid] = {
+                        "extra": extra_count,
+                        "missing": missing_count,
+                        "mismatch": mismatch_count
+                    }
+
             # === Phase 5: Match and populate treeview ===
             results = []
             in_qbit_count = 0
@@ -6656,11 +6803,23 @@ class QBitAdderApp:
                     "rt_status": "Not on RT",
                     "category": "?",
                     "in_qbit": "?",
+                    "extra": "-",
+                    "missing": "-",
+                    "mismatch": "-",
                     "info_hash": None,
                     "forum_id": None,
                     "tag": "dead",
                 }
-
+                
+                ds_res = deep_scan_results.get(tid)
+                if ds_res:
+                    entry["extra"] = str(ds_res["extra"]) if ds_res["extra"] > 0 else "0"
+                    entry["missing"] = str(ds_res["missing"]) if ds_res["missing"] > 0 else "0"
+                    entry["mismatch"] = str(ds_res["mismatch"]) if ds_res["mismatch"] > 0 else "0"
+                    
+                    if ds_res["missing"] > 0 or ds_res["mismatch"] > 0:
+                         entry["tag"] = "mismatch" # Use a visually distinct tag if incomplete
+                
                 if api_data and isinstance(api_data, dict):
                     entry["info_hash"] = api_data.get("info_hash")
                     entry["forum_id"] = api_data.get("forum_id")
@@ -6696,7 +6855,8 @@ class QBitAdderApp:
                 results.append(entry)
                 self.root.after(0, lambda e=entry: self.scanner_tree.insert("", "end",
                     values=(e["topic_id"], e["name"], e["size_str"], e["seeds"], e["leech"],
-                            e["rt_status"], e["category"], e["in_qbit"], e["disk_path"]),
+                            e["rt_status"], e["category"], e["in_qbit"], 
+                            e["extra"], e["missing"], e["mismatch"], e["disk_path"]),
                     tags=(e["tag"],)))
 
             self.scanner_scan_results = results
@@ -6726,9 +6886,10 @@ class QBitAdderApp:
         to_add = []
         for item in selected:
             vals = self.scanner_tree.item(item, "values")
+            # in_qbit is at index 7 now. disk_path at 11, category at 6
             if vals[7] == "No":
                 to_add.append({"item_id": item, "topic_id": vals[0],
-                               "category": vals[6], "disk_path": vals[8]})
+                               "category": vals[6], "disk_path": vals[11]})
 
         if not to_add:
             messagebox.showinfo("Folder Scanner", "No missing torrents in selection.")
@@ -6747,7 +6908,7 @@ class QBitAdderApp:
             vals = self.scanner_tree.item(item, "values")
             if vals[7] == "No" and vals[5] == "Approved":
                 to_add.append({"item_id": item, "topic_id": vals[0],
-                               "category": vals[6], "disk_path": vals[8]})
+                               "category": vals[6], "disk_path": vals[11]})
 
         if not to_add:
             messagebox.showinfo("Folder Scanner", "No missing alive torrents to add.")

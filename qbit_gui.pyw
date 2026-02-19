@@ -45,9 +45,10 @@ DEFAULT_CONFIG = {
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
 CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rutracker_categories.json")
 DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_data.db")
+HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.10.1"
+APP_VERSION = "0.10.11"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -164,7 +165,16 @@ def parse_torrent_info(file_path_or_bytes):
             announce = announce.decode('utf-8', errors='replace')
         result['tracker'] = announce
         
-        result['piece_size'] = info.get('piece length', 0)
+        piece_length = info.get('piece length', 0)
+        result['piece_length'] = piece_length
+        result['piece_size'] = piece_length # alias for legacy
+        
+        pieces_bytes = info.get('pieces', b'')
+        if isinstance(pieces_bytes, bytes):
+            result['pieces_hex'] = pieces_bytes.hex()
+        else:
+            result['pieces_hex'] = ""
+            
         result['private'] = bool(info.get('private', 0))
         
         source = info.get('source', b'')
@@ -396,6 +406,66 @@ class DatabaseManager:
                             pass
         except Exception as e:
             print(f"DB Error (get_torrent_files_cache): {e}")
+        return None
+
+# === SQLite Hash Database Manager (Deep Scan+) ===
+class HashDatabaseManager:
+    """Manages the standalone SQLite database used strictly for storing cryptographic piece hashes."""
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self._init_db()
+        
+    def _get_conn(self):
+        return sqlite3.connect(self.db_path, timeout=10)
+        
+    def _init_db(self):
+        try:
+            with self._get_conn() as conn:
+                # Store the parsed files dictionary, the piece size, and the massive hex strings cleanly separate from app DB
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS torrent_pieces_cache (
+                        topic_id INTEGER PRIMARY KEY,
+                        timestamp REAL,
+                        piece_length INTEGER,
+                        pieces_hex TEXT,
+                        files_json TEXT
+                    )
+                """)
+        except Exception as e:
+            print(f"HashDB Init Error: {e}")
+            
+    def save_hash_cache(self, topic_id, piece_length, pieces_hex, files_dict):
+        try:
+            with self._get_conn() as conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO torrent_pieces_cache (topic_id, timestamp, piece_length, pieces_hex, files_json)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (topic_id, time.time(), piece_length, pieces_hex, json.dumps(files_dict)))
+        except Exception as e:
+            print(f"HashDB Error (save): {e}")
+            
+    def get_hash_cache(self, topic_id, ttl_days=30):
+        try:
+            cutoff = time.time() - (ttl_days * 86400)
+            with self._get_conn() as conn:
+                row = conn.execute(
+                    "SELECT timestamp, piece_length, pieces_hex, files_json FROM torrent_pieces_cache WHERE topic_id = ?",
+                    (topic_id,)
+                ).fetchone()
+                if row:
+                    ts, piece_length, pieces_hex, files_json = row
+                    if ts > cutoff:
+                        try:
+                            # Also return files_dict so Deep Scan+ avoids hitting generic Deep Scan Cache sequentially
+                            return {
+                                "piece_length": piece_length,
+                                "pieces_hex": pieces_hex,
+                                "files": json.loads(files_json)
+                            }
+                        except Exception:
+                            pass
+        except Exception as e:
+            print(f"HashDB Error (get): {e}")
         return None
 
 class CategoryManager:
@@ -777,6 +847,7 @@ class QBitAdderApp:
 
         self.config = self.load_config()
         self.db_manager = DatabaseManager(DATA_DB_FILE)
+        self.hash_db_manager = HashDatabaseManager(HASHES_DB_FILE)
         self.selected_files = [] # List of file paths
         self.selected_folder_path = None
         self.stop_event = threading.Event()
@@ -6309,6 +6380,10 @@ class QBitAdderApp:
         tk.Checkbutton(opts_frame, text="Deep Scan (Verify Files)",
             variable=self.scanner_deep_scan_var, fg="darkblue").pack(side="left", padx=5)
 
+        self.scanner_deep_scan_plus_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(opts_frame, text="Deep Scan+ (Verify Hashes)",
+            variable=self.scanner_deep_scan_plus_var, fg="purple").pack(side="left", padx=5)
+
         # --- Custom Add Options ---
         custom_frame = tk.LabelFrame(self.scanner_tab, text="Custom Add Options", padx=10, pady=5)
         custom_frame.pack(fill="x", padx=10, pady=5)
@@ -6351,7 +6426,7 @@ class QBitAdderApp:
         tree_container = tk.Frame(results_frame)
         tree_container.pack(fill="both", expand=True)
 
-        cols = ("topic_id", "name", "size", "seeds", "leech", "status", "category", "in_qbit", "extra", "missing", "mismatch", "disk_path")
+        cols = ("topic_id", "name", "size", "seeds", "leech", "status", "category", "in_qbit", "extra", "missing", "mismatch", "pieces", "disk_path")
         self.scanner_tree = ttk.Treeview(tree_container, columns=cols, show="headings", selectmode="extended")
 
         self.scanner_tree.heading("topic_id", text="Topic ID",
@@ -6376,6 +6451,8 @@ class QBitAdderApp:
             command=lambda: self.sort_tree(self.scanner_tree, "missing", False))
         self.scanner_tree.heading("mismatch", text="Mismatch",
             command=lambda: self.sort_tree(self.scanner_tree, "mismatch", False))
+        self.scanner_tree.heading("pieces", text="Pieces (Bad/Total)",
+            command=lambda: self.sort_tree(self.scanner_tree, "pieces", False))
         self.scanner_tree.heading("disk_path", text="Disk Path",
             command=lambda: self.sort_tree(self.scanner_tree, "disk_path", False))
 
@@ -6390,6 +6467,7 @@ class QBitAdderApp:
         self.scanner_tree.column("extra", width=50, minwidth=40)
         self.scanner_tree.column("missing", width=50, minwidth=40)
         self.scanner_tree.column("mismatch", width=60, minwidth=50)
+        self.scanner_tree.column("pieces", width=120, minwidth=80)
         self.scanner_tree.column("disk_path", width=200, minwidth=80)
 
         tree_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.scanner_tree.yview)
@@ -6519,6 +6597,28 @@ class QBitAdderApp:
         if sel < 0 or sel >= len(self.config["clients"]):
             self.scanner_log("No client selected.")
             return
+
+        # Warnings for time-consuming scan modes
+        is_deep_plus = self.scanner_deep_scan_plus_var.get()
+        is_deep = self.scanner_deep_scan_var.get()
+        
+        if is_deep_plus:
+            msg = ("Deep Scan+ (Verify Hashes) explicitly enabled.\n\n"
+                   "This operation reconstructs torrent piece payloads across "
+                   "every matched folder and executes heavy SHA-1 cryptographic "
+                   "hashing of the actual file data on disk.\n\n"
+                   "WARNING: Depending on disk speed and size, this could take "
+                   "hours! CPU utilization will also spike.\n\n"
+                   "Do you want to proceed?")
+            if not messagebox.askyesno("Deep Scan+ Warning", msg):
+                return
+        elif is_deep:
+            msg = ("Deep Scan (Verify Files) is enabled.\n\n"
+                   "This will download .torrent metadata and verify the exact "
+                   "byte size of every file inside the folder.\n\n"
+                   "Do you want to proceed?")
+            if not messagebox.askyesno("Deep Scan Warning", msg):
+                return
 
         self.scanner_scanning = True
         self.scanner_scan_results = []
@@ -6689,17 +6789,19 @@ class QBitAdderApp:
                 except Exception:
                     pass
 
-            # === Phase 4.5: Deep Scan Verification (Optional) ===
-            deep_scan = self.scanner_deep_scan_var.get()
-            deep_scan_results = {} # topic_id -> {"extra": 0, "missing": 0, "mismatch": 0}
+            # === Phase 4.5: Deep Scan / Deep Scan+ Verification ===
+            deep_scan_plus = self.scanner_deep_scan_plus_var.get()
+            deep_scan = self.scanner_deep_scan_var.get() or deep_scan_plus
+            deep_scan_results = {} # topic_id -> {"extra": 0, "missing": 0, "mismatch": 0, "pieces": "0 / 0"}
             
             if deep_scan:
-                self.scanner_log("Starting Deep Scan verification...")
+                mode_str = "Deep Scan+" if deep_scan_plus else "Deep Scan"
+                self.scanner_log(f"Starting {mode_str} verification...")
                 for idx, folder in enumerate(found_folders):
                     if self.scanner_stop_event.is_set():
                         break
                     
-                    self._scanner_update_progress(idx + 1, len(found_folders), "Deep Scanning")
+                    self._scanner_update_progress(idx + 1, len(found_folders), f"{mode_str}ing")
                     tid = folder["topic_id"]
                     disk_path = folder["disk_path"]
                     api_data = topic_data.get(tid)
@@ -6711,19 +6813,28 @@ class QBitAdderApp:
                     if not info_hash:
                         continue
                         
-                    # 1. Get Expected Files
-                    expected_files_dict = self.db_manager.get_torrent_files_cache(int(tid))
+                    # 1. Get Expected Files & Hashes
+                    expected_files_dict = None
+                    piece_length = 0
+                    pieces_hex = ""
                     
-                    if expected_files_dict is None:
+                    if deep_scan_plus:
+                        hash_cache = self.hash_db_manager.get_hash_cache(int(tid))
+                        if hash_cache:
+                            piece_length = hash_cache["piece_length"]
+                            pieces_hex = hash_cache["pieces_hex"]
+                            expected_files_dict = hash_cache["files"]
+                    else:
+                        expected_files_dict = self.db_manager.get_torrent_files_cache(int(tid))
+                    
+                    if expected_files_dict is None or (deep_scan_plus and not pieces_hex):
                         # Need to download and parse
                         try:
-                            # Try ruTracker direct DL first
                             url = f"https://rutracker.org/forum/dl.php?t={tid}"
                             dl_resp = self.cat_manager.session.get(url, timeout=10)
                             if dl_resp.status_code == 200 and dl_resp.content.startswith(b'd8:announce'):
                                 parsed = parse_torrent_info(dl_resp.content)
                             else:
-                                # Fallback to rutracker.cc API
                                 api_url = f"https://api.rutracker.cc/v1/download_torrent?timestamp={int(time.time()*1000)}"
                                 params = {"by": "topic_id", "val": tid}
                                 dl_resp = requests.get(api_url, params=params, timeout=10)
@@ -6734,9 +6845,17 @@ class QBitAdderApp:
                             
                             if parsed and "files" in parsed:
                                 expected_files_dict = {f["path"].replace("\\", "/"): f["size"] for f in parsed["files"]}
+                                
+                                # Save to caches
                                 self.db_manager.save_torrent_files_cache(int(tid), expected_files_dict)
+                                
+                                piece_length = parsed.get("piece_length", 0)
+                                pieces_hex = parsed.get("pieces_hex", "")
+                                if piece_length and pieces_hex:
+                                    self.hash_db_manager.save_hash_cache(int(tid), piece_length, pieces_hex, expected_files_dict)
+                                    
                         except Exception as e:
-                            self.scanner_log(f"Deep Scan error downloading {tid}: {e}")
+                            self.scanner_log(f"{mode_str} error downloading {tid}: {e}")
                             
                     if not expected_files_dict:
                         continue
@@ -6753,30 +6872,96 @@ class QBitAdderApp:
                                 except OSError:
                                     pass
                     except Exception as e:
-                        self.scanner_log(f"Deep Scan error reading disk for {tid}: {e}")
+                        self.scanner_log(f"{mode_str} error reading disk for {tid}: {e}")
                         continue
                         
-                    # 3. Compare
+                    # 3. Compare Standard Files (Deep Scan)
                     extra_count = 0
                     missing_count = 0
                     mismatch_count = 0
                     
-                    # Check what we have vs what's expected
                     for actual_path, actual_size in actual_files_dict.items():
                         if actual_path not in expected_files_dict:
                             extra_count += 1
                         elif expected_files_dict[actual_path] != actual_size:
                             mismatch_count += 1
                             
-                    # Check what's missing
                     for expected_path in expected_files_dict.keys():
                         if expected_path not in actual_files_dict:
                             missing_count += 1
                             
+                    pieces_str = "-"
+                    
+                    # 4. Hash Verification (Deep Scan+)
+                    if deep_scan_plus and missing_count == 0 and mismatch_count == 0 and pieces_hex and piece_length:
+                        try:
+                            # Reconstruct byte array of pieces
+                            pieces_bytes = bytes.fromhex(pieces_hex)
+                            total_pieces = len(pieces_bytes) // 20
+                            bad_pieces = 0
+                            
+                            ordered_paths = list(expected_files_dict.keys())
+                            
+                            file_idx = 0
+                            current_file = None
+                            
+                            hasher = hashlib.sha1()
+                            bytes_in_hasher = 0
+                            piece_idx = 0
+                            
+                            # Read through the virtual payload contiguous block
+                            while piece_idx < total_pieces:
+                                if self.scanner_stop_event.is_set():
+                                    break
+                                    
+                                remaining_for_piece = piece_length - bytes_in_hasher
+                                
+                                if current_file is None:
+                                    if file_idx >= len(ordered_paths):
+                                        break # Out of files
+                                    fp = os.path.join(disk_path, ordered_paths[file_idx])
+                                    try:
+                                        current_file = open(fp, "rb")
+                                    except OSError:
+                                        bad_pieces += (total_pieces - piece_idx)
+                                        break
+                                
+                                chunk = current_file.read(remaining_for_piece)
+                                if chunk:
+                                    hasher.update(chunk)
+                                    bytes_in_hasher += len(chunk)
+                                    
+                                if not chunk or bytes_in_hasher == piece_length:
+                                    if not chunk and current_file:
+                                        current_file.close()
+                                        current_file = None
+                                        file_idx += 1
+                                        if bytes_in_hasher < piece_length and file_idx < len(ordered_paths):
+                                            continue # Piece spans boundary, read next file
+                                        
+                                    expected_hash = pieces_bytes[piece_idx*20 : (piece_idx+1)*20]
+                                    if hasher.digest() != expected_hash:
+                                        bad_pieces += 1
+                                        
+                                    hasher = hashlib.sha1()
+                                    bytes_in_hasher = 0
+                                    piece_idx += 1
+                                    
+                            if current_file:
+                                current_file.close()
+                                
+                            pieces_str = f"{bad_pieces} / {total_pieces}"
+                            if bad_pieces > 0:
+                                mismatch_count += 1 # Overload mismatch row-tag highlighting
+                        except Exception as e:
+                            self.scanner_log(f"Deep Scan+ error hashing {tid}: {e}")
+                            pieces_str = "Error"
+                            
                     deep_scan_results[tid] = {
                         "extra": extra_count,
                         "missing": missing_count,
-                        "mismatch": mismatch_count
+                        "mismatch": mismatch_count,
+                        "pieces": pieces_str
                     }
 
             # === Phase 5: Match and populate treeview ===
@@ -6807,6 +6992,7 @@ class QBitAdderApp:
                     "extra": "-",
                     "missing": "-",
                     "mismatch": "-",
+                    "pieces": "-",
                     "info_hash": None,
                     "forum_id": None,
                     "tag": "dead",
@@ -6857,7 +7043,7 @@ class QBitAdderApp:
                 self.root.after(0, lambda e=entry: self.scanner_tree.insert("", "end",
                     values=(e["topic_id"], e["name"], e["size_str"], e["seeds"], e["leech"],
                             e["rt_status"], e["category"], e["in_qbit"], 
-                            e["extra"], e["missing"], e["mismatch"], e["disk_path"]),
+                            e["extra"], e["missing"], e["mismatch"], e["pieces"], e["disk_path"]),
                     tags=(e["tag"],)))
 
             self.scanner_scan_results = results
@@ -6887,10 +7073,10 @@ class QBitAdderApp:
         to_add = []
         for item in selected:
             vals = self.scanner_tree.item(item, "values")
-            # in_qbit is at index 7 now. disk_path at 11, category at 6
+            # in_qbit is at index 7 now. disk_path at 12, category at 6
             if vals[7] == "No":
                 to_add.append({"item_id": item, "topic_id": vals[0],
-                               "category": vals[6], "disk_path": vals[11]})
+                               "category": vals[6], "disk_path": vals[12]})
 
         if not to_add:
             messagebox.showinfo("Folder Scanner", "No missing torrents in selection.")
@@ -6909,7 +7095,7 @@ class QBitAdderApp:
             vals = self.scanner_tree.item(item, "values")
             if vals[7] == "No" and vals[5] == "Approved":
                 to_add.append({"item_id": item, "topic_id": vals[0],
-                               "category": vals[6], "disk_path": vals[11]})
+                               "category": vals[6], "disk_path": vals[12]})
 
         if not to_add:
             messagebox.showinfo("Folder Scanner", "No missing alive torrents to add.")

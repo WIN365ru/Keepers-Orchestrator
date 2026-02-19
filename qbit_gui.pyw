@@ -199,7 +199,8 @@ def parse_torrent_info(file_path_or_bytes):
                             decoded_parts.append(p.decode('cp1251', errors='replace'))
                     else:
                         decoded_parts.append(p)
-                path_str = '/'.join(decoded_parts)
+                # Prepend the torrent directory name to relative paths matching qBittorrent disk structure
+                path_str = result['name'] + '/' + '/'.join(decoded_parts) if result['name'] else '/'.join(decoded_parts)
                 files_list.append({'path': path_str, 'size': f.get('length', 0)})
         elif 'length' in info:
             # Single-file torrent — add the single file to the list
@@ -820,7 +821,7 @@ class QBitAdderApp:
     def __init__(self, root):
         self.root = root
         self.root.title("qBittorrent Auto-Adder")
-        self.root.geometry("1000x825")
+        self.root.geometry("1200x850")
 
         # Custom progress bar styling
         style = ttk.Style()
@@ -6134,6 +6135,12 @@ class QBitAdderApp:
                 ids.append(int(m))
         return ids
 
+    def _get_rutracker_creds(self):
+        """Extract Rutracker credentials from config if enabled."""
+        auth = self.config.get("global_auth", {})
+        if auth.get("enabled"):
+            return auth.get("username", ""), auth.get("password", "")
+        return "", ""
 
     def _download_torrent_content(self, tid, log_func=None):
         """Helper to download .torrent file content with auth retry."""
@@ -6830,18 +6837,11 @@ class QBitAdderApp:
                     if expected_files_dict is None or (deep_scan_plus and not pieces_hex):
                         # Need to download and parse
                         try:
-                            url = f"https://rutracker.org/forum/dl.php?t={tid}"
-                            dl_resp = self.cat_manager.session.get(url, timeout=10)
-                            if dl_resp.status_code == 200 and dl_resp.content.startswith(b'd8:announce'):
-                                parsed = parse_torrent_info(dl_resp.content)
+                            t_content = self._download_torrent_content(tid, log_func=self.scanner_log)
+                            if t_content:
+                                parsed = parse_torrent_info(t_content)
                             else:
-                                api_url = f"https://api.rutracker.cc/v1/download_torrent?timestamp={int(time.time()*1000)}"
-                                params = {"by": "topic_id", "val": tid}
-                                dl_resp = requests.get(api_url, params=params, timeout=10)
-                                if dl_resp.status_code == 200 and dl_resp.content:
-                                    parsed = parse_torrent_info(dl_resp.content)
-                                else:
-                                    parsed = None
+                                parsed = None
                             
                             if parsed and "files" in parsed:
                                 expected_files_dict = {f["path"].replace("\\", "/"): f["size"] for f in parsed["files"]}

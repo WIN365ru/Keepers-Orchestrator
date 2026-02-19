@@ -45,7 +45,6 @@ DEFAULT_CONFIG = {
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
 CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rutracker_categories.json")
 DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_data.db")
-TORRENT_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "torrent_cache.json")
 
 # App Version & Update Info
 APP_VERSION = "0.9.3"
@@ -235,6 +234,13 @@ class DatabaseManager:
                         found_low_seeds INTEGER
                     )
                 """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS torrent_cache (
+                        client_name TEXT PRIMARY KEY,
+                        timestamp REAL,
+                        torrents_json TEXT
+                    )
+                """)
         except Exception as e:
             print(f"DB Init Error: {e}")
 
@@ -297,14 +303,60 @@ class DatabaseManager:
         try:
             with self._get_conn() as conn:
                 rows = conn.execute(f"""
-                    SELECT timestamp, category_id, torrents_scanned, torrents_added 
-                    FROM scan_history 
-                    ORDER BY id DESC 
+                    SELECT timestamp, category_id, torrents_scanned, torrents_added
+                    FROM scan_history
+                    ORDER BY id DESC
                     LIMIT {limit}
                 """).fetchall()
                 return rows
         except:
             return []
+
+    # --- Torrent cache persistence ---
+
+    def save_torrent_cache(self, client_name, timestamp, torrents):
+        """Save torrent list for a client to DB."""
+        try:
+            with self._get_conn() as conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO torrent_cache (client_name, timestamp, torrents_json)
+                    VALUES (?, ?, ?)
+                """, (client_name, timestamp, json.dumps(torrents)))
+        except Exception as e:
+            print(f"DB Error (save_cache): {e}")
+
+    def load_torrent_cache(self, ttl_hours=6):
+        """Load all non-stale cached torrent lists from DB.
+        Returns {client_name: {"torrents": [...], "timestamp": float}}"""
+        result = {}
+        try:
+            cutoff = time.time() - (ttl_hours * 3600)
+            with self._get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT client_name, timestamp, torrents_json FROM torrent_cache WHERE timestamp > ?",
+                    (cutoff,)).fetchall()
+                for client_name, ts, torrents_json in rows:
+                    try:
+                        result[client_name] = {
+                            "torrents": json.loads(torrents_json),
+                            "timestamp": ts
+                        }
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+        except Exception as e:
+            print(f"DB Error (load_cache): {e}")
+        return result
+
+    def delete_torrent_cache(self, client_name=None):
+        """Delete cached torrent list for one client or all."""
+        try:
+            with self._get_conn() as conn:
+                if client_name:
+                    conn.execute("DELETE FROM torrent_cache WHERE client_name = ?", (client_name,))
+                else:
+                    conn.execute("DELETE FROM torrent_cache")
+        except Exception as e:
+            print(f"DB Error (delete_cache): {e}")
 
 class CategoryManager:
     def __init__(self, log_func, keys_callback=None):
@@ -2700,33 +2752,13 @@ class QBitAdderApp:
         """Store torrent list in cache for a client."""
         ts = time.time()
         self.torrent_cache[client_name] = {"torrents": torrents, "timestamp": ts}
-        self._cache_save_to_disk()
+        self.db_manager.save_torrent_cache(client_name, ts, torrents)
         return ts
 
-    def _cache_save_to_disk(self):
-        """Persist torrent cache to disk as JSON."""
-        try:
-            with open(TORRENT_CACHE_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.torrent_cache, f)
-        except Exception:
-            pass  # Non-critical, silently ignore
-
     def _cache_load_from_disk(self):
-        """Load torrent cache from disk on startup."""
-        try:
-            if os.path.exists(TORRENT_CACHE_FILE):
-                with open(TORRENT_CACHE_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    ttl_hours = self.config.get("torrent_cache_ttl_hours", 6)
-                    now = time.time()
-                    for client_name, entry in data.items():
-                        if isinstance(entry, dict) and "torrents" in entry and "timestamp" in entry:
-                            age = now - entry["timestamp"]
-                            if age <= ttl_hours * 3600:
-                                self.torrent_cache[client_name] = entry
-        except Exception:
-            pass  # Corrupted file, start fresh
+        """Load torrent cache from DB on startup."""
+        ttl_hours = self.config.get("torrent_cache_ttl_hours", 6)
+        self.torrent_cache = self.db_manager.load_torrent_cache(ttl_hours)
 
     def _cache_format_time(self, timestamp):
         """Format a cache timestamp to human-readable string."""
@@ -2741,7 +2773,7 @@ class QBitAdderApp:
             self.torrent_cache.pop(client_name, None)
         else:
             self.torrent_cache.clear()
-        self._cache_save_to_disk()
+        self.db_manager.delete_torrent_cache(client_name)
 
     def _update_cache_labels(self, client_name, timestamp):
         """Update all 'last updated' labels across tabs for this client."""

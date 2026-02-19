@@ -6,6 +6,8 @@ A powerful GUI tool to manage and automate torrent operations with qBittorrent a
 
 ### 1. **Add Torrents**
 - **Bulk Add**: Select multiple `.torrent` files or drag-and-drop.
+- **Custom Folder Structure**: Choose whether to create category subfolders and/or ID subfolders when saving.
+- **Override Save Path**: Optionally specify a custom save path instead of the client's default base path.
 - **Category Management**: Automatically fetches and caches categories from Rutracker via API.
 - **Auto-Path**: Suggests save paths based on resolved categories.
 - **Full Breadcrumb**: Displays the complete category tree (e.g., "Спорт > Футбол > Еврокубки 2011-2024").
@@ -45,15 +47,29 @@ A powerful GUI tool to manage and automate torrent operations with qBittorrent a
     - **Execute** with progress tracking and per-torrent logging.
     - Greedy algorithm assigns heaviest torrents first, respects free disk space constraints.
 
-### 6. **Search Rutracker**
+### 6. **Folder Scanner**
+- **Scan Local Folders**: Point the app to a local directory to identify torrent folders by their numeric topic IDs.
+- **qBittorrent Sync**: Compares local folders against your qBittorrent client to see which ones are already added and which are missing.
+- **Alive Check**: Automatically checks Rutracker API to ensure the topics are still alive/approved before adding them.
+- **Deep Scan (Verify Files)**: Reads local files and compares them against the `.torrent` metadata (downloaded and cached automatically) to flag **Missing** or **Mismatched** files (e.g., incorrect sizes).
+- **Deep Scan+ (Verify Hashes)**: Performs full cryptographic SHA-1 verification of file chunks against the pieces array in the `.torrent` metadata to ensure absolute data integrity. (Note: CPU/Disk intensive). Downloads `.torrent` files temporarily to `.torrent_deep_scan` folder.
+- **Add Missing**: Easily add all missing, alive, and fully verified local torrents back into your client with the correct category and ID paths.
+
+### 7. **Keepers (Хранители)**
+- **Automated Forum Scraping**: Scrapes Rutracker forums (e.g., "Хранители") to identify topics needing seeds.
+- **Filtering**: Filters topics based on the number of current seeders (e.g., find topics with < 3 seeds).
+- **Batch Download & Add**: Automatically downloads the `.torrent` files for these topics and adds them to your qBittorrent client to help keep them alive.
+
+### 8. **Search Rutracker**
 - **In-App Search**: Search Rutracker by name or Topic ID/Hash directly within the app.
 - **One-Click Download**: Download `.torrent` files to a temporary folder or add them directly to qBittorrent.
 
-### 7. **Integration & Settings**
+### 9. **Integration & Settings**
 - **Multiple Clients**: Manage multiple qBittorrent instances.
 - **Auth Management**: Centralized login for Rutracker (with cookie/key extraction).
-- **Rutracker API**: All category lookups use `api.rutracker.cc/v1/` — no HTML scraping, instant responses.
+- **Rutracker API**: All category lookups use `api.rutracker.cc/v1/` — no HTML scraping, instant responses (unless scraping for Keepers).
 - **Category Cache**: Full forum tree cached locally with 3-month TTL, single API call refresh (<1 second).
+- **SQLite Database Caches**: Uses robust SQLite databases (`q_adder_data.db` and `q_adder_hashes.db`) for caching torrent metadata, file lists, and piece hashes for maximum performance during Deep Scans.
 - **Auto-Updates**:
     - **App Updates**: Checks GitHub for new releases on startup.
     - **List Updates**: Auto-refresh torrent lists.
@@ -128,16 +144,22 @@ A powerful GUI tool to manage and automate torrent operations with qBittorrent a
 5.  Click **"Preview Balance"** to see the planned moves without executing.
 6.  Review the preview treeview, then click **"Execute Balance"** to perform the moves.
 
-### 7. Searching & Downloading
-1.  Go to the **Search Torrents** tab.
-2.  **Search by Name**: Enter a query and press Enter or click "Search".
-3.  **Search by Hash/ID**: Enter a Topic ID or Hash to find a specific release.
-4.  **Download Actions**:
-    *   **Download**: Saves the `.torrent` file to the `temp_torrents` folder.
-    *   **Download & Add**: Downloads and immediately opens the Add tab with the file pre-selected.
+### 7. Search & Keepers
+1.  **Search Torrents**: Enter a query or Topic ID to search Rutracker. Download to `temp_torrents` or add directly.
+2.  **Keepers**: Enter a Forum ID and max seeds to scan for dying torrents. Select them to batch-add to your client.
 
-### 8. Settings & Updates
+### 8. Folder Scanner & Deep Scan
+1.  Go to the **Folder Scanner** tab.
+2.  Enter the path to your local torrents folder. Make sure folders are named by their Rutracker Topic ID (e.g., `1234567`).
+3.  Choose your target qBittorrent client.
+4.  Optionally enable **Deep Scan (Verify Files)** to check that all files inside match the `.torrent` exact byte sizes.
+5.  Optionally enable **Deep Scan+ (Verify Hashes)** to cryptographically hash your local files against the `.torrent` piece signatures to guarantee data integrity. (Downloaded `.torrent` files for this process are saved in `.torrent_deep_scan`).
+6.  Click **Scan**. 
+7.  Review the results tree. Rows will indicate if the topic is missing from your client, if files are missing, or if there are hash mismatches.
+8.  Select rows and click **Add Selected to qBit** or use **Add All Missing** to bulk re-add verified torrents.
+
+### 9. Settings & Updates
 - **Check for Updates**: In the Settings tab, click "Check for updates" to see if a new version is available on GitHub.
-- **Refresh Categories**: One-click refresh loads the full Rutracker forum tree via API in under 1 second.
-- **Category TTL**: Default 3 months (2160 hours). Configurable in Settings.
+- **Refresh Categories**: One-click refresh loads the full Rutracker forum tree via API.
+- **Custom Paths**: When adding torrents, you can toggle "Override Save Path", "Create Category Subfolder", and "Create ID Subfolder" depending on how you want your disk structured.
 

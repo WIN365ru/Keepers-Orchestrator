@@ -47,7 +47,7 @@ CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "
 DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_data.db")
 
 # App Version & Update Info
-APP_VERSION = "0.9.4"
+APP_VERSION = "0.9.5"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---

@@ -1099,6 +1099,7 @@ class QBitAdderApp:
         
         self.remover_tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
+        self.remover_tree.bind("<Double-1>", self._remover_on_double_click)
 
         # 5. Status & Progress
         status_frame = tk.Frame(self.remover_tab, pady=5)
@@ -1304,6 +1305,15 @@ class QBitAdderApp:
             self.root.after(0, _select_in_ui)
 
         threading.Thread(target=_thread, daemon=True).start()
+
+    def _remover_on_double_click(self, event):
+        item = self.remover_tree.identify('item', event.x, event.y)
+        if not item:
+            return
+        vals = self.remover_tree.item(item, "values")
+        # cols: Name, Size, Category, State, Path, Hash
+        if vals and len(vals) > 5 and vals[5]:
+            self._open_topic_by_hash(vals[5])
 
     def remover_delete_selected(self):
         selected = self.remover_tree.selection()
@@ -2816,6 +2826,23 @@ class QBitAdderApp:
                 if self.config["clients"][r_idx]["name"] == client_name:
                     self.scanner_cache_label.config(text=text, fg="gray")
 
+    def _open_topic_by_hash(self, info_hash):
+        """Resolve hash → topic_id via Rutracker API and open the forum topic in browser."""
+        def _lookup():
+            try:
+                resp = requests.get("https://api.rutracker.cc/v1/get_topic_id",
+                    params={"by": "hash", "val": info_hash.upper()}, timeout=10)
+                if resp.status_code == 200:
+                    result = resp.json().get("result", {})
+                    tid = result.get(info_hash.upper()) or result.get(info_hash.lower())
+                    if tid:
+                        webbrowser.open(f"https://rutracker.org/forum/viewtopic.php?t={tid}")
+                        return
+            except Exception:
+                pass
+            self.root.after(0, lambda: messagebox.showinfo("Info", "Could not resolve topic ID for this torrent."))
+        threading.Thread(target=_lookup, daemon=True).start()
+
     def _show_cache_time_for_client(self, client_name, label_widget):
         """Show the cache time on a specific label for a given client name."""
         entry = self.torrent_cache.get(client_name)
@@ -3051,7 +3078,8 @@ class QBitAdderApp:
         
         self.search_tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
-        
+        self.search_tree.bind("<Double-1>", self._search_on_double_click)
+
         # Actions
         act_frame = tk.Frame(self.search_tab)
         act_frame.pack(fill="x", padx=10, pady=5)
@@ -3851,6 +3879,7 @@ class QBitAdderApp:
         self.repair_tree.configure(yscrollcommand=tree_scroll.set)
         self.repair_tree.pack(side="left", fill="both", expand=True)
         tree_scroll.pack(side="right", fill="y")
+        self.repair_tree.bind("<Double-1>", self._repair_on_double_click)
 
         # Tag colors
         self.repair_tree.tag_configure("mismatch", foreground="dark red")
@@ -4235,6 +4264,13 @@ class QBitAdderApp:
         self._repair_scan_finished()
 
     # --- Repair Actions ---
+
+    def _repair_on_double_click(self, event):
+        item = self.repair_tree.identify('item', event.x, event.y)
+        if not item:
+            return
+        # In repair tree, iid = torrent hash
+        self._open_topic_by_hash(item)
 
     def _repair_perform_action(self, mode):
         if mode == "selected":
@@ -5954,21 +5990,13 @@ class QBitAdderApp:
 
     def _keepers_on_double_click(self, event):
         item = self.keepers_tree.identify('item', event.x, event.y)
-        column = self.keepers_tree.identify_column(event.x)
-        
-        if not item: return
-        
-        # Column #7 is "link" (cols are #1-indexed in identify_column logic usually, let's check)
+        if not item:
+            return
+        vals = self.keepers_tree.item(item, "values")
         # cols = ("id", "name", "size", "seeds", "leech", "status", "link")
-        # #1=id, #2=name, #3=size, #4=seeds, #5=leech, #6=status, #7=link
-        
-        if column == "#7":
-            vals = self.keepers_tree.item(item, "values")
-            # vals index 6 is link
-            if len(vals) > 6:
-                link = vals[6]
-                if link.startswith("http"):
-                    webbrowser.open(link)
+        if vals and len(vals) > 0:
+            tid = vals[0]
+            webbrowser.open(f"https://rutracker.org/forum/viewtopic.php?t={tid}")
 
     def _keepers_scrape_ids(self, html_content):
         """Extract just topic IDs from viewforum."""

@@ -49,7 +49,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.11.12"
+APP_VERSION = "0.11.13"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1224,44 +1224,48 @@ class QBitAdderApp:
     # --- Helper Methods ---
     def sort_tree(self, tree, col, reverse):
         """Sort treeview contents when a column header is clicked."""
-        l = [(tree.set(k, col), k) for k in tree.get_children('')]
-        
-        col_lower = col.lower()
-        
-        # Numeric size formatting
-        if col_lower in ("size", "disk_size", "uploaded", "free space", "current load", "target load", "free", "current", "target", "up_speed", "up speed"):
-            def size_to_bytes(s):
-                if not s or s == "?": return -1
-                parts = s.split()
-                if len(parts) != 2: return 0
+        try:
+            l = [(tree.set(k, col), k) for k in tree.get_children('')]
+            
+            col_lower = col.lower()
+            
+            # Numeric size formatting
+            if col_lower in ("size", "disk_size", "uploaded", "free space", "current load", "target load", "free", "current", "target", "up_speed", "up speed"):
+                def size_to_bytes(s):
+                    if not s or s == "?" or s == "-": return -1
+                    if s == "0 B": return 0
+                    parts = str(s).replace('\xa0', ' ').split()
+                    if len(parts) != 2: return 0
+                    try:
+                        val = float(parts[0].replace(',', '.'))
+                    except: return 0
+                    unit = parts[1].upper().replace("/S", "")
+                    mult = {'B':1, 'KB':1024, 'MB':1024**2, 'GB':1024**3, 'TB':1024**4}
+                    return val * mult.get(unit, 1)
+    
+                l.sort(key=lambda t: size_to_bytes(t[0]), reverse=reverse)
+                
+            # Integer columns
+            elif col_lower in ("id", "topic_id", "seeds", "leech", "seeds_snapshot", "leechers_snapshot", "k_count", "extra", "missing", "mismatch"):
+                def safe_int(s):
+                    try: return int(str(s).replace(',', ''))
+                    except: return -1
+                l.sort(key=lambda t: safe_int(t[0]), reverse=reverse)
+                
+            else:
                 try:
-                    val = float(parts[0])
-                except: return 0
-                unit = parts[1].upper().replace("/S", "")
-                mult = {'B':1, 'KB':1024, 'MB':1024**2, 'GB':1024**3, 'TB':1024**4}
-                return val * mult.get(unit, 1)
-
-            l.sort(key=lambda t: size_to_bytes(t[0]), reverse=reverse)
-            
-        # Integer columns
-        elif col_lower in ("id", "seeds", "leech", "seeds_snapshot", "leechers_snapshot"):
-            def safe_int(s):
-                try: return int(s)
-                except: return -1
-            l.sort(key=lambda t: safe_int(t[0]), reverse=reverse)
-            
-        else:
-            try:
-                l.sort(key=lambda t: t[0].lower(), reverse=reverse)
-            except:
-                l.sort(reverse=reverse)
-
-        # Rearrange items in sorted positions
-        for index, (val, k) in enumerate(l):
-            tree.move(k, '', index)
-
-        # Reverse sort next time
-        tree.heading(col, command=lambda: self.sort_tree(tree, col, not reverse))
+                    l.sort(key=lambda t: str(t[0]).lower(), reverse=reverse)
+                except:
+                    l.sort(reverse=reverse)
+    
+            # Rearrange items in sorted positions
+            for index, (val, k) in enumerate(l):
+                tree.move(k, '', index)
+    
+            # Reverse sort next time
+            tree.heading(col, command=lambda c=col, r=not reverse: self.sort_tree(tree, c, r))
+        except Exception as e:
+            self.log(f"Sorting error: {e}")
 
 
     # ... (rest of code)
@@ -7294,9 +7298,9 @@ class QBitAdderApp:
         self.scanner_tree.tag_configure("in_client", foreground="dark green")
         self.scanner_tree.tag_configure("missing", foreground="dark red")
         self.scanner_tree.tag_configure("dead", foreground="gray")
-        self.scanner_tree.tag_configure("size_empty", background="#ffcdd2")
-        self.scanner_tree.tag_configure("size_smaller", background="#ffe0e0")
-        self.scanner_tree.tag_configure("size_larger", background="#fff8d0")
+        self.scanner_tree.tag_configure("size_empty", background="#ffcccc")
+        self.scanner_tree.tag_configure("size_smaller", background="#ffe8cc")
+        self.scanner_tree.tag_configure("size_larger", background="#e6f2ff")
 
         self.scanner_tree.bind("<Double-1>", self._scanner_on_double_click)
 
@@ -7318,6 +7322,10 @@ class QBitAdderApp:
         self.scanner_dl_btn = tk.Button(btn_frame, text="Download .torrent",
             command=self._scanner_download_torrent, state="disabled")
         self.scanner_dl_btn.pack(side="left", padx=3)
+
+        self.scanner_del_qbit_btn = tk.Button(btn_frame, text="Delete from qBit",
+            command=self._scanner_delete_from_qbit, state="disabled")
+        self.scanner_del_qbit_btn.pack(side="left", padx=3)
 
         # --- Log ---
         log_frame = tk.LabelFrame(self.scanner_tab, text="Log", padx=5, pady=5)
@@ -7385,6 +7393,7 @@ class QBitAdderApp:
                 self.scanner_add_btn.config(state="normal")
                 self.scanner_add_all_btn.config(state="normal")
                 self.scanner_dl_btn.config(state="normal")
+                self.scanner_del_qbit_btn.config(state="normal")
         self.root.after(0, _reset)
 
     def scanner_stop_scan(self):
@@ -7993,7 +8002,7 @@ class QBitAdderApp:
                 # Size mismatch detection (>5% difference)
                 size_tag = None
                 rt_size = int(entry["size"] or 0)
-                if disk_size == 0:
+                if disk_size == 0 and rt_size > 0:
                     size_tag = "size_empty"
                 elif rt_size > 0 and disk_size > 0:
                     ratio = disk_size / rt_size
@@ -8044,10 +8053,11 @@ class QBitAdderApp:
         to_add = []
         for item in selected:
             vals = self.scanner_tree.item(item, "values")
-            # in_qbit is at index 7 now. disk_path at 12, category at 6
-            if vals[7] == "No":
+            # Tuple: (topic_id, name, size_str, disk_size_str, seeds, leech, rt_status, category, in_qbit, extra, missing, mismatch, pieces, disk_path)
+            # in_qbit is at vals[8]. disk_path at vals[13], category at vals[7]
+            if vals[8] == "No":
                 to_add.append({"item_id": item, "topic_id": vals[0],
-                               "category": vals[6], "disk_path": vals[12]})
+                               "category": vals[7], "disk_path": vals[13]})
 
         if not to_add:
             messagebox.showinfo("Folder Scanner", "No missing torrents in selection.")
@@ -8055,6 +8065,7 @@ class QBitAdderApp:
 
         self.scanner_add_btn.config(state="disabled")
         self.scanner_add_all_btn.config(state="disabled")
+        self.scanner_del_qbit_btn.config(state="disabled")
         self.scanner_prog_frame.pack(fill="x", padx=10, after=self.scanner_tab.winfo_children()[0])
         self.scanner_progress['value'] = 0
         self.scanner_progress_label.config(text="Starting add...")
@@ -8064,9 +8075,10 @@ class QBitAdderApp:
         to_add = []
         for item in self.scanner_tree.get_children():
             vals = self.scanner_tree.item(item, "values")
-            if vals[7] == "No" and vals[5] == "Approved":
+            # vals[8] == "in_qbit", vals[6] == "rt_status"
+            if vals[8] == "No" and vals[6] == "Approved":
                 to_add.append({"item_id": item, "topic_id": vals[0],
-                               "category": vals[6], "disk_path": vals[12]})
+                               "category": vals[7], "disk_path": vals[13]})
 
         if not to_add:
             messagebox.showinfo("Folder Scanner", "No missing alive torrents to add.")
@@ -8091,6 +8103,7 @@ class QBitAdderApp:
             self.root.after(0, self.scanner_prog_frame.pack_forget)
             self.root.after(0, lambda: self.scanner_add_btn.config(state="normal"))
             self.root.after(0, lambda: self.scanner_add_all_btn.config(state="normal"))
+            self.root.after(0, lambda: self.scanner_del_qbit_btn.config(state="normal"))
             return
 
         url = client["url"].rstrip("/")
@@ -8183,6 +8196,57 @@ class QBitAdderApp:
         self.root.after(0, self.scanner_prog_frame.pack_forget)
         self.root.after(0, lambda: self.scanner_add_btn.config(state="normal"))
         self.root.after(0, lambda: self.scanner_add_all_btn.config(state="normal"))
+        self.root.after(0, lambda: self.scanner_del_qbit_btn.config(state="normal"))
+
+    def _scanner_delete_from_qbit(self):
+        selected = self.scanner_tree.selection()
+        if not selected:
+            messagebox.showinfo("Folder Scanner", "No rows selected.")
+            return
+
+        to_delete = []
+        for item in selected:
+            vals = self.scanner_tree.item(item, "values")
+            if getattr(self, "scanner_scan_results", None):
+                if vals[8] == "Yes":
+                    to_delete.append(vals[0])
+
+        if not to_delete:
+            messagebox.showinfo("Folder Scanner", "None of the selected torrents are in qBittorrent.")
+            return
+
+        hashes = []
+        for res in self.scanner_scan_results:
+            if str(res["topic_id"]) in [str(t) for t in to_delete] and res.get("info_hash"):
+                hashes.append(res["info_hash"])
+
+        if not hashes:
+            messagebox.showinfo("Folder Scanner", "No valid info hashes found for deletion.")
+            return
+
+        if not messagebox.askyesno("Confirm", f"Remove {len(hashes)} torrents from qBittorrent?\n\nThis will NOT delete the actual downloaded files on disk, only the mapping in qBit."):
+            return
+
+        client_idx = self.scanner_client_selector.current() if hasattr(self, 'scanner_client_selector') else 0
+        if client_idx < 0:
+            return
+        client = self.config["clients"][client_idx]
+        session = self._get_qbit_session(client)
+        if not session:
+            self.scanner_log("Could not connect to qBittorrent for deletion.")
+            return
+
+        hashes_str = "|".join(hashes)
+        resp = session.post(f"{client['url'].rstrip('/')}/api/v2/torrents/delete", data={"hashes": hashes_str, "deleteFiles": "false"})
+        
+        if resp.status_code == 200:
+            self.scanner_log(f"Successfully removed {len(hashes)} torrents from qBittorrent.")
+            for item in selected:
+                vals = list(self.scanner_tree.item(item, "values"))
+                if vals[8] == "Yes":
+                    self.scanner_tree.set(item, "in_qbit", "Deleted")
+        else:
+            self.scanner_log(f"Failed to delete torrents: HTTP {resp.status_code}")
 
     def _scanner_download_torrent(self):
         selected = self.scanner_tree.selection()

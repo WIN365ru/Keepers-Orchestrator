@@ -7178,13 +7178,40 @@ class QBitAdderApp:
             self.scanner_log(f"Scanning folder: {root_folder}")
             found_folders = []
             recursive = self.scanner_recursive_var.get()
-
             skip_subid = self.scanner_skip_subid_var.get()
 
+            # Pass 1: Count total directories for determinate progress
+            total_dirs = 0
             if recursive:
+                self.scanner_log("Pass 1: Counting total directories...")
+                for _, dirnames, _ in os.walk(root_folder):
+                    if self.scanner_stop_event.is_set():
+                        break
+                    total_dirs += len(dirnames)
+                    if total_dirs % 5000 == 0:
+                        self._scanner_update_progress(0, 0, f"Counting folders... ({total_dirs} found)")
+            else:
+                try:
+                    total_dirs = len([e for e in os.listdir(root_folder) if os.path.isdir(os.path.join(root_folder, e))])
+                except: pass
+
+            if self.scanner_stop_event.is_set():
+                self.scanner_log("Scan stopped by user.")
+                self._scanner_scan_finished()
+                return
+
+            # Pass 2: Actual extraction
+            processed_dirs = 0
+            if recursive:
+                self.scanner_log(f"Pass 2: Scanning {total_dirs} directories for topics...")
                 for dirpath, dirnames, filenames in os.walk(root_folder):
                     if self.scanner_stop_event.is_set():
                         break
+                    
+                    processed_dirs += 1
+                    if processed_dirs % 100 == 0:
+                        self._scanner_update_progress(processed_dirs, max(total_dirs, 1), "Scanning folders")
+                        
                     basename = os.path.basename(dirpath)
                     if basename.isdigit():
                         found_folders.append({
@@ -7193,17 +7220,22 @@ class QBitAdderApp:
                         })
                         if skip_subid:
                             # Don't descend into subfolders of an ID folder
-                            # (avoids false positives from numeric subfolders)
+                            processed_dirs += len(dirnames) # fast-forward the progress bar
                             dirnames.clear()
             else:
                 try:
-                    for entry in os.listdir(root_folder):
+                    entries = [e for e in os.listdir(root_folder)]
+                    for i, entry in enumerate(entries):
                         full = os.path.join(root_folder, entry)
-                        if os.path.isdir(full) and entry.isdigit():
-                            found_folders.append({
-                                "topic_id": entry,
-                                "disk_path": full.replace("\\", "/")
-                            })
+                        if os.path.isdir(full):
+                            processed_dirs += 1
+                            if processed_dirs % 50 == 0:
+                                self._scanner_update_progress(processed_dirs, max(total_dirs, 1), "Scanning folders")
+                            if entry.isdigit():
+                                found_folders.append({
+                                    "topic_id": entry,
+                                    "disk_path": full.replace("\\", "/")
+                                })
                 except Exception as e:
                     self.scanner_log(f"Error listing folder: {e}")
 
@@ -7212,6 +7244,7 @@ class QBitAdderApp:
                 self._scanner_scan_finished()
                 return
 
+            self._scanner_update_progress(total_dirs, total_dirs, "Folder scan complete")
             self.scanner_log(f"Found {len(found_folders)} numeric-named folders.")
 
             if not found_folders:

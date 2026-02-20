@@ -7465,12 +7465,11 @@ class QBitAdderApp:
 
                     processed_dirs += 1
                     basename = os.path.basename(dirpath)
-                    if processed_dirs % 50 == 0:
-                        self.root.after(0, lambda n=processed_dirs, f=len(found_folders), c=basename[:30]:
-                            self.scanner_progress_label.config(
-                                text=f"Scanning... [{n} dirs, {f} found] ({c})"))
 
                     if basename.isdigit():
+                        self.root.after(0, lambda n=processed_dirs, f=len(found_folders)+1, c=basename:
+                            self.scanner_progress_label.config(
+                                text=f"Scanning... [{n} dirs] Measuring folder {c} ({f} found)"))
                         found_folders.append({
                             "topic_id": basename,
                             "disk_path": dirpath.replace("\\", "/"),
@@ -7478,6 +7477,10 @@ class QBitAdderApp:
                         })
                         if skip_subid:
                             dirnames.clear()
+                    elif processed_dirs % 20 == 0:
+                        self.root.after(0, lambda n=processed_dirs, f=len(found_folders), c=basename[:30]:
+                            self.scanner_progress_label.config(
+                                text=f"Scanning... [{n} dirs, {f} found] ({c})"))
 
                 self.root.after(0, lambda: self.scanner_progress.stop())
                 self.root.after(0, lambda: self.scanner_progress.config(mode='determinate'))
@@ -7491,14 +7494,17 @@ class QBitAdderApp:
                         full = os.path.join(root_folder, entry)
                         if os.path.isdir(full):
                             processed_dirs += 1
-                            if processed_dirs % 50 == 0:
-                                self._scanner_update_progress(processed_dirs, max(total_entries, 1), "Scanning folders")
                             if entry.isdigit():
+                                self.root.after(0, lambda n=processed_dirs, t=total_entries, f=len(found_folders)+1, c=entry:
+                                    self.scanner_progress_label.config(
+                                        text=f"Scanning {n}/{t}... Measuring folder {c} ({f} found)"))
                                 found_folders.append({
                                     "topic_id": entry,
                                     "disk_path": full.replace("\\", "/"),
                                     "disk_size": self._get_folder_size(full),
                                 })
+                            elif processed_dirs % 20 == 0:
+                                self._scanner_update_progress(processed_dirs, max(total_entries, 1), "Scanning folders")
                 except Exception as e:
                     self.scanner_log(f"Error listing folder: {e}")
 

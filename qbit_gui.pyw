@@ -76,7 +76,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.12.4"
+APP_VERSION = "0.12.5"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -7610,6 +7610,8 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 self.scanner_del_qbit_btn.config(state="normal")
                 self.scanner_del_data_chk.config(state="normal")
                 self.scanner_del_os_btn.config(state="normal")
+            for col in self.scanner_tree['columns']:
+                self.scanner_tree.heading(col, command=lambda c=col: self.sort_tree(self.scanner_tree, c, False))
         self.root.after(0, _reset)
 
     def scanner_stop_scan(self):

@@ -896,36 +896,6 @@ class CategoryManager:
             self.log(f"API refresh failed: {e}")
 
 
-class ToolTip:
-    def __init__(self, widget):
-        self.widget = widget
-        self.tip_window = None
-        self.id = None
-        self.x = self.y = 0
-
-    def show_tip(self, text, x_offset=15, y_offset=20):
-        self.text = text
-        if self.tip_window or not self.text:
-            return
-        x_val = self.widget.winfo_rootx() + self.x + x_offset
-        y_val = self.widget.winfo_rooty() + self.y + y_offset
-        
-        self.tip_window = tw = tk.Toplevel(self.widget)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x_val}+{y_val}")
-        
-        label = tk.Label(tw, text=self.text, justify='left',
-                         background="#ffffe0", relief='solid', borderwidth=1,
-                         font=("Segoe UI", 9))
-        label.pack(ipadx=4, ipady=1)
-
-    def hide_tip(self):
-        tw = self.tip_window
-        self.tip_window = None
-        if tw:
-            tw.destroy()
-
-
 class QBitAdderApp:
     def __init__(self, root):
         self.root = root
@@ -6268,7 +6238,7 @@ class QBitAdderApp:
         tree_frame = tk.Frame(self.keepers_tab)
         tree_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
-        cols = ("id", "name", "size", "seeds", "leech", "status", "link")
+        cols = ("id", "name", "size", "seeds", "leech", "status", "link", "k_count", "priority", "last_seen", "poster")
         self.keepers_tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
         self.keepers_tree.heading("id", text="ID", command=lambda: self.sort_tree(self.keepers_tree, "id", False))
         self.keepers_tree.heading("name", text="Name", command=lambda: self.sort_tree(self.keepers_tree, "name", False))
@@ -6277,6 +6247,10 @@ class QBitAdderApp:
         self.keepers_tree.heading("leech", text="Leech", command=lambda: self.sort_tree(self.keepers_tree, "leech", False))
         self.keepers_tree.heading("status", text="Status", command=lambda: self.sort_tree(self.keepers_tree, "status", False))
         self.keepers_tree.heading("link", text="Link", command=lambda: self.sort_tree(self.keepers_tree, "link", False))
+        self.keepers_tree.heading("k_count", text="# Keepers", command=lambda: self.sort_tree(self.keepers_tree, "k_count", False))
+        self.keepers_tree.heading("priority", text="Priority", command=lambda: self.sort_tree(self.keepers_tree, "priority", False))
+        self.keepers_tree.heading("last_seen", text="Last Seen", command=lambda: self.sort_tree(self.keepers_tree, "last_seen", False))
+        self.keepers_tree.heading("poster", text="Poster", command=lambda: self.sort_tree(self.keepers_tree, "poster", False))
 
         self.keepers_tree.column("id", width=60)
         self.keepers_tree.column("name", width=350)
@@ -6285,14 +6259,13 @@ class QBitAdderApp:
         self.keepers_tree.column("leech", width=50)
         self.keepers_tree.column("status", width=80)
         self.keepers_tree.column("link", width=50)
+        self.keepers_tree.column("k_count", width=60)
+        self.keepers_tree.column("priority", width=80)
+        self.keepers_tree.column("last_seen", width=120)
+        self.keepers_tree.column("poster", width=80)
 
-        # Bind double-click to open link
+        # Bind double-click to open link or profile
         self.keepers_tree.bind("<Double-1>", self._keepers_on_double_click)
-        
-        # Tooltip tracking bindings
-        self.keepers_tooltip = ToolTip(self.keepers_tree)
-        self.keepers_tree.bind("<Motion>", self._keepers_on_mouse_motion)
-        self.keepers_tree.bind("<Leave>", self._keepers_on_mouse_leave)
 
         top_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.keepers_tree.yview)
         top_scroll_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.keepers_tree.xview)
@@ -6675,8 +6648,32 @@ class QBitAdderApp:
 
     def _keepers_insert_tree(self, t, status):
         link = f"https://rutracker.org/forum/viewtopic.php?t={t['id']}"
+        
+        # Pull generated hover data if we fetched PVC payload
+        k_count, priority, str_last_seen, poster = 0, "", "", ""
+        if hasattr(self, 'keepers_pvc_data'):
+            try:
+                tid_int = int(t['id'])
+                if tid_int in self.keepers_pvc_data:
+                    d = self.keepers_pvc_data[tid_int]
+                    k_count = d.get('keepers_count', 0)
+                    
+                    p_num = d.get('keeping_priority', 0)
+                    priority = "1 (Normal)" if p_num == 1 else str(p_num)
+                    
+                    poster = str(d.get('topic_poster', ''))
+                    
+                    last_seen_ts = d.get("seeder_last_seen", 0)
+                    if last_seen_ts > 0:
+                        str_last_seen = datetime.datetime.fromtimestamp(last_seen_ts).strftime('%Y-%m-%d %H:%M:%S')
+                    else:
+                        str_last_seen = "Never"
+            except:
+                pass
+                
         self.keepers_tree.insert("", "end", values=(
-            t['id'], t['name'], t['size_str'], t['seeds'], t['leech'], status, link
+            t['id'], t['name'], t['size_str'], t['seeds'], t['leech'], status, link,
+            k_count, priority, str_last_seen, poster
         ))
 
     def _keepers_toggle_cat_input(self):
@@ -6687,57 +6684,18 @@ class QBitAdderApp:
 
     def _keepers_on_double_click(self, event):
         item = self.keepers_tree.identify('item', event.x, event.y)
+        col = self.keepers_tree.identify_column(event.x)
         if not item:
             return
         vals = self.keepers_tree.item(item, "values")
         if vals and len(vals) > 0:
-            tid = vals[0]
-            webbrowser.open(f"https://rutracker.org/forum/viewtopic.php?t={tid}")
-
-    def _keepers_on_mouse_motion(self, event):
-        item = self.keepers_tree.identify_row(event.y)
-        if item:
-            vals = self.keepers_tree.item(item, "values")
-            if vals and len(vals) > 0:
-                try:
-                    tid_int = int(vals[0])
-                    if hasattr(self, 'keepers_pvc_data') and tid_int in self.keepers_pvc_data:
-                        data = self.keepers_pvc_data[tid_int]
-                        
-                        # Format last seen timestamp
-                        ts = data.get("seeder_last_seen", 0)
-                        last_seen_str = "Never"
-                        if ts > 0:
-                            last_seen_str = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
-                            
-                        tip_text = (
-                            f"Keepers Count: {data.get('keepers_count', 0)}\n"
-                            f"Keeping Priority: {data.get('keeping_priority', 0)}\n"
-                            f"Seeder Last Seen: {last_seen_str}\n"
-                            f"Topic Poster: {data.get('topic_poster', 'Unknown')}\n"
-                            f"Leechers: {data.get('leechers', 0)}"
-                        )
-                        
-                        self.keepers_tooltip.x = event.x
-                        self.keepers_tooltip.y = event.y
-                        if self.keepers_tooltip.tip_window:
-                            self.keepers_tooltip.tip_window.wm_geometry(
-                                f"+{self.keepers_tree.winfo_rootx() + event.x + 15}"
-                                f"+{self.keepers_tree.winfo_rooty() + event.y + 20}"
-                            )
-                            # Update text if changed
-                            label = self.keepers_tooltip.tip_window.winfo_children()[0]
-                            if label.cget("text") != tip_text:
-                                label.config(text=tip_text)
-                        else:
-                            self.keepers_tooltip.show_tip(tip_text)
-                        return
-                except:
-                    pass
-        self.keepers_tooltip.hide_tip()
-
-    def _keepers_on_mouse_leave(self, event):
-        self.keepers_tooltip.hide_tip()
+            if col == '#11':  # Poster column
+                poster_id = str(vals[10])
+                if poster_id and poster_id != "Unknown":
+                    webbrowser.open(f"https://rutracker.org/forum/profile.php?mode=viewprofile&u={poster_id}")
+            else:
+                tid = vals[0]
+                webbrowser.open(f"https://rutracker.org/forum/viewtopic.php?t={tid}")
 
     def _keepers_scrape_ids(self, html_content):
         """Extract just topic IDs from viewforum."""

@@ -7187,7 +7187,7 @@ class QBitAdderApp:
         tree_container = tk.Frame(results_frame)
         tree_container.pack(fill="both", expand=True)
 
-        cols = ("topic_id", "name", "size", "seeds", "leech", "status", "category", "in_qbit", "extra", "missing", "mismatch", "pieces", "disk_path")
+        cols = ("topic_id", "name", "size", "disk_size", "seeds", "leech", "status", "category", "in_qbit", "extra", "missing", "mismatch", "pieces", "disk_path")
         self.scanner_tree = ttk.Treeview(tree_container, columns=cols, show="headings", selectmode="extended")
 
         self.scanner_tree.heading("topic_id", text="Topic ID",
@@ -7196,6 +7196,8 @@ class QBitAdderApp:
             command=lambda: self.sort_tree(self.scanner_tree, "name", False))
         self.scanner_tree.heading("size", text="Size",
             command=lambda: self.sort_tree(self.scanner_tree, "size", False))
+        self.scanner_tree.heading("disk_size", text="Disk Size",
+            command=lambda: self.sort_tree(self.scanner_tree, "disk_size", False))
         self.scanner_tree.heading("seeds", text="Seeds",
             command=lambda: self.sort_tree(self.scanner_tree, "seeds", False))
         self.scanner_tree.heading("leech", text="Leech",
@@ -7220,6 +7222,7 @@ class QBitAdderApp:
         self.scanner_tree.column("topic_id", width=70, minwidth=50)
         self.scanner_tree.column("name", width=280, minwidth=120)
         self.scanner_tree.column("size", width=80, minwidth=50)
+        self.scanner_tree.column("disk_size", width=85, minwidth=55)
         self.scanner_tree.column("seeds", width=50, minwidth=35)
         self.scanner_tree.column("leech", width=50, minwidth=35)
         self.scanner_tree.column("status", width=80, minwidth=60)
@@ -7242,6 +7245,8 @@ class QBitAdderApp:
         self.scanner_tree.tag_configure("in_client", foreground="dark green")
         self.scanner_tree.tag_configure("missing", foreground="dark red")
         self.scanner_tree.tag_configure("dead", foreground="gray")
+        self.scanner_tree.tag_configure("size_smaller", background="#ffe0e0")
+        self.scanner_tree.tag_configure("size_larger", background="#fff8d0")
 
         self.scanner_tree.bind("<Double-1>", self._scanner_on_double_click)
 
@@ -7412,6 +7417,24 @@ class QBitAdderApp:
         self.scanner_selected_client = self.config["clients"][sel]
         threading.Thread(target=self._scanner_scan_thread, args=(folder_path,), daemon=True).start()
 
+    @staticmethod
+    def _get_folder_size(path):
+        """Fast recursive folder size using os.scandir (avoids os.walk overhead)."""
+        total = 0
+        try:
+            with os.scandir(path) as it:
+                for entry in it:
+                    try:
+                        if entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                        elif entry.is_dir(follow_symlinks=False):
+                            total += QBitAdderApp._get_folder_size(entry.path)
+                    except (OSError, PermissionError):
+                        pass
+        except (OSError, PermissionError):
+            pass
+        return total
+
     def _scanner_scan_thread(self, root_folder):
         self._scanner_start_time = time.time()
         scan_start = self._scanner_start_time
@@ -7476,7 +7499,8 @@ class QBitAdderApp:
                     if basename.isdigit():
                         found_folders.append({
                             "topic_id": basename,
-                            "disk_path": dirpath.replace("\\", "/")
+                            "disk_path": dirpath.replace("\\", "/"),
+                            "disk_size": self._get_folder_size(dirpath),
                         })
                         if skip_subid:
                             # Don't descend into subfolders of an ID folder
@@ -7494,7 +7518,8 @@ class QBitAdderApp:
                             if entry.isdigit():
                                 found_folders.append({
                                     "topic_id": entry,
-                                    "disk_path": full.replace("\\", "/")
+                                    "disk_path": full.replace("\\", "/"),
+                                    "disk_size": self._get_folder_size(full),
                                 })
                 except Exception as e:
                     self.scanner_log(f"Error listing folder: {e}")
@@ -7785,12 +7810,15 @@ class QBitAdderApp:
                 disk_path = folder["disk_path"]
                 api_data = topic_data.get(tid)
 
+                disk_size = folder.get("disk_size", 0)
                 entry = {
                     "topic_id": tid,
                     "disk_path": disk_path,
                     "name": "?",
                     "size": 0,
                     "size_str": "?",
+                    "disk_size": disk_size,
+                    "disk_size_str": format_size(disk_size) if disk_size > 0 else "0 B",
                     "seeds": "?",
                     "leech": "?",
                     "rt_status": "Not on RT",
@@ -7846,12 +7874,26 @@ class QBitAdderApp:
                 else:
                     dead_count += 1
 
+                # Size mismatch detection (>5% difference)
+                size_tag = None
+                rt_size = int(entry["size"] or 0)
+                if rt_size > 0 and disk_size > 0:
+                    ratio = disk_size / rt_size
+                    if ratio < 0.95:
+                        size_tag = "size_smaller"
+                    elif ratio > 1.05:
+                        size_tag = "size_larger"
+
                 results.append(entry)
-                self.root.after(0, lambda e=entry: self.scanner_tree.insert("", "end",
-                    values=(e["topic_id"], e["name"], e["size_str"], e["seeds"], e["leech"],
-                            e["rt_status"], e["category"], e["in_qbit"], 
+                tags = [entry["tag"]]
+                if size_tag:
+                    tags.append(size_tag)
+                self.root.after(0, lambda e=entry, t=tuple(tags): self.scanner_tree.insert("", "end",
+                    values=(e["topic_id"], e["name"], e["size_str"], e["disk_size_str"],
+                            e["seeds"], e["leech"],
+                            e["rt_status"], e["category"], e["in_qbit"],
                             e["extra"], e["missing"], e["mismatch"], e["pieces"], e["disk_path"]),
-                    tags=(e["tag"],)))
+                    tags=t))
 
             self.scanner_scan_results = results
 

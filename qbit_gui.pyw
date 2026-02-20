@@ -15,6 +15,7 @@ import webbrowser
 import hashlib
 import shutil
 import sqlite3
+import csv
 
 # Default Configuration (New Structure)
 DEFAULT_CONFIG = {
@@ -48,7 +49,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.11.6"
+APP_VERSION = "0.11.8"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -279,6 +280,12 @@ class DatabaseManager:
                         forum_id INTEGER PRIMARY KEY,
                         timestamp REAL,
                         json_data TEXT
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS keepers_users (
+                        user_id INTEGER PRIMARY KEY,
+                        username TEXT
                     )
                 """)
         except Exception as e:
@@ -894,6 +901,36 @@ class CategoryManager:
 
         except Exception as e:
             self.log(f"API refresh failed: {e}")
+
+
+class ToolTip:
+    def __init__(self, widget):
+        self.widget = widget
+        self.tip_window = None
+        self.id = None
+        self.x = self.y = 0
+
+    def show_tip(self, text, x_offset=15, y_offset=20):
+        self.text = text
+        if self.tip_window or not self.text:
+            return
+        x_val = self.widget.winfo_rootx() + self.x + x_offset
+        y_val = self.widget.winfo_rooty() + self.y + y_offset
+        
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x_val}+{y_val}")
+        
+        label = tk.Label(tw, text=self.text, justify='left',
+                         background="#ffffe0", relief='solid', borderwidth=1,
+                         font=("Segoe UI", 9))
+        label.pack(ipadx=4, ipady=1)
+
+    def hide_tip(self):
+        tw = self.tip_window
+        self.tip_window = None
+        if tw:
+            tw.destroy()
 
 
 class QBitAdderApp:
@@ -6266,6 +6303,12 @@ class QBitAdderApp:
 
         # Bind double-click to open link or profile
         self.keepers_tree.bind("<Double-1>", self._keepers_on_double_click)
+        self.keepers_tree.bind("<Button-3>", self._keepers_on_right_click)
+        
+        # Tooltip tracking bindings for # Keepers column
+        self.keepers_tooltip = ToolTip(self.keepers_tree)
+        self.keepers_tree.bind("<Motion>", self._keepers_on_mouse_motion)
+        self.keepers_tree.bind("<Leave>", self._keepers_on_mouse_leave)
 
         top_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.keepers_tree.yview)
         top_scroll_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.keepers_tree.xview)
@@ -6287,6 +6330,9 @@ class QBitAdderApp:
 
         self.keepers_dl_btn = tk.Button(action_frame, text="Download .torrent", command=self._keepers_download_torrent)
         self.keepers_dl_btn.pack(side="left", padx=5)
+        
+        self.keepers_csv_btn = tk.Button(action_frame, text="Export to CSV", command=self._keepers_export_csv)
+        self.keepers_csv_btn.pack(side="right", padx=5)
 
         # Log
         self.keepers_log_area = scrolledtext.ScrolledText(self.keepers_tab, height=6, state='disabled')
@@ -6398,33 +6444,10 @@ class QBitAdderApp:
                     # This is harder to parse exact bytes from, so we default 0 if data-ts_text missing
                     size = 0
                 
-                # 4. Seeds: <b class="seedmed">(\d+)</b> OR <td class="s">...</td>
-                # Try finding class="seedmed" or generic number in seed column
-                # The seed column usually follows the size column.
-                
-                # Check for "seedmed" specifically
-                m_seeds = re.search(r'class=["\']?seedmed["\']?[^>]*>(\d+)', row_html)
-                if m_seeds:
-                    seeds = int(m_seeds.group(1))
-                else:
-                    # Fallback: Look for <td class="s" ...>...<b>(\d+)</b>...</td>
-                    # regex for that is complex on a chunk.
-                    # Let's try just finding the next number after "tor-size" if we can't find seedmed?
-                    # No, that's risky.
-                    # Rutracker usually has <b class="seedmed">. Maybe the class is quoted differently?
-                    # or it's <span class="seedmed">?
-                    # Updated regex to be tag-agnostic: class=["']?seedmed["']?[^>]*>(\d+)
-                    seeds = 0
-                
-                # 5. Leech: class="leechmed"
-                m_leech = re.search(r'class=["\']?leechmed["\']?[^>]*>(\d+)', row_html)
+                # 4. Seeds & Leech (Populated from PVC Data later)
+                # 5. Size (Populated from PVC Data later, fallback to regex size)
+                seeds = 0
                 leech = 0
-                if m_leech:
-                    leech = int(m_leech.group(1))
-                else:
-                     # Sometimes leech is just 0 without class if 0?
-                     # Or it's in <td class="l">0</td>
-                     pass
                 
                 topics.append({
                     'id': tid,
@@ -6500,15 +6523,32 @@ class QBitAdderApp:
                 try:
                     tid_int = int(tid_str)
                     if len(vals) >= 10:
+                        kf_list = vals[5] if isinstance(vals[5], list) else []
                         self.keepers_pvc_data[tid_int] = {
+                            "seeds": vals[1],
+                            "size_bytes": vals[3],
                             "keeping_priority": vals[4],
-                            "keepers_count": len(vals[5]) if isinstance(vals[5], list) else 0,
+                            "keepers_count": len(kf_list),
+                            "keepers_list": kf_list,
                             "seeder_last_seen": vals[6],
                             "topic_poster": vals[8],
                             "leechers": vals[9]
                         }
                 except:
                     pass
+                    
+        # 0.6 Fetch Nickname Data (Cached in DB)
+        self.keepers_log("Fetching Keeper User metadata...")
+        try:
+            users_resp = self.cat_manager.session.get("https://api.rutracker.cc/v1/static/keepers_user_data", timeout=10)
+            if users_resp.status_code == 200:
+                u_data = users_resp.json()
+                u_result = u_data.get("result", {})
+                if u_result:
+                    self.db_manager.save_keepers_users(u_result)
+                    self.keepers_log("Updated Keeper User nicknames in database.")
+        except Exception as e:
+            self.keepers_log(f"Error fetching Keeper Users metadata: {e}")
 
         page = 0
         limit_pages = 5 # Safety limit
@@ -6696,6 +6736,99 @@ class QBitAdderApp:
             else:
                 tid = vals[0]
                 webbrowser.open(f"https://rutracker.org/forum/viewtopic.php?t={tid}")
+
+    def _keepers_on_right_click(self, event):
+        item = self.keepers_tree.identify('item', event.x, event.y)
+        col = self.keepers_tree.identify_column(event.x)
+        if not item or not col:
+            return
+            
+        self.keepers_tree.selection_set(item)
+        col_idx = int(col.replace('#', '')) - 1
+        vals = self.keepers_tree.item(item, "values")
+        
+        if vals and 0 <= col_idx < len(vals):
+            col_name = self.keepers_tree.heading(col)["text"]
+            cell_val = str(vals[col_idx])
+            
+            menu = tk.Menu(self.root, tearoff=0)
+            menu.add_command(label=f"Copy {col_name}", command=lambda: self._keepers_copy_to_clipboard(cell_val))
+            menu.tk_popup(event.x_root, event.y_root)
+            
+    def _keepers_copy_to_clipboard(self, text):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+
+    def _keepers_on_mouse_motion(self, event):
+        item = self.keepers_tree.identify_row(event.y)
+        col = self.keepers_tree.identify_column(event.x)
+        
+        if item and col == '#8': # Keepers Count Column
+            vals = self.keepers_tree.item(item, "values")
+            if vals and len(vals) > 0:
+                try:
+                    tid_int = int(vals[0])
+                    if hasattr(self, 'keepers_pvc_data') and tid_int in self.keepers_pvc_data:
+                        k_list = self.keepers_pvc_data[tid_int].get('keepers_list', [])
+                        if k_list:
+                            names = []
+                            for kid in k_list:
+                                n = self.db_manager.get_keepers_user(kid)
+                                names.append(n)
+                                
+                            tip_text = "Keepers:\n" + "\n".join(names)
+                            self.keepers_tooltip.x = event.x
+                            self.keepers_tooltip.y = event.y
+                            if self.keepers_tooltip.tip_window:
+                                self.keepers_tooltip.tip_window.wm_geometry(
+                                    f"+{self.keepers_tree.winfo_rootx() + event.x + 15}"
+                                    f"+{self.keepers_tree.winfo_rooty() + event.y + 20}"
+                                )
+                                label = self.keepers_tooltip.tip_window.winfo_children()[0]
+                                if label.cget("text") != tip_text:
+                                    label.config(text=tip_text)
+                            else:
+                                self.keepers_tooltip.show_tip(tip_text)
+                            return
+                except:
+                    pass
+                    
+        self.keepers_tooltip.hide_tip()
+
+    def _keepers_on_mouse_leave(self, event):
+        self.keepers_tooltip.hide_tip()
+
+    def _keepers_export_csv(self):
+        items = self.keepers_tree.get_children()
+        if not items:
+            messagebox.showinfo("Export", "No data to export.")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Export Keepers to CSV"
+        )
+        
+        if not file_path:
+            return
+            
+        try:
+            with open(file_path, mode='w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                
+                # Write headers
+                headers = [self.keepers_tree.heading(col)["text"] for col in self.keepers_tree["columns"]]
+                writer.writerow(headers)
+                
+                # Write rows
+                for item in items:
+                    row_data = self.keepers_tree.item(item, "values")
+                    writer.writerow(row_data)
+                    
+            messagebox.showinfo("Export Complete", f"Data exported successfully to:\n{file_path}")
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export data to CSV.\n\n{e}")
 
     def _keepers_scrape_ids(self, html_content):
         """Extract just topic IDs from viewforum."""

@@ -83,7 +83,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.14.0"
+APP_VERSION = "0.14.1"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -2022,13 +2022,50 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             messagebox.showerror("Error", f"Failed to parse config.ini:\n{e}", parent=self.root)
 
     def create_settings_ui(self):
+        # Create a canvas and scrollbar for the settings tab
+        self.settings_canvas = tk.Canvas(self.settings_tab, highlightthickness=0)
+        self.settings_scrollbar = ttk.Scrollbar(self.settings_tab, orient="vertical", command=self.settings_canvas.yview)
+        
+        self.settings_scrollable_frame = tk.Frame(self.settings_canvas)
+        
+        self.settings_scrollable_window = self.settings_canvas.create_window((0, 0), window=self.settings_scrollable_frame, anchor="nw")
+        
+        self.settings_canvas.configure(yscrollcommand=self.settings_scrollbar.set)
+        
+        self.settings_canvas.pack(side="left", fill="both", expand=True)
+        self.settings_scrollbar.pack(side="right", fill="y")
+        
+        # Configure scrolling region when frame size changes
+        def on_frame_configure(event):
+            self.settings_canvas.configure(scrollregion=self.settings_canvas.bbox("all"))
+        self.settings_scrollable_frame.bind("<Configure>", on_frame_configure)
+        
+        # Configure canvas window size to expand horizontally
+        def on_canvas_configure(event):
+            self.settings_canvas.itemconfig(self.settings_scrollable_window, width=event.width)
+        self.settings_canvas.bind("<Configure>", on_canvas_configure)
+        
+        # Mousewheel scrolling
+        def _on_mousewheel(event):
+            self.settings_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            
+        def _bind_mousewheel(event):
+            self.settings_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            
+        def _unbind_mousewheel(event):
+            self.settings_canvas.unbind_all("<MouseWheel>")
+            
+        self.settings_canvas.bind("<Enter>", _bind_mousewheel)
+        self.settings_canvas.bind("<Leave>", _unbind_mousewheel)
+
+
         # -1. Migration / Import Data
-        migration_frame = tk.LabelFrame(self.settings_tab, text="Migration / Import Data", padx=10, pady=5)
+        migration_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Migration / Import Data", padx=10, pady=5)
         migration_frame.pack(fill="x", padx=10, pady=5)
         tk.Button(migration_frame, text="Import from webtlo config.ini", command=self.import_webtlo_config).pack(anchor="w", pady=5)
 
         # 0. Proxy Settings Section
-        proxy_frame = tk.LabelFrame(self.settings_tab, text="Proxy Settings (HTTP/HTTPS/SOCKS5)", padx=10, pady=10)
+        proxy_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Proxy Settings (HTTP/HTTPS/SOCKS5)", padx=10, pady=10)
         proxy_frame.pack(fill="x", padx=10, pady=5)
         
         self.proxy_enabled_var = tk.BooleanVar(value=self.config.get("proxy", {}).get("enabled", False))
@@ -2056,7 +2093,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         tk.Button(proxy_frame, text="Save Proxy Settings", command=self.save_proxy_settings).pack(pady=5)
 
         # 1. Global Auth Section
-        global_frame = tk.LabelFrame(self.settings_tab, text="Global Authentication", padx=10, pady=10)
+        global_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Global Authentication", padx=10, pady=10)
         self.global_auth_var = tk.BooleanVar(value=self.config["global_auth"]["enabled"])
         tk.Checkbutton(global_frame, text="Use Global Authentication for All Clients", 
                       variable=self.global_auth_var, command=self.toggle_global_auth).pack(anchor="w", padx=5)
@@ -2077,7 +2114,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         tk.Button(global_frame, text="Save Global Settings", command=self.save_global_settings).pack(pady=5)
 
         # 2. Clients List Section
-        clients_frame = tk.LabelFrame(self.settings_tab, text="qBittorrent Clients", padx=10, pady=10)
+        clients_frame = tk.LabelFrame(self.settings_scrollable_frame, text="qBittorrent Clients", padx=10, pady=10)
         clients_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
         list_frame = tk.Frame(clients_frame)
@@ -2128,7 +2165,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
 
 
         # 3. Rutracker Auth Section
-        rt_frame = tk.LabelFrame(self.settings_tab, text="Rutracker Forum Login (for downloading .torrents and failover category fetching)", padx=10, pady=10)
+        rt_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Rutracker Forum Login (for downloading .torrents and failover category fetching)", padx=10, pady=10)
         rt_frame.pack(fill="x", padx=10, pady=5)
 
         rt_auth_frame = tk.Frame(rt_frame)
@@ -2183,7 +2220,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         tk.Button(cache_btn_frame, text="Clear All Cached Lists", command=self._clear_torrent_cache).pack(side="left", padx=10)
 
         # 4. Data Sources Section
-        data_frame = tk.LabelFrame(self.settings_tab, text="Data Sources")
+        data_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Data Sources")
         data_frame.pack(fill="x", padx=10, pady=5)
 
         top_row = tk.Frame(data_frame)
@@ -2199,7 +2236,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.cats_progress_label = tk.Label(data_frame, text="", fg="#333333", font=("Segoe UI", 9))
 
         # Version & Update
-        v_frame = tk.Frame(self.settings_tab)
+        v_frame = tk.Frame(self.settings_scrollable_frame)
         v_frame.pack(side="bottom", anchor="se", padx=10, pady=5)
         
         self.version_label = tk.Label(v_frame, text=f"version {APP_VERSION}", fg="gray")
@@ -2220,7 +2257,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.refresh_client_list()
 
         # 5. Statistics (Bottom Left)
-        stats_frame = tk.LabelFrame(self.settings_tab, text="Statistics")
+        stats_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Statistics")
         stats_frame.pack(side="bottom", anchor="sw", padx=10, pady=5, fill="x")
 
         s_grid = tk.Frame(stats_frame)

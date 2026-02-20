@@ -14,6 +14,33 @@ import html
 import webbrowser
 import hashlib
 import shutil
+
+# --- Copyable ScrolledText Monkey-Patch ---
+# Tkinter prevents text selection when state="disabled".
+# This overrides the state lock to allow users to copy Log Outputs while still preventing typing.
+original_scrolled_text = scrolledtext.ScrolledText
+
+class CopyableScrolledText(original_scrolled_text):
+    def __init__(self, *args, **kwargs):
+        kwargs['state'] = 'normal'
+        super().__init__(*args, **kwargs)
+        self.bind("<Key>", lambda e: "break" if e.char and e.char not in ('\x03', '\x01', '\x0f', '\x16') else None)
+        self.bind("<<Paste>>", lambda e: "break")
+        self.bind("<<Cut>>", lambda e: "break")
+        self.bind("<BackSpace>", lambda e: "break")
+        self.bind("<Delete>", lambda e: "break")
+        self.bind("<Return>", lambda e: "break")
+
+    def config(self, *args, **kwargs):
+        if 'state' in kwargs:
+            del kwargs['state']
+        if kwargs:
+            super().config(*args, **kwargs)
+
+    def configure(self, *args, **kwargs):
+        self.config(*args, **kwargs)
+
+scrolledtext.ScrolledText = CopyableScrolledText
 import sqlite3
 import csv
 
@@ -49,7 +76,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.11.14"
+APP_VERSION = "0.12.0"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1024,6 +1051,9 @@ class QBitAdderApp:
         self.running_event = threading.Event()
         self.running_event.set()
 
+        # Bind Universal Copy behavior
+        self.root.bind_class("Treeview", "<Control-c>", self._copy_treeview_selection)
+
         self.is_initializing = True
 
         # UI Setup
@@ -1266,6 +1296,25 @@ class QBitAdderApp:
             tree.heading(col, command=lambda c=col, r=not reverse: self.sort_tree(tree, c, r))
         except Exception as e:
             self.log(f"Sorting error: {e}")
+
+    def _copy_treeview_selection(self, event):
+        """Universal Ctrl+C handler for all Treeviews."""
+        widget = event.widget
+        selection = widget.selection()
+        if not selection:
+            return
+        
+        lines = []
+        for item in selection:
+            vals = widget.item(item, "values")
+            if vals:
+                lines.append("\t".join(str(v) for v in vals))
+        
+        if lines:
+            text = "\n".join(lines)
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.log(f"Copied {len(lines)} rows to clipboard.")
 
 
     # ... (rest of code)

@@ -76,7 +76,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.12.0"
+APP_VERSION = "0.12.1"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1016,8 +1016,15 @@ class ToolTip:
 class QBitAdderApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("qBittorrent Auto-Adder")
         self.root.geometry("1200x850")
+
+        # Global Menu Bar
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="Documentation & Colors", command=self._show_help)
 
         # Custom progress bar styling
         style = ttk.Style()
@@ -1317,7 +1324,74 @@ class QBitAdderApp:
             self.log(f"Copied {len(lines)} rows to clipboard.")
 
 
-    # ... (rest of code)
+    def _show_help(self):
+        """Displays a Help dialog with feature descriptions, hotkeys, and color legends."""
+        help_win = tk.Toplevel(self.root)
+        help_win.title("Help & Documentation")
+        help_win.geometry("900x700")
+
+        txt = scrolledtext.ScrolledText(help_win, wrap="word", state="normal", font=("Segoe UI", 10))
+        txt.pack(fill="both", expand=True, padx=10, pady=10)
+
+        help_content = """# === QBIT ADDER - HELP & DOCUMENTATION ===
+
+## 📑 APP TABS & FUNCTIONS
+--------------------------------------------------
+[Add Torrents]
+- Takes a Rutracker Topic ID or a Folder Name, searches Rutracker, downloads the active .torrent file, and injects it into qBittorrent pointing to your specified directory.
+- Deep Checkbox searches deeper matches natively.
+
+[Keepers]
+- Fetches all user profiles cached in your 'q_adder_data.db' Keepers list to instantly scan for their latest torrents. 
+- Useful for automating downloads from favorite uploaders.
+
+[Update Torrents]
+- Compares torrents currently in qBittorrent to the live Rutracker API to find newly updated matching topics. Automatically downloads the updated file and points it to the exact same disk location.
+
+[Remove Torrents]
+- Cleans up inactive torrents by comparing qBit against Rutracker API. Flags Dead / Unknown topics for easy deletion. 
+
+[Repair Categories]
+- Rescans all Torrents in qBittorrent against the Rutracker Database. Corrects empty or inaccurate Categories and renames invalid Tracker names.
+
+[Move Torrents]
+- Mass-moves actively seeding Torrents between physical drives without manually entering qBittorrent's GUI. Can also migrate Torrents using dynamic folder naming conventions like /{Category}/{Topic_ID}/.
+
+[Folder Scanner]
+- Scans a physical Windows folder on your drive and maps every sub-directory against the Rutracker API.
+- Use this to automatically detect unseeded collections, identify missing downloads, and re-inject disconnected folders back into qBittorrent smoothly.
+
+[Bitrot Scanner]
+- Scans ALL payload files across every active Torrent in qBittorrent and subjects them to cryptographic SHA-1 Verification. Perfect for discovering silent data corruption or corrupt hard drives.
+
+
+## ⌨️ USEFUL COMMANDS & HOTKEYS
+--------------------------------------------------
+<Control-C>
+- The Universal Copy! Applies to EVERY Treeview panel across the entire app (e.g. Folder Scanner findings, Missing Searches, Move targets).
+- Highlight 1 or 1,000 rows in a table, press Ctrl+C, and paste them perfectly into Excel or Notepad!
+
+Log Highlighting
+- All text consoles are unlocked! You can drag, highlight, and Copy/Paste error text from the "Log" boxes freely without breaking the readout.
+
+Double-Click Rows
+- Double-clicking an entry in the Treeview (like in the Folder Scanner) will instantly open your Default Browser directly to its Rutracker.org forum topic!
+
+
+## 🎨 TREEVIEW COLOR LEGEND (Folder Scanner)
+--------------------------------------------------
+⚪ Default (White)  - Standard healthy torrent that isn't connected to your client.
+🟢 Dark Green       - Actively mapped / seeding in qBittorrent.
+🔴 Dark Red         - "Missing" - File is missing pieces compared to API.
+🔘 Gray Text        - "Dead" - This topic no longer exists on Rutracker.
+
+📁 SIZE COMPARISON BACKGROUNDS:
+Light Red (Pink)    - 0 B Empty Folder! Exists on your drive but contains no data whatsoever.
+Light Orange        - Size Mismatch (Smaller). Your downloaded folder has < 95% of the data the API expects.
+Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% of the data the API expects (likely extra junk files inside).
+"""
+        txt.insert("1.0", help_content)
+        txt.config(state="disabled")
 
     # In create_keepers_ui:
     # ...

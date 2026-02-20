@@ -83,7 +83,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.15.0"
+APP_VERSION = "0.15.1"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1158,6 +1158,7 @@ class QBitAdderApp:
             "rutracker": "gray",
             "client": "gray"
         }
+        self.client_statuses = [] # list of colors for each client
         self.status_loop_active = False
 
         self.create_keepers_ui()
@@ -1292,32 +1293,64 @@ class QBitAdderApp:
             except Exception:
                 self._update_ui_status("rutracker", "red")
 
-        # 3. Client Check (Check currently selected client in Details Editor)
-        if not hasattr(self, 'current_client_index') or self.current_client_index == -1:
-            self._update_ui_status("client", "gray")
-        else:
-            self._update_ui_status("client", "yellow")
+        # 3. Client Check for ALL clients
+        statuses = []
+        for i, client in enumerate(self.config.get("clients", [])):
+            url = client.get("url", "").rstrip("/")
+            if not url:
+                statuses.append("gray")
+                continue
+            
+            # Use global auth or client auth
+            if client.get("use_global_auth", True):
+                auth = (self.config["global_auth"]["username"], self.config["global_auth"]["password"])
+            else:
+                auth = (client.get("username", ""), client.get("password", ""))
+
             try:
-                client = self.config["clients"][self.current_client_index]
-                url = client.get("url", "").rstrip("/")
-                if not url:
-                    self._update_ui_status("client", "gray")
-                    return
-                # Determine auth
-                if client.get("use_global_auth", True):
-                    auth = (self.config["global_auth"]["username"], self.config["global_auth"]["password"])
-                else:
-                    auth = (client.get("username", ""), client.get("password", ""))
-
-                # Hit the qbittorrent webapi to get app version
-                resp = requests.get(f"{url}/api/v2/app/version", auth=auth, timeout=10)
+                # We can't update UI yellow here easily for individual list items without complexities, 
+                # so we just do the check synchronously in this thread per client.
+                resp = requests.get(f"{url}/api/v2/app/version", auth=auth, timeout=5)
                 if resp.status_code == 200:
-                    self._update_ui_status("client", "green")
+                    statuses.append("green")
                 else:
-                    self._update_ui_status("client", "red")
+                    statuses.append("red")
             except Exception:
-                self._update_ui_status("client", "red")
+                statuses.append("red")
+        
+        with self.status_lock:
+            self.client_statuses = statuses
 
+        def _update_listbox_and_canvas():
+            try:
+                # Update listbox
+                selection = self.client_listbox.curselection()
+                for i in range(self.client_listbox.size()):
+                    client_name = self.config["clients"][i].get("name", "Unnamed")
+                    c_status = self.client_statuses[i] if i < len(self.client_statuses) else "gray"
+                    icon = "⚪"
+                    if c_status == "green": icon = "🟢"
+                    elif c_status == "red": icon = "🔴"
+                    elif c_status == "yellow": icon = "🟡"
+                    
+                    self.client_listbox.delete(i)
+                    self.client_listbox.insert(i, f"{icon} {client_name}")
+                    
+                if selection:
+                    self.client_listbox.selection_set(selection[0])
+                    
+                # Update details canvas if selected
+                if getattr(self, 'current_client_index', -1) != -1 and self.current_client_index < len(self.client_statuses):
+                    selected_c_status = self.client_statuses[self.current_client_index]
+                    self._update_ui_status("client", selected_c_status)
+                else:
+                    self._update_ui_status("client", "gray")
+            except tk.TclError:
+                pass
+                
+        self.root.after(0, _update_listbox_and_canvas)
+
+    # --- Unified progress helpers ---
         # Auto-scan when switching to Update tab
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
@@ -2673,8 +2706,14 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
 
     def refresh_client_list(self):
         self.client_listbox.delete(0, tk.END)
-        for c in self.config["clients"]:
-            self.client_listbox.insert(tk.END, c["name"])
+        for i, c in enumerate(self.config.get("clients", [])):
+            with self.status_lock:
+                c_status = self.client_statuses[i] if i < len(self.client_statuses) else "gray"
+            icon = "⚪"
+            if c_status == "green": icon = "🟢"
+            elif c_status == "red": icon = "🔴"
+            elif c_status == "yellow": icon = "🟡"
+            self.client_listbox.insert(tk.END, f"{icon} {c.get('name', 'Unnamed')}")
         
         # Select first if exists or reset
         if self.config["clients"]:

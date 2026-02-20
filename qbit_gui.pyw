@@ -48,7 +48,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.11.3"
+APP_VERSION = "0.11.4"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -266,6 +266,14 @@ class DatabaseManager:
                         status TEXT
                     )
                 """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS mover_history (
+                        hash TEXT PRIMARY KEY,
+                        timestamp REAL,
+                        from_disk TEXT,
+                        to_disk TEXT
+                    )
+                """)
         except Exception as e:
             print(f"DB Init Error: {e}")
 
@@ -288,6 +296,24 @@ class DatabaseManager:
         except Exception as e:
             print(f"Error loading bitrot history: {e}")
             return {}
+
+    def log_mover_success(self, info_hash, from_disk, to_disk):
+        try:
+            with self._get_conn() as conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO mover_history (hash, timestamp, from_disk, to_disk)
+                    VALUES (?, ?, ?, ?)
+                """, (info_hash, time.time(), from_disk, to_disk))
+        except Exception as e:
+            print(f"Mover DB Error: {e}")
+
+    def get_mover_stats(self):
+        try:
+            with self._get_conn() as conn:
+                row = conn.execute("SELECT COUNT(*) FROM mover_history").fetchone()
+                return row[0] if row else 0
+        except:
+            return 0
 
     def add_kept_torrent(self, topic_id, info_hash, name, size, seeds, leechers, cat_id):
         try:
@@ -1720,16 +1746,32 @@ class QBitAdderApp:
         s_grid = tk.Frame(stats_frame)
         s_grid.pack(fill="x", padx=5, pady=2)
 
+        # Row 1
         self.stats_label_count = tk.Label(s_grid, text="Torrents Kept: 0", font=("", 9))
-        self.stats_label_count.pack(side="left", padx=10)
+        self.stats_label_count.grid(row=0, column=0, sticky="w", padx=10)
         
         self.stats_label_size = tk.Label(s_grid, text="Total Size Saved: 0 B", font=("", 9))
-        self.stats_label_size.pack(side="left", padx=10)
+        self.stats_label_size.grid(row=0, column=1, sticky="w", padx=10)
 
         self.stats_label_active = tk.Label(s_grid, text="Active Seeding Size: 0 B", font=("", 9))
-        self.stats_label_active.pack(side="left", padx=10)
+        self.stats_label_active.grid(row=0, column=2, sticky="w", padx=10)
         
-        tk.Button(s_grid, text="Refresh", command=self.refresh_statistics, height=1).pack(side="right", padx=5)
+        # Row 2
+        self.stats_label_global_net = tk.Label(s_grid, text="Global UL: 0 B/s | DL: 0 B/s", font=("", 9))
+        self.stats_label_global_net.grid(row=1, column=0, sticky="w", padx=10)
+        
+        self.stats_label_global_client = tk.Label(s_grid, text="Total Torrents: 0 (0 B)", font=("", 9))
+        self.stats_label_global_client.grid(row=1, column=1, sticky="w", padx=10)
+        
+        self.stats_label_bitrot = tk.Label(s_grid, text="Torrents Checked for Bitrot: 0", font=("", 9))
+        self.stats_label_bitrot.grid(row=1, column=2, sticky="w", padx=10)
+        
+        # Row 3
+        self.stats_label_mover = tk.Label(s_grid, text="Torrents Auto-Balanced: 0", font=("", 9))
+        self.stats_label_mover.grid(row=2, column=0, sticky="w", padx=10)
+        
+        ref_btn = tk.Button(s_grid, text="Refresh", command=self.refresh_statistics, height=1)
+        ref_btn.grid(row=2, column=2, sticky="e", padx=5)
 
         # Refresh stats on load
         self.root.after(1000, self.refresh_statistics)
@@ -6063,6 +6105,7 @@ class QBitAdderApp:
                     data={"hashes": t_hash, "location": new_path}, timeout=30)
                 if resp.status_code == 200:
                     success += 1
+                    self.db_manager.log_mover_success(t_hash, entry.get("from_disk", ""), entry.get("to_disk", ""))
                     self.root.after(0, lambda h=t_hash: self.mover_preview_tree.item(h, tags=("moved",)))
                     self.mover_log(f"  [{i+1}/{len(plan)}] Moved: {entry['name'][:55]} -> {entry['to_disk']}")
                 else:
@@ -6727,27 +6770,66 @@ class QBitAdderApp:
         self.stats_label_count.config(text=f"Torrents Kept: {count}")
         self.stats_label_size.config(text=f"Total Size Saved: {format_size(size)}")
         
-        # Calculate Active Size
+        # External Fetchers
         active_size = 0
+        global_count = 0
+        global_size = 0
+        up_speed = 0
+        dl_speed = 0
+        bitrot_checked = 0
+        bitrot_rot = 0
+        
+        
         try:
+            # Local Database Lookups
+            history = self.db_manager.get_bitrot_history()
+            bitrot_checked = len(history)
+            bitrot_rot = sum(1 for v in history.values() if v.get("status") == "Bitrot Detected")
+            self.stats_label_bitrot.config(text=f"Checked for Bitrot: {bitrot_checked} (Corrupted: {bitrot_rot})")
+            
+            mover_count = self.db_manager.get_mover_stats()
+            self.stats_label_mover.config(text=f"Torrents Auto-Balanced: {mover_count}")
+            
+            # API Lookups
             client_conf = self.config["clients"][self.config["last_selected_client_index"]]
             s = self._get_qbit_session(client_conf)
             
             if s:
                 url = client_conf["url"].rstrip("/")
-                # Get all torrents in 'Keepers' category
-                resp = s.get(f"{url}/api/v2/torrents/info", params={"category": "Keepers"}, timeout=10)
-                if resp.status_code == 200:
-                    torrents = resp.json()
-                    for t in torrents:
-                        # Count size of torrents that are arguably "active" or just present under Keepers
-                        active_size += t.get('size', 0)
-                    
-                    self.stats_label_active.config(text=f"Active Seeding Size: {format_size(active_size)}")
-                else:
-                    self.stats_label_active.config(text=f"Active Seeding Size: (Client Error {resp.status_code})")
+                
+                # Fetch global transfer rates
+                try:
+                    t_resp = s.get(f"{url}/api/v2/transfer/info", timeout=5)
+                    if t_resp.status_code == 200:
+                        t_data = t_resp.json()
+                        dl_speed = t_data.get("dl_info_speed", 0)
+                        up_speed = t_data.get("up_info_speed", 0)
+                except: pass
+                
+                self.stats_label_global_net.config(text=f"Global UL: {format_size(up_speed)}/s | DL: {format_size(dl_speed)}/s")
+
+                # Get aggregate torrent sums
+                try:
+                    resp = s.get(f"{url}/api/v2/torrents/info", timeout=10)
+                    if resp.status_code == 200:
+                        torrents = resp.json()
+                        global_count = len(torrents)
+                        for t in torrents:
+                            global_size += t.get('size', 0)
+                            if t.get('category') == "Keepers":
+                                active_size += t.get('size', 0)
+                                
+                        self.stats_label_active.config(text=f"Active Seeding Size: {format_size(active_size)}")
+                        self.stats_label_global_client.config(text=f"Total Torrents: {global_count} ({format_size(global_size)})")
+                    else:
+                        self.stats_label_active.config(text=f"Active Seeding Size: (Client Error {resp.status_code})")
+                except:
+                    self.stats_label_active.config(text="Active Seeding Size: (Error)")
             else:
                 self.stats_label_active.config(text="Active Seeding Size: (Not connected)")
+                self.stats_label_global_net.config(text="Global UL: ? | DL: ? (Not connected)")
+                self.stats_label_global_client.config(text="Total Torrents: 0 (Not connected)")
+                
         except Exception as e:
             self.stats_label_active.config(text=f"Active Seeding Size: (Error)")
             print(f"Stats Error: {e}")

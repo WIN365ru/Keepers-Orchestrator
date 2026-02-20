@@ -49,7 +49,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.11.13"
+APP_VERSION = "0.11.14"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -7325,7 +7325,15 @@ class QBitAdderApp:
 
         self.scanner_del_qbit_btn = tk.Button(btn_frame, text="Delete from qBit",
             command=self._scanner_delete_from_qbit, state="disabled")
-        self.scanner_del_qbit_btn.pack(side="left", padx=3)
+        self.scanner_del_qbit_btn.pack(side="right", padx=3)
+
+        self.scanner_del_data_var = tk.IntVar(value=0)
+        self.scanner_del_data_chk = tk.Checkbutton(btn_frame, text="Delete Data", variable=self.scanner_del_data_var, state="disabled")
+        self.scanner_del_data_chk.pack(side="right", padx=0)
+
+        self.scanner_del_os_btn = tk.Button(btn_frame, text="Delete OS Data",
+            command=self._scanner_delete_os_data, state="disabled")
+        self.scanner_del_os_btn.pack(side="right", padx=3)
 
         # --- Log ---
         log_frame = tk.LabelFrame(self.scanner_tab, text="Log", padx=5, pady=5)
@@ -7394,6 +7402,8 @@ class QBitAdderApp:
                 self.scanner_add_all_btn.config(state="normal")
                 self.scanner_dl_btn.config(state="normal")
                 self.scanner_del_qbit_btn.config(state="normal")
+                self.scanner_del_data_chk.config(state="normal")
+                self.scanner_del_os_btn.config(state="normal")
         self.root.after(0, _reset)
 
     def scanner_stop_scan(self):
@@ -8066,6 +8076,8 @@ class QBitAdderApp:
         self.scanner_add_btn.config(state="disabled")
         self.scanner_add_all_btn.config(state="disabled")
         self.scanner_del_qbit_btn.config(state="disabled")
+        self.scanner_del_data_chk.config(state="disabled")
+        self.scanner_del_os_btn.config(state="disabled")
         self.scanner_prog_frame.pack(fill="x", padx=10, after=self.scanner_tab.winfo_children()[0])
         self.scanner_progress['value'] = 0
         self.scanner_progress_label.config(text="Starting add...")
@@ -8089,6 +8101,9 @@ class QBitAdderApp:
 
         self.scanner_add_btn.config(state="disabled")
         self.scanner_add_all_btn.config(state="disabled")
+        self.scanner_del_qbit_btn.config(state="disabled")
+        self.scanner_del_data_chk.config(state="disabled")
+        self.scanner_del_os_btn.config(state="disabled")
         self.scanner_prog_frame.pack(fill="x", padx=10, after=self.scanner_tab.winfo_children()[0])
         self.scanner_progress['value'] = 0
         self.scanner_progress_label.config(text="Starting add...")
@@ -8104,6 +8119,8 @@ class QBitAdderApp:
             self.root.after(0, lambda: self.scanner_add_btn.config(state="normal"))
             self.root.after(0, lambda: self.scanner_add_all_btn.config(state="normal"))
             self.root.after(0, lambda: self.scanner_del_qbit_btn.config(state="normal"))
+            self.root.after(0, lambda: self.scanner_del_data_chk.config(state="normal"))
+            self.root.after(0, lambda: self.scanner_del_os_btn.config(state="normal"))
             return
 
         url = client["url"].rstrip("/")
@@ -8197,6 +8214,8 @@ class QBitAdderApp:
         self.root.after(0, lambda: self.scanner_add_btn.config(state="normal"))
         self.root.after(0, lambda: self.scanner_add_all_btn.config(state="normal"))
         self.root.after(0, lambda: self.scanner_del_qbit_btn.config(state="normal"))
+        self.root.after(0, lambda: self.scanner_del_data_chk.config(state="normal"))
+        self.root.after(0, lambda: self.scanner_del_os_btn.config(state="normal"))
 
     def _scanner_delete_from_qbit(self):
         selected = self.scanner_tree.selection()
@@ -8224,8 +8243,12 @@ class QBitAdderApp:
             messagebox.showinfo("Folder Scanner", "No valid info hashes found for deletion.")
             return
 
-        if not messagebox.askyesno("Confirm", f"Remove {len(hashes)} torrents from qBittorrent?\n\nThis will NOT delete the actual downloaded files on disk, only the mapping in qBit."):
+        is_delete_data = self.scanner_del_data_var.get()
+        msg_extra = " AND DELETE downloaded files" if is_delete_data else " (keeping files on disk)"
+        if not messagebox.askyesno("Confirm", f"Remove {len(hashes)} torrents from qBittorrent{msg_extra}?"):
             return
+            
+        delete_files_str = "true" if is_delete_data else "false"
 
         client_idx = self.scanner_client_selector.current() if hasattr(self, 'scanner_client_selector') else 0
         if client_idx < 0:
@@ -8237,16 +8260,59 @@ class QBitAdderApp:
             return
 
         hashes_str = "|".join(hashes)
-        resp = session.post(f"{client['url'].rstrip('/')}/api/v2/torrents/delete", data={"hashes": hashes_str, "deleteFiles": "false"})
+        resp = session.post(f"{client['url'].rstrip('/')}/api/v2/torrents/delete", data={"hashes": hashes_str, "deleteFiles": delete_files_str})
         
         if resp.status_code == 200:
-            self.scanner_log(f"Successfully removed {len(hashes)} torrents from qBittorrent.")
+            self.scanner_log(f"Successfully removed {len(hashes)} torrents from qBittorrent" + (" and deleted files." if is_delete_data else "."))
             for item in selected:
                 vals = list(self.scanner_tree.item(item, "values"))
-                if vals[8] == "Yes":
+                if vals[8] == "Yes" or vals[8] == "Deleted":
                     self.scanner_tree.set(item, "in_qbit", "Deleted")
         else:
             self.scanner_log(f"Failed to delete torrents: HTTP {resp.status_code}")
+
+    def _scanner_delete_os_data(self):
+        selected = self.scanner_tree.selection()
+        if not selected:
+            messagebox.showinfo("Folder Scanner", "No rows selected.")
+            return
+
+        to_delete = []
+        for item in selected:
+            vals = self.scanner_tree.item(item, "values")
+            # disk_path is at vals[13]
+            disk_path = vals[13]
+            if disk_path and os.path.exists(disk_path):
+                to_delete.append((item, disk_path, vals[0]))
+
+        if not to_delete:
+            messagebox.showinfo("Folder Scanner", "None of the selected folders exist on the drive.")
+            return
+
+        if not messagebox.askyesno("Confirm OS Deletion", f"Permanently delete {len(to_delete)} physical folders from your drive?\n\nWARNING: This will wipe the OS data even if they are NOT in qBittorrent. This action cannot be undone!"):
+            return
+
+        success = 0
+        failed = 0
+        import shutil
+        for item, path, tid in to_delete:
+            try:
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
+                success += 1
+                self.scanner_log(f"Deleted OS folder for topic {tid}: {path}")
+                # Visually update the tree to reflect empty size
+                self.root.after(0, lambda i=item: self.scanner_tree.set(i, "disk_size", 0))
+                self.root.after(0, lambda i=item: self.scanner_tree.set(i, "disk_size_str", "0 B"))
+                # Note: tag change requires getting old tags ignoring sizes, but for simplicity we just set it to size_empty
+                self.root.after(0, lambda i=item: self.scanner_tree.item(i, tags=("size_empty",)))
+            except Exception as e:
+                self.scanner_log(f"Failed to delete {path}: {e}")
+                failed += 1
+
+        self.scanner_log(f"OS Deletion complete: {success} deleted, {failed} failed.")
 
     def _scanner_download_torrent(self):
         selected = self.scanner_tree.selection()

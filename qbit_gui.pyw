@@ -48,7 +48,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.11.5"
+APP_VERSION = "0.11.6"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -274,6 +274,13 @@ class DatabaseManager:
                         to_disk TEXT
                     )
                 """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS pvc_cache (
+                        forum_id INTEGER PRIMARY KEY,
+                        timestamp REAL,
+                        json_data TEXT
+                    )
+                """)
         except Exception as e:
             print(f"DB Init Error: {e}")
 
@@ -314,6 +321,26 @@ class DatabaseManager:
                 return row[0] if row else 0
         except:
             return 0
+
+    def save_pvc_data(self, forum_id, json_str):
+        try:
+            with self._get_conn() as conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO pvc_cache (forum_id, timestamp, json_data)
+                    VALUES (?, ?, ?)
+                """, (forum_id, time.time(), json_str))
+        except Exception as e:
+            print(f"Error saving PVC cache: {e}")
+
+    def get_pvc_data(self, forum_id):
+        try:
+            with self._get_conn() as conn:
+                row = conn.execute("SELECT json_data, timestamp FROM pvc_cache WHERE forum_id = ?", (forum_id,)).fetchone()
+                if row:
+                    return row[0], row[1]
+        except Exception as e:
+            print(f"Error loading PVC cache: {e}")
+        return None
 
     def add_kept_torrent(self, topic_id, info_hash, name, size, seeds, leechers, cat_id):
         try:
@@ -868,6 +895,35 @@ class CategoryManager:
         except Exception as e:
             self.log(f"API refresh failed: {e}")
 
+
+class ToolTip:
+    def __init__(self, widget):
+        self.widget = widget
+        self.tip_window = None
+        self.id = None
+        self.x = self.y = 0
+
+    def show_tip(self, text, x_offset=15, y_offset=20):
+        self.text = text
+        if self.tip_window or not self.text:
+            return
+        x_val = self.widget.winfo_rootx() + self.x + x_offset
+        y_val = self.widget.winfo_rooty() + self.y + y_offset
+        
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x_val}+{y_val}")
+        
+        label = tk.Label(tw, text=self.text, justify='left',
+                         background="#ffffe0", relief='solid', borderwidth=1,
+                         font=("Segoe UI", 9))
+        label.pack(ipadx=4, ipady=1)
+
+    def hide_tip(self):
+        tw = self.tip_window
+        self.tip_window = None
+        if tw:
+            tw.destroy()
 
 
 class QBitAdderApp:
@@ -6232,6 +6288,11 @@ class QBitAdderApp:
 
         # Bind double-click to open link
         self.keepers_tree.bind("<Double-1>", self._keepers_on_double_click)
+        
+        # Tooltip tracking bindings
+        self.keepers_tooltip = ToolTip(self.keepers_tree)
+        self.keepers_tree.bind("<Motion>", self._keepers_on_mouse_motion)
+        self.keepers_tree.bind("<Leave>", self._keepers_on_mouse_leave)
 
         top_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.keepers_tree.yview)
         top_scroll_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.keepers_tree.xview)
@@ -6430,6 +6491,52 @@ class QBitAdderApp:
         except Exception as e:
             self.keepers_log(f"Error fetching client torrents: {e}")
 
+        # 0.5 Fetch PVC Data (Cached 6 hours)
+        self.keepers_log(f"Fetching PVC metadata for category {cat_id}...")
+        self.keepers_pvc_data = {}
+        
+        pvc_cache = self.db_manager.get_pvc_data(cat_id)
+        pvc_needs_update = True
+        pvc_result = {}
+        
+        if pvc_cache:
+            json_str, ts = pvc_cache
+            if time.time() - ts < 21600:  # 6 hours
+                try:
+                    pvc_result = json.loads(json_str)
+                    pvc_needs_update = False
+                    self.keepers_log("Loaded PVC metadata from cache.")
+                except Exception as e:
+                    self.keepers_log(f"PVC Cache decode error: {e}")
+        
+        if pvc_needs_update:
+            try:
+                pvc_resp = self.cat_manager.session.get(f"https://api.rutracker.cc/v1/static/pvc/f/{cat_id}", timeout=10)
+                if pvc_resp.status_code == 200:
+                    data = pvc_resp.json()
+                    pvc_result = data.get("result", {})
+                    if pvc_result:
+                        self.db_manager.save_pvc_data(cat_id, json.dumps(pvc_result))
+                        self.keepers_log("Fetched and cached new PVC metadata from Rutracker API.")
+            except Exception as e:
+                self.keepers_log(f"Error fetching PVC metadata: {e}")
+                
+        # Hydrate dictionary
+        if pvc_result:
+            for tid_str, vals in pvc_result.items():
+                try:
+                    tid_int = int(tid_str)
+                    if len(vals) >= 10:
+                        self.keepers_pvc_data[tid_int] = {
+                            "keeping_priority": vals[4],
+                            "keepers_count": len(vals[5]) if isinstance(vals[5], list) else 0,
+                            "seeder_last_seen": vals[6],
+                            "topic_poster": vals[8],
+                            "leechers": vals[9]
+                        }
+                except:
+                    pass
+
         page = 0
         limit_pages = 5 # Safety limit
         found_count = 0 
@@ -6583,10 +6690,54 @@ class QBitAdderApp:
         if not item:
             return
         vals = self.keepers_tree.item(item, "values")
-        # cols = ("id", "name", "size", "seeds", "leech", "status", "link")
         if vals and len(vals) > 0:
             tid = vals[0]
             webbrowser.open(f"https://rutracker.org/forum/viewtopic.php?t={tid}")
+
+    def _keepers_on_mouse_motion(self, event):
+        item = self.keepers_tree.identify_row(event.y)
+        if item:
+            vals = self.keepers_tree.item(item, "values")
+            if vals and len(vals) > 0:
+                try:
+                    tid_int = int(vals[0])
+                    if hasattr(self, 'keepers_pvc_data') and tid_int in self.keepers_pvc_data:
+                        data = self.keepers_pvc_data[tid_int]
+                        
+                        # Format last seen timestamp
+                        ts = data.get("seeder_last_seen", 0)
+                        last_seen_str = "Never"
+                        if ts > 0:
+                            last_seen_str = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+                            
+                        tip_text = (
+                            f"Keepers Count: {data.get('keepers_count', 0)}\n"
+                            f"Keeping Priority: {data.get('keeping_priority', 0)}\n"
+                            f"Seeder Last Seen: {last_seen_str}\n"
+                            f"Topic Poster: {data.get('topic_poster', 'Unknown')}\n"
+                            f"Leechers: {data.get('leechers', 0)}"
+                        )
+                        
+                        self.keepers_tooltip.x = event.x
+                        self.keepers_tooltip.y = event.y
+                        if self.keepers_tooltip.tip_window:
+                            self.keepers_tooltip.tip_window.wm_geometry(
+                                f"+{self.keepers_tree.winfo_rootx() + event.x + 15}"
+                                f"+{self.keepers_tree.winfo_rooty() + event.y + 20}"
+                            )
+                            # Update text if changed
+                            label = self.keepers_tooltip.tip_window.winfo_children()[0]
+                            if label.cget("text") != tip_text:
+                                label.config(text=tip_text)
+                        else:
+                            self.keepers_tooltip.show_tip(tip_text)
+                        return
+                except:
+                    pass
+        self.keepers_tooltip.hide_tip()
+
+    def _keepers_on_mouse_leave(self, event):
+        self.keepers_tooltip.hide_tip()
 
     def _keepers_scrape_ids(self, html_content):
         """Extract just topic IDs from viewforum."""

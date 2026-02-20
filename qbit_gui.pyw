@@ -76,7 +76,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.12.1"
+APP_VERSION = "0.12.2"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1060,6 +1060,14 @@ class QBitAdderApp:
 
         # Bind Universal Copy behavior
         self.root.bind_class("Treeview", "<Control-c>", self._copy_treeview_selection)
+        
+        # Bind Tab Navigation Hotkeys
+        for i in range(1, 10):
+            self.root.bind(f"<Control-Key-{i}>", lambda e, idx=i-1: self.notebook.select(idx))
+        self.root.bind("<Control-Key-0>", lambda e: self.notebook.select(9))
+        
+        # Bind Global Action trigger
+        self.root.bind("<F5>", self._handle_f5)
 
         self.is_initializing = True
 
@@ -1304,6 +1312,20 @@ class QBitAdderApp:
         except Exception as e:
             self.log(f"Sorting error: {e}")
 
+    def _handle_f5(self, event=None):
+        """Universal Hotkey to trigger the primary Action on the current active tab."""
+        idx = self.notebook.index("current")
+        if idx == 0: self.process_torrent()
+        elif idx == 1: self.keepers_start_scan()
+        elif idx == 2: self.updater_start_scan()
+        elif idx == 3: self.remover_load_torrents(force=True)
+        elif idx == 4: self.repair_start_scan()
+        elif idx == 5: self._mover_load_torrents(force=True)
+        elif idx == 6: self.scanner_start_scan()
+        elif idx == 7: self.bitrot_load_torrents()
+        elif idx == 9: self.perform_search()
+        return "break"
+
     def _copy_treeview_selection(self, event):
         """Universal Ctrl+C handler for all Treeviews."""
         widget = event.widget
@@ -1367,6 +1389,16 @@ class QBitAdderApp:
 
 ## ⌨️ USEFUL COMMANDS & HOTKEYS
 --------------------------------------------------
+<Control-1> through <Control-0>
+- Instantly switch between the 10 application tabs without using the mouse. (1=Adder, 0=Search)
+
+<F5>
+- The Universal Action Key! Instantly start the primary operation of whatever tab you are looking at:
+    • Adder: Process Torrent
+    • Search: Search Rutracker
+    • Folder/Bitrot/Keepers: Start Scan
+    • Remover/Mover: Refresh Client List 
+
 <Control-C>
 - The Universal Copy! Applies to EVERY Treeview panel across the entire app (e.g. Folder Scanner findings, Missing Searches, Move targets).
 - Highlight 1 or 1,000 rows in a table, press Ctrl+C, and paste them perfectly into Excel or Notepad!

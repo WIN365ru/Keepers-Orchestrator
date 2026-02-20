@@ -55,6 +55,12 @@ DEFAULT_CONFIG = {
         "username": "",
         "password": ""
     },
+    "proxy": {
+        "enabled": False,
+        "url": "socks5://127.0.0.1:10808",
+        "username": "",
+        "password": ""
+    },
     "category_ttl_hours": 2160,
     "clients": [
         {
@@ -76,7 +82,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.12.5"
+APP_VERSION = "0.13.0"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -637,14 +643,19 @@ class HashDatabaseManager:
         return None
 
 class CategoryManager:
-    def __init__(self, log_func, keys_callback=None):
+    def __init__(self, log_func, keys_callback=None, proxies_callback=None):
         self.log = log_func
         self.keys_callback = keys_callback
+        self.proxies_callback = proxies_callback
         self.cache = self.load_cache()
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
+        if self.proxies_callback:
+            p = self.proxies_callback()
+            if p:
+                self.session.proxies.update(p)
 
     def load_cache(self):
         if os.path.exists(CATEGORY_CACHE_FILE):
@@ -718,6 +729,7 @@ class CategoryManager:
             resp = requests.get(
                 "https://api.rutracker.cc/v1/get_forum_name",
                 params={"by": "forum_id", "val": str(cat_id)},
+                proxies=self.proxies_callback() if self.proxies_callback else None,
                 timeout=15
             )
             if resp.status_code == 200:
@@ -775,6 +787,7 @@ class CategoryManager:
             resp = requests.get(
                 "https://api.rutracker.cc/v1/get_tor_topic_data",
                 params={"by": "topic_id", "val": str(topic_id)},
+                proxies=self.proxies_callback() if self.proxies_callback else None,
                 timeout=15)
 
             if resp.status_code != 200:
@@ -950,7 +963,10 @@ class CategoryManager:
             if progress_callback:
                 progress_callback(0, 1)
 
-            resp = requests.get("https://api.rutracker.cc/v1/static/cat_forum_tree", timeout=30)
+            resp = requests.get(
+                "https://api.rutracker.cc/v1/static/cat_forum_tree",
+                proxies=self.proxies_callback() if self.proxies_callback else None,
+                timeout=30)
             if resp.status_code != 200:
                 raise Exception(f"API returned HTTP {resp.status_code}")
 
@@ -1016,7 +1032,7 @@ class ToolTip:
 class QBitAdderApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("qBittorrent Keepers Orchestrator")
+        self.root.title("Keepers Orchestrator")
         self.root.geometry("1200x850")
 
         # Global Menu Bar
@@ -1105,8 +1121,8 @@ class QBitAdderApp:
         self.create_adder_ui()
 
         # Initialize Category Manager (needs log from adder_ui)
-        # Pass callback to save keys to main config
-        self.cat_manager = CategoryManager(self.log, self.save_user_keys)
+        # Pass callback to save keys to main config and callback for proxies
+        self.cat_manager = CategoryManager(self.log, self.save_user_keys, self.get_requests_proxies)
         
         # KEY MIGRATION: Check if keys exist in cache and move them to config
         self.migrate_keys_from_cache()
@@ -1286,9 +1302,8 @@ class QBitAdderApp:
                     try:
                         val = float(parts[0].replace(',', '.'))
                     except: return 0
-                    unit = parts[1].upper().replace("/S", "")
-                    mult = {'B':1, 'KB':1024, 'MB':1024**2, 'GB':1024**3, 'TB':1024**4}
-                    return val * mult.get(unit, 1)
+                    unit = {'B':1, 'KB':1024, 'MB':1024**2, 'GB':1024**3, 'TB':1024**4}
+                    return val * unit.get(unit, 1)
     
                 l.sort(key=lambda t: size_to_bytes(t[0]), reverse=reverse)
                 
@@ -1869,7 +1884,53 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         threading.Thread(target=_thread, daemon=True).start()
 
     # --- Settings Tab UI ---
+    def get_requests_proxies(self):
+        """Returns a proxies dict for requests if proxy is enabled, else None."""
+        proxy_conf = self.config.get("proxy", {})
+        if proxy_conf.get("enabled") and proxy_conf.get("url"):
+            url = proxy_conf["url"]
+            user = proxy_conf.get("username", "")
+            pwd = proxy_conf.get("password", "")
+            
+            if user and pwd:
+                try:
+                    scheme, rest = url.split("://", 1)
+                    auth_url = f"{scheme}://{user}:{pwd}@{rest}"
+                    return {"http": auth_url, "https": auth_url}
+                except ValueError:
+                    pass
+            return {"http": url, "https": url}
+        return None
+
     def create_settings_ui(self):
+        # 0. Proxy Settings Section
+        proxy_frame = tk.LabelFrame(self.settings_tab, text="Proxy Settings (HTTP/HTTPS/SOCKS5)", padx=10, pady=10)
+        proxy_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.proxy_enabled_var = tk.BooleanVar(value=self.config.get("proxy", {}).get("enabled", False))
+        tk.Checkbutton(proxy_frame, text="Enable Proxy (useful for bypassing regional blocks like Rutracker)", 
+                      variable=self.proxy_enabled_var, command=self.save_proxy_settings).pack(anchor="w", padx=5)
+
+        p_auth_frame = tk.Frame(proxy_frame)
+        p_auth_frame.pack(fill="x", padx=20, pady=2)
+
+        tk.Label(p_auth_frame, text="Proxy URL:").pack(side="left")
+        self.entry_proxy_url = tk.Entry(p_auth_frame, width=30)
+        self.entry_proxy_url.pack(side="left", padx=5)
+        self.entry_proxy_url.insert(0, self.config.get("proxy", {}).get("url", "socks5://127.0.0.1:10808"))
+        
+        tk.Label(p_auth_frame, text="Username:").pack(side="left", padx=(15, 0))
+        self.entry_proxy_user = tk.Entry(p_auth_frame, width=15)
+        self.entry_proxy_user.pack(side="left", padx=5)
+        self.entry_proxy_user.insert(0, self.config.get("proxy", {}).get("username", ""))
+
+        tk.Label(p_auth_frame, text="Password:").pack(side="left", padx=(5, 0))
+        self.entry_proxy_pass = tk.Entry(p_auth_frame, width=15, show="*")
+        self.entry_proxy_pass.pack(side="left", padx=5)
+        self.entry_proxy_pass.insert(0, self.config.get("proxy", {}).get("password", ""))
+        
+        tk.Button(proxy_frame, text="Save Proxy Settings", command=self.save_proxy_settings).pack(pady=5)
+
         # 1. Global Auth Section
         global_frame = tk.LabelFrame(self.settings_tab, text="Global Authentication", padx=10, pady=10)
         self.global_auth_var = tk.BooleanVar(value=self.config["global_auth"]["enabled"])
@@ -1989,40 +2050,9 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.entry_cat_ttl.pack(side="left", padx=5)
         self.entry_cat_ttl.insert(0, str(self.config.get("category_ttl_hours", 24)))
 
-        tk.Button(rt_frame, text="Save Settings", command=self.save_rutracker_settings).pack(pady=5)
+        tk.Label(rt_ttl_frame, text="(how long to reuse loaded torrent lists before fetching fresh data)", fg="gray").pack(side="left", padx=5)
 
-        # 3.5 Auto-Update Settings
-        au_frame = tk.LabelFrame(self.settings_tab, text="Auto-Update Behavior", padx=10, pady=10)
-        au_frame.pack(fill="x", padx=10, pady=5)
-        
-        self.auto_update_var = tk.BooleanVar(value=self.config.get("auto_update_enabled", False))
-        tk.Checkbutton(au_frame, text="Auto-update torrent list when switching tabs", 
-                      variable=self.auto_update_var).pack(anchor="w", padx=5)
-
-        au_ttl_frame = tk.Frame(au_frame)
-        au_ttl_frame.pack(fill="x", padx=20, pady=2)
-        tk.Label(au_ttl_frame, text="Update Interval (min):").pack(side="left")
-        self.entry_au_interval = tk.Entry(au_ttl_frame, width=5)
-        self.entry_au_interval.pack(side="left", padx=5)
-        self.entry_au_interval.insert(0, str(self.config.get("auto_update_interval_min", 60)))
-        
-        tk.Button(au_frame, text="Save Auto-Update Settings", command=self.save_auto_update_settings).pack(pady=5)
-
-        # 3.6 Torrent List Cache TTL
-        cache_frame = tk.LabelFrame(self.settings_tab, text="Torrent List Cache", padx=10, pady=10)
-        cache_frame.pack(fill="x", padx=10, pady=5)
-
-        cache_ttl_frame = tk.Frame(cache_frame)
-        cache_ttl_frame.pack(fill="x", padx=5, pady=2)
-
-        tk.Label(cache_ttl_frame, text="Cache TTL (hours):").pack(side="left")
-        self.entry_torrent_cache_ttl = tk.Entry(cache_ttl_frame, width=5)
-        self.entry_torrent_cache_ttl.pack(side="left", padx=5)
-        self.entry_torrent_cache_ttl.insert(0, str(self.config.get("torrent_cache_ttl_hours", 6)))
-
-        tk.Label(cache_ttl_frame, text="(how long to reuse loaded torrent lists before fetching fresh data)", fg="gray").pack(side="left", padx=5)
-
-        cache_btn_frame = tk.Frame(cache_frame)
+        cache_btn_frame = tk.Frame(rt_frame) # Changed from cache_frame to rt_frame
         cache_btn_frame.pack(fill="x", padx=5, pady=2)
 
         tk.Button(cache_btn_frame, text="Save Cache Settings", command=self._save_torrent_cache_settings).pack(side="left")
@@ -2105,8 +2135,13 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
     def check_github_updates(self, silent=True):
         """Check GitHub for new releases. silent=False for manual check feedback."""
         try:
+            session = requests.Session()
+            proxies = self.get_requests_proxies()
+            if proxies:
+                session.proxies.update(proxies)
+
             url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-            resp = requests.get(url, timeout=5)
+            resp = session.get(url, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
                 tag = data.get("tag_name", "").strip().lower()
@@ -2269,9 +2304,26 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.config["global_auth"]["username"] = self.entry_global_user.get()
         self.config["global_auth"]["password"] = self.entry_global_pass.get()
         self.save_config()
-        messagebox.showinfo("Saved", "Global settings saved.")
+        self.log("Global settings saved.")
 
-    def save_auto_update_settings(self):
+    def save_proxy_settings(self):
+        if "proxy" not in self.config:
+            self.config["proxy"] = {}
+        self.config["proxy"]["enabled"] = self.proxy_enabled_var.get()
+        self.config["proxy"]["url"] = self.entry_proxy_url.get().strip()
+        self.config["proxy"]["username"] = self.entry_proxy_user.get()
+        self.config["proxy"]["password"] = self.entry_proxy_pass.get()
+        self.save_config()
+        self.log("Proxy settings saved.")
+        
+        # Invalidate the CategoryManager session so it picks up the proxy
+        if hasattr(self, 'cat_manager'):
+            self.cat_manager.session = requests.Session()
+            proxies = self.get_requests_proxies()
+            if proxies:
+                self.cat_manager.session.proxies.update(proxies)
+
+    def save_rt_settings(self):
         enabled = self.auto_update_var.get()
         interval_str = self.entry_au_interval.get()
         
@@ -2289,12 +2341,12 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
 
     def _save_torrent_cache_settings(self):
         try:
-            ttl = int(self.entry_torrent_cache_ttl.get())
+            ttl = int(self.entry_cat_ttl.get()) # Changed from entry_torrent_cache_ttl to entry_cat_ttl
             if ttl < 0: raise ValueError
         except ValueError:
             messagebox.showerror("Error", "Cache TTL must be a non-negative integer.")
             return
-        self.config["torrent_cache_ttl_hours"] = ttl
+        self.config["category_ttl_hours"] = ttl # Changed from torrent_cache_ttl_hours to category_ttl_hours
         self.save_config()
         messagebox.showinfo("Success", f"Torrent cache TTL set to {ttl} hours.")
 
@@ -3158,6 +3210,10 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             self.log(f"[{name}] Adding: {display_name}")
             
             session = requests.Session()
+            proxies = self.get_requests_proxies()
+            if proxies:
+                session.proxies.update(proxies)
+
             # Auth
             try:
                 resp = session.get(f"{url}/api/v2/app/version", timeout=10)
@@ -3361,7 +3417,9 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         def _lookup():
             try:
                 resp = requests.get("https://api.rutracker.cc/v1/get_topic_id",
-                    params={"by": "hash", "val": info_hash.upper()}, timeout=10)
+                    params={"by": "hash", "val": info_hash.upper()},
+                    proxies=self.get_requests_proxies(),
+                    timeout=10)
                 if resp.status_code == 200:
                     result = resp.json().get("result", {})
                     tid = result.get(info_hash.upper()) or result.get(info_hash.lower())
@@ -4045,14 +4103,14 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         params = {"by": by, "val": val}
         
         try:
-            resp_data = self.cat_manager.session.get(url_data, params=params, timeout=15)
+            resp_data = requests.get(url_data, params=params, proxies=self.get_requests_proxies(), timeout=15)
             if resp_data.status_code != 200:
                 raise Exception(f"API HTTP {resp_data.status_code}")
             data = resp_data.json().get("result", {})
             
             # Fetch peer stats natively mapped to the exact query array
             peer_data = {}
-            resp_stats = self.cat_manager.session.get(url_stats, params=params, timeout=15)
+            resp_stats = requests.get(url_stats, params=params, proxies=self.get_requests_proxies(), timeout=15)
             if resp_stats.status_code == 200:
                 peer_data = resp_stats.json().get("result", {})
         except Exception as e:
@@ -4410,6 +4468,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                     api_resp = requests.get(
                         "https://api.rutracker.cc/v1/get_topic_id",
                         params={"by": "hash", "val": ",".join(batch)},
+                        proxies=self.get_requests_proxies(),
                         timeout=15)
                     if api_resp.status_code == 200:
                         result = api_resp.json().get("result", {})
@@ -4453,6 +4512,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                     api_resp = requests.get(
                         "https://api.rutracker.cc/v1/get_tor_topic_data",
                         params={"by": "topic_id", "val": ",".join(batch)},
+                        proxies=self.get_requests_proxies(),
                         timeout=15)
                     if api_resp.status_code == 200:
                         result = api_resp.json().get("result", {})
@@ -4978,6 +5038,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 api_resp = requests.get(
                     "https://api.rutracker.cc/v1/get_topic_id",
                     params={"by": "hash", "val": ",".join(batch)},
+                    proxies=self.get_requests_proxies(),
                     timeout=15)
                 if api_resp.status_code == 200:
                     result = api_resp.json().get("result", {})
@@ -5047,6 +5108,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 api_resp = requests.get(
                     "https://api.rutracker.cc/v1/get_tor_topic_data",
                     params={"by": "topic_id", "val": ",".join(batch)},
+                    proxies=self.get_requests_proxies(),
                     timeout=15)
                 if api_resp.status_code == 200:
                     result = api_resp.json().get("result", {})
@@ -5912,6 +5974,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                         api_resp = requests.get(
                             "https://api.rutracker.cc/v1/get_topic_id",
                             params={"by": "hash", "val": ",".join(batch)},
+                            proxies=self.get_requests_proxies(),
                             timeout=15)
                         if api_resp.status_code == 200:
                             result = api_resp.json().get("result", {})
@@ -6252,6 +6315,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                         api_resp = requests.get(
                             "https://api.rutracker.cc/v1/get_topic_id",
                             params={"by": "hash", "val": ",".join(batch)},
+                            proxies=self.get_requests_proxies(),
                             timeout=15)
                         if api_resp.status_code == 200:
                             result = api_resp.json().get("result", {})
@@ -8512,8 +8576,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 success += 1
                 self.scanner_log(f"Deleted OS folder for topic {tid}: {path}")
                 # Visually update the tree to reflect empty size
-                self.root.after(0, lambda i=item: self.scanner_tree.set(i, "disk_size", 0))
-                self.root.after(0, lambda i=item: self.scanner_tree.set(i, "disk_size_str", "0 B"))
+                self.root.after(0, lambda i=item: self.scanner_tree.set(i, "disk_size", "0 B"))
                 # Note: tag change requires getting old tags ignoring sizes, but for simplicity we just set it to size_empty
                 self.root.after(0, lambda i=item: self.scanner_tree.item(i, tags=("size_empty",)))
             except Exception as e:

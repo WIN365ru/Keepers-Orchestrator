@@ -48,7 +48,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.11.4"
+APP_VERSION = "0.11.5"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -7184,12 +7184,21 @@ class QBitAdderApp:
             total_dirs = 0
             if recursive:
                 self.scanner_log("Pass 1: Counting total directories...")
-                for _, dirnames, _ in os.walk(root_folder):
+                self.root.after(0, lambda: self.scanner_progress.config(mode='indeterminate'))
+                self.root.after(0, lambda: self.scanner_progress.start(15))
+                
+                visited_dirs = 0
+                for dirpath, dirnames, _ in os.walk(root_folder):
                     if self.scanner_stop_event.is_set():
                         break
                     total_dirs += len(dirnames)
-                    if total_dirs % 5000 == 0:
-                        self._scanner_update_progress(0, 0, f"Counting folders... ({total_dirs} found)")
+                    visited_dirs += 1
+                    if visited_dirs % 50 == 0:
+                        cur_name = os.path.basename(dirpath)
+                        self.root.after(0, lambda t=f"Pass 1: Counting folders... [{total_dirs}] (Scanning: {cur_name[:30]})": self.scanner_progress_label.config(text=t))
+                        
+                self.root.after(0, lambda: self.scanner_progress.stop())
+                self.root.after(0, lambda: self.scanner_progress.config(mode='determinate'))
             else:
                 try:
                     total_dirs = len([e for e in os.listdir(root_folder) if os.path.isdir(os.path.join(root_folder, e))])
@@ -7209,8 +7218,9 @@ class QBitAdderApp:
                         break
                     
                     processed_dirs += 1
-                    if processed_dirs % 100 == 0:
-                        self._scanner_update_progress(processed_dirs, max(total_dirs, 1), "Scanning folders")
+                    cur_name = os.path.basename(dirpath)
+                    if processed_dirs % 50 == 0:
+                        self._scanner_update_progress(processed_dirs, max(total_dirs, 1), f"Pass 2: Scanning... ({cur_name[:30]})")
                         
                     basename = os.path.basename(dirpath)
                     if basename.isdigit():

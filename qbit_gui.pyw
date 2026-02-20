@@ -76,7 +76,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.12.3"
+APP_VERSION = "0.12.4"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1016,7 +1016,7 @@ class ToolTip:
 class QBitAdderApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("qBittorrent Auto-Adder")
+        self.root.title("qBittorrent Keepers Orchestrator")
         self.root.geometry("1200x850")
 
         # Global Menu Bar

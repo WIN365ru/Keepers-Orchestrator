@@ -83,7 +83,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.14.1"
+APP_VERSION = "0.15.0"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1150,6 +1150,16 @@ class QBitAdderApp:
         # Keepers tab state
         self.keepers_stop_event = threading.Event()
         self.keepers_scan_active = False
+        
+        # Connection Status states and lock
+        self.status_lock = threading.Lock()
+        self.status_data = {
+            "proxy": "gray", # gray, red, yellow, green
+            "rutracker": "gray",
+            "client": "gray"
+        }
+        self.status_loop_active = False
+
         self.create_keepers_ui()
 
 
@@ -1183,6 +1193,10 @@ class QBitAdderApp:
 
         self.create_settings_ui()
         
+        # Start background status checker
+        self.status_loop_active = True
+        threading.Thread(target=self._status_check_loop, daemon=True).start()
+        
         # Search Tab (New)
         self.search_tab = tk.Frame(self.notebook)
         self.notebook.add(self.search_tab, text="Search Torrents")
@@ -1194,6 +1208,115 @@ class QBitAdderApp:
             os.makedirs(self.temp_dir)
 
         self.is_initializing = False
+        self.trigger_status_check()
+
+    def _status_check_loop(self):
+        """Runs every 60 seconds to check connections."""
+        while self.status_loop_active:
+            self._run_all_status_checks()
+            # Wait 60 seconds, checking stop flag periodically
+            for _ in range(60):
+                if not self.status_loop_active:
+                    break
+                time.sleep(1)
+
+    def trigger_status_check(self):
+        """Manually trigger a check (e.g., after saving settings)."""
+        threading.Thread(target=self._run_all_status_checks, daemon=True).start()
+        
+    def _update_ui_status(self, key, color):
+        """Thread-safe update of the traffic light canvases."""
+        with self.status_lock:
+            self.status_data[key] = color
+            
+        def _update():
+            try:
+                if key == "proxy" and hasattr(self, 'canvas_proxy_status'):
+                    self.canvas_proxy_status.itemconfig(self.oval_proxy_status, fill=color)
+                elif key == "rutracker" and hasattr(self, 'canvas_rt_status'):
+                    self.canvas_rt_status.itemconfig(self.oval_rt_status, fill=color)
+                elif key == "client" and hasattr(self, 'canvas_client_status'):
+                    self.canvas_client_status.itemconfig(self.oval_client_status, fill=color)
+            except tk.TclError:
+                pass # Window closed
+        self.root.after(0, _update)
+
+    def _run_all_status_checks(self):
+        # 1. Proxy Check
+        proxy_enabled = self.config.get("proxy", {}).get("enabled", False)
+        if not proxy_enabled:
+            self._update_ui_status("proxy", "gray")
+        else:
+            self._update_ui_status("proxy", "yellow")
+            try:
+                proxies = self.get_requests_proxies()
+                # Use a widely accessible, lightweight endpoint
+                resp = requests.get("https://1.1.1.1", proxies=proxies, timeout=10)
+                if resp.status_code == 200:
+                    self._update_ui_status("proxy", "green")
+                else:
+                    self._update_ui_status("proxy", "red")
+            except Exception:
+                self._update_ui_status("proxy", "red")
+
+        # 2. Rutracker Check
+        rt_user = self.config.get("rutracker_auth", {}).get("username", "")
+        rt_pass = self.config.get("rutracker_auth", {}).get("password", "")
+        if not rt_user or not rt_pass:
+            self._update_ui_status("rutracker", "gray")
+        else:
+            self._update_ui_status("rutracker", "yellow")
+            try:
+                # Use the category manager credentials check mechanism or simply hit index
+                session = requests.Session()
+                proxies = self.get_requests_proxies()
+                if proxies:
+                    session.proxies.update(proxies)
+                
+                # Check auth by attempting to load the profile page
+                # Actually, simpler: just try to post login and see if bbsession cookie is set
+                login_data = {
+                    "login_username": rt_user.encode("windows-1251"),
+                    "login_password": rt_pass.encode("windows-1251"),
+                    "login": "Вход"
+                }
+                resp = session.post(
+                    "https://rutracker.org/forum/login.php",
+                    data=login_data,
+                    timeout=15
+                )
+                if 'bb_session' in session.cookies:
+                     self._update_ui_status("rutracker", "green")
+                else:
+                     self._update_ui_status("rutracker", "red")
+            except Exception:
+                self._update_ui_status("rutracker", "red")
+
+        # 3. Client Check (Check currently selected client in Details Editor)
+        if not hasattr(self, 'current_client_index') or self.current_client_index == -1:
+            self._update_ui_status("client", "gray")
+        else:
+            self._update_ui_status("client", "yellow")
+            try:
+                client = self.config["clients"][self.current_client_index]
+                url = client.get("url", "").rstrip("/")
+                if not url:
+                    self._update_ui_status("client", "gray")
+                    return
+                # Determine auth
+                if client.get("use_global_auth", True):
+                    auth = (self.config["global_auth"]["username"], self.config["global_auth"]["password"])
+                else:
+                    auth = (client.get("username", ""), client.get("password", ""))
+
+                # Hit the qbittorrent webapi to get app version
+                resp = requests.get(f"{url}/api/v2/app/version", auth=auth, timeout=10)
+                if resp.status_code == 200:
+                    self._update_ui_status("client", "green")
+                else:
+                    self._update_ui_status("client", "red")
+            except Exception:
+                self._update_ui_status("client", "red")
 
         # Auto-scan when switching to Update tab
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
@@ -2068,6 +2191,11 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         proxy_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Proxy Settings (HTTP/HTTPS/SOCKS5)", padx=10, pady=10)
         proxy_frame.pack(fill="x", padx=10, pady=5)
         
+        # Traffic Light for Proxy
+        self.canvas_proxy_status = tk.Canvas(proxy_frame, width=20, height=20, highlightthickness=0)
+        self.canvas_proxy_status.pack(side="right", padx=10)
+        self.oval_proxy_status = self.canvas_proxy_status.create_oval(2, 2, 18, 18, fill=self.status_data["proxy"], outline="gray")
+        
         self.proxy_enabled_var = tk.BooleanVar(value=self.config.get("proxy", {}).get("enabled", False))
         tk.Checkbutton(proxy_frame, text="Enable Proxy (useful for bypassing regional blocks like Rutracker)", 
                       variable=self.proxy_enabled_var, command=self.save_proxy_settings).pack(anchor="w", padx=5)
@@ -2090,7 +2218,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.entry_proxy_pass.pack(side="left", padx=5)
         self.entry_proxy_pass.insert(0, self.config.get("proxy", {}).get("password", ""))
         
-        tk.Button(proxy_frame, text="Save Proxy Settings", command=self.save_proxy_settings).pack(pady=5)
+        tk.Button(proxy_frame, text="Save Proxy Settings", command=lambda: [self.save_proxy_settings(), self.trigger_status_check()]).pack(pady=5)
 
         # 1. Global Auth Section
         global_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Global Authentication", padx=10, pady=10)
@@ -2132,6 +2260,11 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         # 3. Client Details Editor
         details_frame = tk.Frame(clients_frame)
         details_frame.pack(side="left", fill="both", expand=True, padx=10)
+        
+        # Traffic light for Client
+        self.canvas_client_status = tk.Canvas(details_frame, width=20, height=20, highlightthickness=0)
+        self.canvas_client_status.grid(row=0, column=2, padx=10)
+        self.oval_client_status = self.canvas_client_status.create_oval(2, 2, 18, 18, fill=self.status_data["client"], outline="gray")
 
         tk.Label(details_frame, text="Name:").grid(row=0, column=0, sticky="w")
         self.entry_name = tk.Entry(details_frame, width=30)
@@ -2161,12 +2294,17 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.client_use_global_auth_var = tk.BooleanVar()
         tk.Checkbutton(details_frame, text="Use Global Auth", variable=self.client_use_global_auth_var, command=self.on_global_auth_check_toggle).grid(row=6, column=0, columnspan=2, sticky="w")
 
-        tk.Button(details_frame, text="Save Client Details", command=self.save_current_client).grid(row=7, column=1, sticky="e", pady=10)
+        tk.Button(details_frame, text="Save Client Details", command=lambda: [self.save_current_client(), self.trigger_status_check()]).grid(row=7, column=1, sticky="e", pady=10)
 
 
         # 3. Rutracker Auth Section
         rt_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Rutracker Forum Login (for downloading .torrents and failover category fetching)", padx=10, pady=10)
         rt_frame.pack(fill="x", padx=10, pady=5)
+        
+        # Traffic light for Rutracker
+        self.canvas_rt_status = tk.Canvas(rt_frame, width=20, height=20, highlightthickness=0)
+        self.canvas_rt_status.pack(side="right", anchor="ne", padx=5)
+        self.oval_rt_status = self.canvas_rt_status.create_oval(2, 2, 18, 18, fill=self.status_data["rutracker"], outline="gray")
 
         rt_auth_frame = tk.Frame(rt_frame)
         rt_auth_frame.pack(fill="x", padx=5, pady=2)

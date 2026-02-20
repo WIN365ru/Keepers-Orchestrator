@@ -48,7 +48,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.10.12"
+APP_VERSION = "0.11.1"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -868,6 +868,7 @@ class QBitAdderApp:
         self.repair_tab = tk.Frame(self.notebook)
         self.mover_tab = tk.Frame(self.notebook)
         self.scanner_tab = tk.Frame(self.notebook)
+        self.bitrot_tab = tk.Frame(self.notebook)
         self.settings_tab = tk.Frame(self.notebook)
 
         self.notebook.add(self.adder_tab, text="Add Torrents")
@@ -877,6 +878,7 @@ class QBitAdderApp:
         self.notebook.add(self.repair_tab, text="Repair Categories")
         self.notebook.add(self.mover_tab, text="Move Torrents")
         self.notebook.add(self.scanner_tab, text="Folder Scanner")
+        self.notebook.add(self.bitrot_tab, text="Bitrot Scanner")
         self.notebook.add(self.settings_tab, text="Settings")
 
         # --- Torrent List Cache (per client) ---
@@ -938,6 +940,13 @@ class QBitAdderApp:
         self.scanner_selected_client = None
         self.scanner_stop_event = threading.Event()
         self.create_scanner_ui()
+
+        # Bitrot Scanner tab state
+        self.bitrot_scanning = False
+        self.bitrot_scan_results = []
+        self.bitrot_selected_client = None
+        self.bitrot_stop_event = threading.Event()
+        self.create_bitrot_ui()
 
         self.create_settings_ui()
         
@@ -1759,6 +1768,7 @@ class QBitAdderApp:
         self.update_remover_client_dropdown()
         self.update_mover_client_dropdown()
         self.update_scanner_client_dropdown()
+        self.update_bitrot_client_dropdown()
 
     def get_cats_status_text(self):
         last_updated = self.cat_manager.cache.get('last_updated', '')
@@ -3201,6 +3211,319 @@ class QBitAdderApp:
         
         self.search_status = tk.Label(act_frame, text="", fg="gray")
         self.search_status.pack(side="left", padx=10)
+
+    def create_bitrot_ui(self):
+        # 1. Controls
+        top_frame = tk.Frame(self.bitrot_tab)
+        top_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Label(top_frame, text="Client:").pack(side="left")
+        self.bitrot_client_combo = ttk.Combobox(top_frame, state="readonly", width=15)
+        self.bitrot_client_combo.pack(side="left", padx=5)
+        self.bitrot_client_combo.bind("<<ComboboxSelected>>", self._bitrot_on_client_select)
+
+        tk.Label(top_frame, text="Older than (Days):").pack(side="left", padx=(15, 0))
+        self.bitrot_age_spinbox = tk.Spinbox(top_frame, from_=0, to=9999, width=5)
+        self.bitrot_age_spinbox.delete(0, "end")
+        self.bitrot_age_spinbox.insert(0, "30")
+        self.bitrot_age_spinbox.pack(side="left", padx=5)
+
+        self.bitrot_load_btn = tk.Button(top_frame, text="Load 100% Torrents", command=self.bitrot_load_torrents)
+        self.bitrot_load_btn.pack(side="left", padx=15)
+
+        self.bitrot_scan_btn = tk.Button(top_frame, text="Start Bitrot Check (Selected)", command=self.bitrot_start_check)
+        self.bitrot_scan_btn.pack(side="left", padx=5)
+
+        self.bitrot_cancel_btn = tk.Button(top_frame, text="Stop Check", state=tk.DISABLED, command=self.bitrot_cancel_check)
+        self.bitrot_cancel_btn.pack(side="left", padx=5)
+
+        # 2. Treeview
+        tree_frame = tk.Frame(self.bitrot_tab)
+        tree_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        cols = ("topic_id", "name", "size", "added_on", "status", "progress", "bitrot_state")
+        self.bitrot_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="extended")
+        
+        self.bitrot_tree.heading("topic_id", text="Topic ID")
+        self.bitrot_tree.heading("name", text="Name", command=lambda: self.sort_tree(self.bitrot_tree, "name", False))
+        self.bitrot_tree.heading("size", text="Size", command=lambda: self.sort_tree(self.bitrot_tree, "size", False))
+        self.bitrot_tree.heading("added_on", text="Added On", command=lambda: self.sort_tree(self.bitrot_tree, "added_on", False))
+        self.bitrot_tree.heading("status", text="Status")
+        self.bitrot_tree.heading("progress", text="Progress")
+        self.bitrot_tree.heading("bitrot_state", text="Bitrot State", command=lambda: self.sort_tree(self.bitrot_tree, "bitrot_state", False))
+
+        self.bitrot_tree.column("topic_id", width=80, stretch=False)
+        self.bitrot_tree.column("name", width=400)
+        self.bitrot_tree.column("size", width=80, stretch=False)
+        self.bitrot_tree.column("added_on", width=120, stretch=False)
+        self.bitrot_tree.column("status", width=100, stretch=False)
+        self.bitrot_tree.column("progress", width=80, stretch=False)
+        self.bitrot_tree.column("bitrot_state", width=120, stretch=False)
+
+        # Tags for colors
+        self.bitrot_tree.tag_configure("clean", background="#d4ffd4") # Light green
+        self.bitrot_tree.tag_configure("rot", background="#ffd4d4") # Light red
+        self.bitrot_tree.tag_configure("checking", background="#fffdd4") # Light yellow
+
+        scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.bitrot_tree.yview)
+        self.bitrot_tree.configure(yscrollcommand=scroll.set)
+        
+        self.bitrot_tree.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        
+        # 3. Log Area & Progress bar
+        bottom_frame = tk.Frame(self.bitrot_tab)
+        bottom_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.bitrot_log_text = tk.Text(bottom_frame, height=6, bg="#f5f5f5")
+        self.bitrot_log_text.pack(side="top", fill="x")
+        self.bitrot_log_text.bind("<Key>", lambda e: "break")
+
+        progress_frame = tk.Frame(bottom_frame)
+        progress_frame.pack(fill="x", pady=2)
+        
+        self.bitrot_progress_lbl = tk.Label(progress_frame, text="Ready", width=40, anchor="w")
+        self.bitrot_progress_lbl.pack(side="left")
+        
+        self.bitrot_progress = ttk.Progressbar(progress_frame, orient="horizontal", mode="determinate")
+        self.bitrot_progress.pack(side="left", fill="x", expand=True, padx=5)
+        
+        # Populate client dropdown correctly on startup
+        self.update_bitrot_client_dropdown()
+
+    def bitrot_log(self, msg):
+        self.bitrot_log_text.insert(tk.END, msg + "\n")
+        self.bitrot_log_text.see(tk.END)
+        self.root.update_idletasks()
+        
+    def update_bitrot_client_dropdown(self):
+        if not hasattr(self, 'bitrot_client_combo'):
+            return
+        vals = [f"{i}: {c['name']} ({c['url']})" for i, c in enumerate(self.config["clients"])]
+        self.bitrot_client_combo['values'] = vals
+        if vals:
+            idx = self.config.get("last_selected_client_index", 0)
+            if idx >= len(vals): idx = 0
+            self.bitrot_client_combo.current(idx)
+            self._bitrot_on_client_select()
+
+    def _bitrot_on_client_select(self, event=None):
+        idx = self.bitrot_client_combo.current()
+        if idx >= 0 and idx < len(self.config["clients"]):
+            self.bitrot_selected_client = self.config["clients"][idx]
+
+    def bitrot_load_torrents(self):
+        client = self.bitrot_selected_client
+        if not client:
+            self.bitrot_log("No client selected.")
+            return
+
+        try:
+            age_days = int(self.bitrot_age_spinbox.get())
+        except ValueError:
+            self.bitrot_log("Invalid age filter. Please enter a valid number of days.")
+            return
+            
+        self.bitrot_tree.delete(*self.bitrot_tree.get_children())
+        self.bitrot_scan_results.clear()
+        self.bitrot_log(f"Connecting to {client['name']} to fetch torrents...")
+        
+        def _fetch():
+            session = self._get_qbit_session(client)
+            if not session:
+                self.bitrot_log("Failed to connect to qBittorrent.")
+                return
+                
+            url = client['url']
+            try:
+                resp = session.get(f"{url}/api/v2/torrents/info", timeout=30)
+                if resp.status_code != 200:
+                    self.bitrot_log(f"HTTP Error {resp.status_code} fetching torrents.")
+                    return
+                torrents = resp.json()
+            except Exception as e:
+                self.bitrot_log(f"Connection error: {e}")
+                return
+                
+            cutoff_timestamp = time.time() - (age_days * 86400)
+            
+            # Filter logically: progress == 1, added_on <= cutoff
+            filtered = []
+            for t in torrents:
+                if t.get("progress", 0) == 1.0 and t.get("added_on", time.time()) <= cutoff_timestamp:
+                    filtered.append(t)
+                    
+            self.root.after(0, self._bitrot_populate_tree, filtered)
+            
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _bitrot_populate_tree(self, torrents):
+        for t in torrents:
+            added_on = datetime.datetime.fromtimestamp(t.get("added_on", 0)).strftime('%Y-%m-%d %H:%M')
+            size_fmt = format_size(t.get("size", 0))
+            name = t.get("name", "Unknown")
+            status = t.get("state", "")
+            progress = "100%"
+            
+            topic_id = ""
+            cat = t.get("category", "")
+            if cat and cat.isdigit():
+                topic_id = cat
+            else:
+                comment = t.get("comment", "")
+                if "viewtopic.php?t=" in comment:
+                    topic_id = comment.split("t=")[-1]
+
+            item_id = self.bitrot_tree.insert("", "end", values=(
+                topic_id, name, size_fmt, added_on, status, progress, "Pending Check"
+            ))
+            
+            self.bitrot_scan_results.append({
+                "hash": t.get("hash"),
+                "tree_id": item_id,
+            })
+            
+        self.bitrot_log(f"Populated {len(torrents)} torrents matching criteria.")
+
+    def bitrot_start_check(self):
+        client = self.bitrot_selected_client
+        if not client:
+            return
+            
+        selected_items = self.bitrot_tree.selection()
+        
+        # Determine which items to check (selected, or all if none selected)
+        if selected_items:
+            target_hashes = []
+            for item in selected_items:
+                for entry in self.bitrot_scan_results:
+                    if entry["tree_id"] == item:
+                        target_hashes.append(entry["hash"])
+                        break
+        else:
+            target_hashes = [entry["hash"] for entry in self.bitrot_scan_results]
+            
+        if not target_hashes:
+            self.bitrot_log("No torrents to check.")
+            return
+
+        self.bitrot_log(f"Starting check on {len(target_hashes)} torrents...")
+        self.bitrot_scan_btn.config(state=tk.DISABLED)
+        self.bitrot_load_btn.config(state=tk.DISABLED)
+        self.bitrot_cancel_btn.config(state=tk.NORMAL)
+        
+        self.bitrot_scanning = True
+        self.bitrot_stop_event.clear()
+        
+        threading.Thread(target=self._bitrot_monitor_thread, args=(client, target_hashes), daemon=True).start()
+
+    def _bitrot_monitor_thread(self, client, target_hashes):
+        session = self._get_qbit_session(client)
+        if not session:
+            self.bitrot_log("Connection failed.")
+            self.root.after(0, self._bitrot_scan_finished)
+            return
+            
+        url = client['url']
+        hash_str = "|".join(target_hashes)
+
+        # Trigger the recheck API
+        try:
+            resp = session.post(f"{url}/api/v2/torrents/recheck", data={"hashes": hash_str}, timeout=10)
+            if resp.status_code != 200:
+                self.bitrot_log(f"Failed to trigger recheck: HTTP {resp.status_code}")
+                self.root.after(0, self._bitrot_scan_finished)
+                return
+        except Exception as e:
+            self.bitrot_log(f"Error triggering recheck: {e}")
+            self.root.after(0, self._bitrot_scan_finished)
+            return
+
+        # Poll until all target hashes finish checking
+        pending_hashes = set(target_hashes)
+        
+        def _reset_ui():
+            for entry in self.bitrot_scan_results:
+                if entry["hash"] in pending_hashes:
+                    self.bitrot_tree.set(entry["tree_id"], "status", "Queued/Checking")
+                    self.bitrot_tree.set(entry["tree_id"], "progress", "...")
+                    self.bitrot_tree.set(entry["tree_id"], "bitrot_state", "Checking")
+                    self.bitrot_tree.item(entry["tree_id"], tags=("checking",))
+        self.root.after(0, _reset_ui)
+
+        total_checked = 0
+        total_targets = len(pending_hashes)
+
+        while self.bitrot_scanning and pending_hashes:
+            if self.bitrot_stop_event.is_set():
+                self.bitrot_log("Bitrot check stopped by user.")
+                break
+
+            try:
+                info_resp = session.get(f"{url}/api/v2/torrents/info", params={"hashes": "|".join(pending_hashes)}, timeout=30)
+                if info_resp.status_code == 200:
+                    current_info = info_resp.json()
+                    
+                    for t in current_info:
+                        if self.bitrot_stop_event.is_set(): break
+                        t_hash = t.get("hash")
+                        state = t.get("state", "")
+                        progress = t.get("progress", 0.0)
+                        
+                        if "checking" in state:
+                            def _upd(tid=t_hash, s=state, p=progress):
+                                for entry in self.bitrot_scan_results:
+                                    if entry["hash"] == tid:
+                                        self.bitrot_tree.set(entry["tree_id"], "status", s)
+                                        self.bitrot_tree.set(entry["tree_id"], "progress", f"{p*100:.1f}%")
+                            self.root.after(0, _upd)
+                            continue
+                            
+                        # If it's NOT checking anymore, evaluation
+                        if "checking" not in state:
+                            pending_hashes.remove(t_hash)
+                            total_checked += 1
+                            
+                            def _fin(tid=t_hash, s=state, p=progress):
+                                for entry in self.bitrot_scan_results:
+                                    if entry["hash"] == tid:
+                                        tree_id = entry["tree_id"]
+                                        self.bitrot_tree.set(tree_id, "status", s)
+                                        self.bitrot_tree.set(tree_id, "progress", f"{p*100:.1f}%")
+                                        
+                                        if p < 1.0:
+                                            self.bitrot_tree.set(tree_id, "bitrot_state", "Bitrot Detected")
+                                            self.bitrot_tree.item(tree_id, tags=("rot",))
+                                            self.bitrot_log(f"! BITROT DETECTED: {entry.get('name')} dropped to {p*100:.1f}%")
+                                        else:
+                                            self.bitrot_tree.set(tree_id, "bitrot_state", "Clean")
+                                            self.bitrot_tree.item(tree_id, tags=("clean",))
+                            self.root.after(0, _fin)
+                            
+                    self.root.after(0, lambda c=total_checked, t=total_targets: self.bitrot_progress.configure(value=(c/t*100) if t else 0))
+                    self.root.after(0, lambda c=total_checked, t=total_targets: self.bitrot_progress_lbl.configure(text=f"Checking hashes... {c}/{t}"))
+
+            except Exception as e:
+                self.bitrot_log(f"Error polling status: {e}")
+                time.sleep(2)
+                
+            time.sleep(1)
+            
+        self.bitrot_log("Bitrot check complete.")
+        self.root.after(0, self._bitrot_scan_finished)
+        
+    def _bitrot_scan_finished(self):
+        self.bitrot_scanning = False
+        self.bitrot_scan_btn.config(state=tk.NORMAL)
+        self.bitrot_load_btn.config(state=tk.NORMAL)
+        self.bitrot_cancel_btn.config(state=tk.DISABLED)
+        self.bitrot_progress_lbl.configure(text="Ready")
+        self.bitrot_progress.configure(value=0)
+
+    def bitrot_cancel_check(self):
+        self.bitrot_cancel_btn.config(state=tk.DISABLED)
+        self.bitrot_stop_event.set()
+        self.bitrot_log("Stopping check...")
 
     def perform_search(self):
         query = self.search_entry.get().strip()

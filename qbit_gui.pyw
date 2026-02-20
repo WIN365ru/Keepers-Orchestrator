@@ -49,7 +49,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.11.10"
+APP_VERSION = "0.11.11"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -7447,55 +7447,29 @@ class QBitAdderApp:
         }
 
         try:
-            # === Phase 1: Walk folder tree ===
+            # === Phase 1: Walk folder tree (single pass — find ID folders + measure sizes) ===
             self.scanner_log(f"Scanning folder: {root_folder}")
             found_folders = []
             recursive = self.scanner_recursive_var.get()
             skip_subid = self.scanner_skip_subid_var.get()
 
-            # Pass 1: Count total directories for determinate progress
-            total_dirs = 0
-            if recursive:
-                self.scanner_log("Pass 1: Counting total directories...")
-                self.root.after(0, lambda: self.scanner_progress.config(mode='indeterminate'))
-                self.root.after(0, lambda: self.scanner_progress.start(15))
-                
-                visited_dirs = 0
-                for dirpath, dirnames, _ in os.walk(root_folder):
-                    if self.scanner_stop_event.is_set():
-                        break
-                    total_dirs += len(dirnames)
-                    visited_dirs += 1
-                    if visited_dirs % 50 == 0:
-                        cur_name = os.path.basename(dirpath)
-                        self.root.after(0, lambda t=f"Pass 1: Counting folders... [{total_dirs}] (Scanning: {cur_name[:30]})": self.scanner_progress_label.config(text=t))
-                        
-                self.root.after(0, lambda: self.scanner_progress.stop())
-                self.root.after(0, lambda: self.scanner_progress.config(mode='determinate'))
-            else:
-                try:
-                    total_dirs = len([e for e in os.listdir(root_folder) if os.path.isdir(os.path.join(root_folder, e))])
-                except: pass
-
-            if self.scanner_stop_event.is_set():
-                self.scanner_log("Scan stopped by user.")
-                self._scanner_scan_finished()
-                return
-
-            # Pass 2: Actual extraction
             processed_dirs = 0
             if recursive:
-                self.scanner_log(f"Pass 2: Scanning {total_dirs} directories for topics...")
+                self.scanner_log("Scanning directories...")
+                self.root.after(0, lambda: self.scanner_progress.config(mode='indeterminate'))
+                self.root.after(0, lambda: self.scanner_progress.start(15))
+
                 for dirpath, dirnames, filenames in os.walk(root_folder):
                     if self.scanner_stop_event.is_set():
                         break
-                    
+
                     processed_dirs += 1
-                    cur_name = os.path.basename(dirpath)
-                    if processed_dirs % 50 == 0:
-                        self._scanner_update_progress(processed_dirs, max(total_dirs, 1), f"Pass 2: Scanning... ({cur_name[:30]})")
-                        
                     basename = os.path.basename(dirpath)
+                    if processed_dirs % 50 == 0:
+                        self.root.after(0, lambda n=processed_dirs, f=len(found_folders), c=basename[:30]:
+                            self.scanner_progress_label.config(
+                                text=f"Scanning... [{n} dirs, {f} found] ({c})"))
+
                     if basename.isdigit():
                         found_folders.append({
                             "topic_id": basename,
@@ -7503,18 +7477,22 @@ class QBitAdderApp:
                             "disk_size": self._get_folder_size(dirpath),
                         })
                         if skip_subid:
-                            # Don't descend into subfolders of an ID folder
-                            processed_dirs += len(dirnames) # fast-forward the progress bar
                             dirnames.clear()
+
+                self.root.after(0, lambda: self.scanner_progress.stop())
+                self.root.after(0, lambda: self.scanner_progress.config(mode='determinate'))
             else:
                 try:
                     entries = [e for e in os.listdir(root_folder)]
+                    total_entries = len(entries)
                     for i, entry in enumerate(entries):
+                        if self.scanner_stop_event.is_set():
+                            break
                         full = os.path.join(root_folder, entry)
                         if os.path.isdir(full):
                             processed_dirs += 1
                             if processed_dirs % 50 == 0:
-                                self._scanner_update_progress(processed_dirs, max(total_dirs, 1), "Scanning folders")
+                                self._scanner_update_progress(processed_dirs, max(total_entries, 1), "Scanning folders")
                             if entry.isdigit():
                                 found_folders.append({
                                     "topic_id": entry,
@@ -7529,8 +7507,8 @@ class QBitAdderApp:
                 self._scanner_scan_finished()
                 return
 
-            self._scanner_update_progress(total_dirs, total_dirs, "Folder scan complete")
-            self.scanner_log(f"Found {len(found_folders)} numeric-named folders.")
+            self._scanner_update_progress(processed_dirs, processed_dirs, "Folder scan complete")
+            self.scanner_log(f"Scanned {processed_dirs} directories, found {len(found_folders)} numeric-named folders.")
 
             if not found_folders:
                 self.root.after(0, lambda: self.scanner_summary_label.config(

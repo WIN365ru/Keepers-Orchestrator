@@ -83,7 +83,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.15.1"
+APP_VERSION = "0.15.2"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1211,6 +1211,15 @@ class QBitAdderApp:
         self.is_initializing = False
         self.trigger_status_check()
 
+        # Auto-scan when switching to Update tab
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+        self.status_bar = tk.Label(self.root, text="Ready", bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar.pack(side="bottom", fill="x")
+
+        # Start Category Manager (Auto-fetch if needed)
+        threading.Thread(target=self._initial_category_fetch, daemon=True).start()
+
     def _status_check_loop(self):
         """Runs every 60 seconds to check connections."""
         while self.status_loop_active:
@@ -1310,7 +1319,7 @@ class QBitAdderApp:
             try:
                 # We can't update UI yellow here easily for individual list items without complexities, 
                 # so we just do the check synchronously in this thread per client.
-                resp = requests.get(f"{url}/api/v2/app/version", auth=auth, timeout=5)
+                resp = requests.get(f"{url}/api/v2/app/version", auth=auth, proxies={"http": None, "https": None}, timeout=5)
                 if resp.status_code == 200:
                     statuses.append("green")
                 else:
@@ -1325,16 +1334,16 @@ class QBitAdderApp:
             try:
                 # Update listbox
                 selection = self.client_listbox.curselection()
-                for i in range(self.client_listbox.size()):
+                self.client_listbox.delete(0, tk.END)
+                for i in range(len(self.config["clients"])):
                     client_name = self.config["clients"][i].get("name", "Unnamed")
                     c_status = self.client_statuses[i] if i < len(self.client_statuses) else "gray"
-                    icon = "⚪"
-                    if c_status == "green": icon = "🟢"
-                    elif c_status == "red": icon = "🔴"
-                    elif c_status == "yellow": icon = "🟡"
                     
-                    self.client_listbox.delete(i)
-                    self.client_listbox.insert(i, f"{icon} {client_name}")
+                    self.client_listbox.insert(tk.END, f"● {client_name}")
+                    if c_status == "green": self.client_listbox.itemconfig(i, {'fg': '#00b300'}) # darker green for visibility
+                    elif c_status == "red": self.client_listbox.itemconfig(i, {'fg': '#e60000'})
+                    elif c_status == "yellow": self.client_listbox.itemconfig(i, {'fg': '#cccc00'})
+                    else: self.client_listbox.itemconfig(i, {'fg': 'gray'})
                     
                 if selection:
                     self.client_listbox.selection_set(selection[0])
@@ -1349,16 +1358,6 @@ class QBitAdderApp:
                 pass
                 
         self.root.after(0, _update_listbox_and_canvas)
-
-    # --- Unified progress helpers ---
-        # Auto-scan when switching to Update tab
-        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
-
-        self.status_bar = tk.Label(self.root, text="Ready", bd=1, relief=tk.SUNKEN, anchor=tk.W)
-        self.status_bar.pack(side="bottom", fill="x")
-
-        # Start Category Manager (Auto-fetch if needed)
-        threading.Thread(target=self._initial_category_fetch, daemon=True).start()
 
     # --- Unified progress helpers ---
 
@@ -2705,23 +2704,28 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.log(f"Rutracker settings saved. Session cleared. TTL: {self.config['category_ttl_hours']}h")
 
     def refresh_client_list(self):
+        selection = self.client_listbox.curselection()
         self.client_listbox.delete(0, tk.END)
         for i, c in enumerate(self.config.get("clients", [])):
             with self.status_lock:
                 c_status = self.client_statuses[i] if i < len(self.client_statuses) else "gray"
-            icon = "⚪"
-            if c_status == "green": icon = "🟢"
-            elif c_status == "red": icon = "🔴"
-            elif c_status == "yellow": icon = "🟡"
-            self.client_listbox.insert(tk.END, f"{icon} {c.get('name', 'Unnamed')}")
+            self.client_listbox.insert(tk.END, f"● {c.get('name', 'Unnamed')}")
+            if c_status == "green": self.client_listbox.itemconfig(i, {'fg': '#00b300'})
+            elif c_status == "red": self.client_listbox.itemconfig(i, {'fg': '#e60000'})
+            elif c_status == "yellow": self.client_listbox.itemconfig(i, {'fg': '#cccc00'})
+            else: self.client_listbox.itemconfig(i, {'fg': 'gray'})
         
         # Select first if exists or reset
         if self.config["clients"]:
-            if self.current_client_index == -1:
+            if getattr(self, 'current_client_index', -1) < 0 or self.current_client_index >= len(self.config["clients"]):
                 self.current_client_index = 0
-            self.client_listbox.select_set(self.current_client_index)
+            if selection:
+                self.client_listbox.selection_set(selection[0])
+            else:
+                self.client_listbox.selection_set(self.current_client_index)
             self.on_client_select(None)
         else:
+            self.current_client_index = -1
             self.clear_client_details()
 
     def on_client_select(self, event):
@@ -2782,13 +2786,14 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.config["clients"][idx]["username"] = self.entry_user.get()
         self.config["clients"][idx]["password"] = self.entry_pass.get()
         
-        # Refresh list name if changed
-        self.client_listbox.delete(idx)
-        self.client_listbox.insert(idx, self.entry_name.get())
-        self.client_listbox.select_set(idx)
-        
         self.save_config()
         self.update_client_dropdown()
+        
+        # Manually set color to yellow instantly to provide feedback before the thread finishes
+        with self.status_lock:
+            if idx < len(self.client_statuses):
+                self.client_statuses[idx] = "yellow"
+        
         if event is None: 
              self.refresh_client_list()
              self.log(f"Client '{self.entry_name.get()}' details saved.")

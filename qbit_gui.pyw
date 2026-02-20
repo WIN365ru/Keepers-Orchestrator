@@ -48,7 +48,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.11.2"
+APP_VERSION = "0.11.3"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1087,7 +1087,7 @@ class QBitAdderApp:
         col_lower = col.lower()
         
         # Numeric size formatting
-        if col_lower in ("size", "uploaded", "free space", "current load", "target load", "free", "current", "target"):
+        if col_lower in ("size", "uploaded", "free space", "current load", "target load", "free", "current", "target", "up_speed", "up speed"):
             def size_to_bytes(s):
                 if not s or s == "?": return -1
                 parts = s.split()
@@ -1095,7 +1095,7 @@ class QBitAdderApp:
                 try:
                     val = float(parts[0])
                 except: return 0
-                unit = parts[1].upper()
+                unit = parts[1].upper().replace("/S", "")
                 mult = {'B':1, 'KB':1024, 'MB':1024**2, 'GB':1024**3, 'TB':1024**4}
                 return val * mult.get(unit, 1)
 
@@ -1243,10 +1243,12 @@ class QBitAdderApp:
         self.remover_tree.column("Hash", width=0, stretch=False) # Hidden
         
         vsb = ttk.Scrollbar(list_frame, orient="vertical", command=self.remover_tree.yview)
-        self.remover_tree.configure(yscrollcommand=vsb.set)
+        hsb = ttk.Scrollbar(list_frame, orient="horizontal", command=self.remover_tree.xview)
+        self.remover_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         
-        self.remover_tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
+        hsb.pack(side="bottom", fill="x")
+        self.remover_tree.pack(side="left", fill="both", expand=True)
         self.remover_tree.bind("<Double-1>", self._remover_on_double_click)
 
         # 5. Status & Progress
@@ -3068,9 +3070,12 @@ class QBitAdderApp:
         self.updater_tree.column("topic_id", width=80, anchor="center")
 
         tree_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.updater_tree.yview)
-        self.updater_tree.configure(yscrollcommand=tree_scroll.set)
-        self.updater_tree.pack(side="left", fill="both", expand=True)
+        tree_scroll_x = ttk.Scrollbar(tree_container, orient="horizontal", command=self.updater_tree.xview)
+        self.updater_tree.configure(yscrollcommand=tree_scroll.set, xscrollcommand=tree_scroll_x.set)
+        
         tree_scroll.pack(side="right", fill="y")
+        tree_scroll_x.pack(side="bottom", fill="x")
+        self.updater_tree.pack(side="left", fill="both", expand=True)
 
         # Tag colors
         self.updater_tree.tag_configure("updated", foreground="dark green")
@@ -3223,10 +3228,12 @@ class QBitAdderApp:
         self.search_tree.column("category", width=150)
         
         scroll = ttk.Scrollbar(res_frame, orient="vertical", command=self.search_tree.yview)
-        self.search_tree.configure(yscrollcommand=scroll.set)
+        scroll_x = ttk.Scrollbar(res_frame, orient="horizontal", command=self.search_tree.xview)
+        self.search_tree.configure(yscrollcommand=scroll.set, xscrollcommand=scroll_x.set)
         
-        self.search_tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
+        scroll_x.pack(side="bottom", fill="x")
+        self.search_tree.pack(side="left", fill="both", expand=True)
         self.search_tree.bind("<Double-1>", self._search_on_double_click)
 
         # Actions
@@ -3303,10 +3310,12 @@ class QBitAdderApp:
         self.bitrot_tree.tag_configure("checking", background="#fffdd4") # Light yellow
 
         scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.bitrot_tree.yview)
-        self.bitrot_tree.configure(yscrollcommand=scroll.set)
+        scroll_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.bitrot_tree.xview)
+        self.bitrot_tree.configure(yscrollcommand=scroll.set, xscrollcommand=scroll_x.set)
         
-        self.bitrot_tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
+        scroll_x.pack(side="bottom", fill="x")
+        self.bitrot_tree.pack(side="left", fill="both", expand=True)
         
         # 3. Log Area & Progress bar
         bottom_frame = tk.Frame(self.bitrot_tab)
@@ -4394,9 +4403,12 @@ class QBitAdderApp:
         self.repair_tree.column("new_path", width=200, minwidth=80)
 
         tree_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.repair_tree.yview)
-        self.repair_tree.configure(yscrollcommand=tree_scroll.set)
-        self.repair_tree.pack(side="left", fill="both", expand=True)
+        tree_scroll_x = ttk.Scrollbar(tree_container, orient="horizontal", command=self.repair_tree.xview)
+        self.repair_tree.configure(yscrollcommand=tree_scroll.set, xscrollcommand=tree_scroll_x.set)
+        
         tree_scroll.pack(side="right", fill="y")
+        tree_scroll_x.pack(side="bottom", fill="x")
+        self.repair_tree.pack(side="left", fill="both", expand=True)
         self.repair_tree.bind("<Double-1>", self._repair_on_double_click)
 
         # Tag colors
@@ -5073,7 +5085,14 @@ class QBitAdderApp:
         self.mover_disk_tree.column("free", width=100, anchor="center")
         self.mover_disk_tree.column("current", width=100, anchor="center")
         self.mover_disk_tree.column("target", width=100, anchor="center")
-        self.mover_disk_tree.pack(fill="both", expand=True)
+        
+        disk_scroll_y = ttk.Scrollbar(disk_tree_frame, orient="vertical", command=self.mover_disk_tree.yview)
+        disk_scroll_x = ttk.Scrollbar(disk_tree_frame, orient="horizontal", command=self.mover_disk_tree.xview)
+        self.mover_disk_tree.configure(yscrollcommand=disk_scroll_y.set, xscrollcommand=disk_scroll_x.set)
+        
+        disk_scroll_y.pack(side="right", fill="y")
+        disk_scroll_x.pack(side="bottom", fill="x")
+        self.mover_disk_tree.pack(side="left", fill="both", expand=True)
 
         disk_btn_frame = tk.Frame(disk_top)
         disk_btn_frame.pack(side="right", padx=5, fill="y")
@@ -5164,9 +5183,12 @@ class QBitAdderApp:
         self.mover_preview_tree.column("to", width=180, minwidth=80)
 
         prev_scroll = ttk.Scrollbar(prev_container, orient="vertical", command=self.mover_preview_tree.yview)
-        self.mover_preview_tree.configure(yscrollcommand=prev_scroll.set)
-        self.mover_preview_tree.pack(side="left", fill="both", expand=True)
+        prev_scroll_x = ttk.Scrollbar(prev_container, orient="horizontal", command=self.mover_preview_tree.xview)
+        self.mover_preview_tree.configure(yscrollcommand=prev_scroll.set, xscrollcommand=prev_scroll_x.set)
+        
         prev_scroll.pack(side="right", fill="y")
+        prev_scroll_x.pack(side="bottom", fill="x")
+        self.mover_preview_tree.pack(side="left", fill="both", expand=True)
 
         self.mover_preview_tree.tag_configure("moved", foreground="dark green")
         self.mover_preview_tree.tag_configure("error", foreground="red")
@@ -6169,10 +6191,12 @@ class QBitAdderApp:
         self.keepers_tree.bind("<Double-1>", self._keepers_on_double_click)
 
         top_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.keepers_tree.yview)
-        self.keepers_tree.configure(yscrollcommand=top_scroll.set)
+        top_scroll_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.keepers_tree.xview)
+        self.keepers_tree.configure(yscrollcommand=top_scroll.set, xscrollcommand=top_scroll_x.set)
         
-        self.keepers_tree.pack(side="left", fill="both", expand=True)
         top_scroll.pack(side="right", fill="y")
+        top_scroll_x.pack(side="bottom", fill="x")
+        self.keepers_tree.pack(side="left", fill="both", expand=True)
 
         # Bottom Actions
         action_frame = tk.Frame(self.keepers_tab)
@@ -6876,9 +6900,12 @@ class QBitAdderApp:
         self.scanner_tree.column("disk_path", width=200, minwidth=80)
 
         tree_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.scanner_tree.yview)
-        self.scanner_tree.configure(yscrollcommand=tree_scroll.set)
-        self.scanner_tree.pack(side="left", fill="both", expand=True)
+        tree_scroll_x = ttk.Scrollbar(tree_container, orient="horizontal", command=self.scanner_tree.xview)
+        self.scanner_tree.configure(yscrollcommand=tree_scroll.set, xscrollcommand=tree_scroll_x.set)
+        
         tree_scroll.pack(side="right", fill="y")
+        tree_scroll_x.pack(side="bottom", fill="x")
+        self.scanner_tree.pack(side="left", fill="both", expand=True)
 
         self.scanner_tree.tag_configure("in_client", foreground="dark green")
         self.scanner_tree.tag_configure("missing", foreground="dark red")

@@ -472,6 +472,39 @@ class DatabaseManager:
             print(f"DB Error (load_cache): {e}")
         return result
 
+    def load_torrent_cache_meta(self):
+        """Load only timestamps (no JSON parsing) for fast startup.
+        Returns {client_name: {"timestamp": float}}"""
+        result = {}
+        try:
+            with self._get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT client_name, timestamp FROM torrent_cache").fetchall()
+                for client_name, ts in rows:
+                    result[client_name] = {"timestamp": ts}
+        except Exception as e:
+            print(f"DB Error (load_cache_meta): {e}")
+        return result
+
+    def load_torrent_cache_single(self, client_name, ttl_hours=6):
+        """Load cached torrent list for a single client (lazy load).
+        Returns {"torrents": [...], "timestamp": float} or None if stale/missing."""
+        try:
+            cutoff = time.time() - (ttl_hours * 3600)
+            with self._get_conn() as conn:
+                row = conn.execute(
+                    "SELECT timestamp, torrents_json FROM torrent_cache WHERE client_name = ? AND timestamp > ?",
+                    (client_name, cutoff)).fetchone()
+                if row:
+                    ts, torrents_json = row
+                    try:
+                        return {"torrents": json.loads(torrents_json), "timestamp": ts}
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+        except Exception as e:
+            print(f"DB Error (load_cache_single): {e}")
+        return None
+
     def delete_torrent_cache(self, client_name=None):
         """Delete cached torrent list for one client or all."""
         try:
@@ -3035,8 +3068,19 @@ class QBitAdderApp:
     # --- Torrent Cache Helpers ---
 
     def _cache_get(self, client_name):
-        """Get cached torrent list for a client. Returns (torrents, timestamp) or (None, None) if stale/missing."""
+        """Get cached torrent list for a client. Lazy-loads from DB on first access.
+        Returns (torrents, timestamp) or (None, None) if stale/missing."""
         entry = self.torrent_cache.get(client_name)
+        if entry and "torrents" not in entry:
+            # Metadata-only entry from startup — lazy-load the full data now
+            ttl_hours = self.config.get("torrent_cache_ttl_hours", 6)
+            full = self.db_manager.load_torrent_cache_single(client_name, ttl_hours)
+            if full:
+                self.torrent_cache[client_name] = full
+                entry = full
+            else:
+                self.torrent_cache.pop(client_name, None)
+                return None, None
         if not entry:
             return None, None
         ttl_hours = self.config.get("torrent_cache_ttl_hours", 6)
@@ -3053,9 +3097,9 @@ class QBitAdderApp:
         return ts
 
     def _cache_load_from_disk(self):
-        """Load torrent cache from DB on startup."""
-        ttl_hours = self.config.get("torrent_cache_ttl_hours", 6)
-        self.torrent_cache = self.db_manager.load_torrent_cache(ttl_hours)
+        """Load torrent cache metadata from DB on startup (timestamps only, no JSON parsing).
+        Full torrent lists are lazy-loaded on first _cache_get() call."""
+        self.torrent_cache = self.db_manager.load_torrent_cache_meta()
 
     def _cache_format_time(self, timestamp):
         """Format a cache timestamp to human-readable string."""

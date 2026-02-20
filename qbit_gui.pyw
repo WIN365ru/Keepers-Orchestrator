@@ -49,7 +49,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.11.11"
+APP_VERSION = "0.11.12"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1196,7 +1196,7 @@ class QBitAdderApp:
         col_lower = col.lower()
         
         # Numeric size formatting
-        if col_lower in ("size", "uploaded", "free space", "current load", "target load", "free", "current", "target", "up_speed", "up speed"):
+        if col_lower in ("size", "disk_size", "uploaded", "free space", "current load", "target load", "free", "current", "target", "up_speed", "up speed"):
             def size_to_bytes(s):
                 if not s or s == "?": return -1
                 parts = s.split()
@@ -7250,6 +7250,7 @@ class QBitAdderApp:
         self.scanner_tree.tag_configure("in_client", foreground="dark green")
         self.scanner_tree.tag_configure("missing", foreground="dark red")
         self.scanner_tree.tag_configure("dead", foreground="gray")
+        self.scanner_tree.tag_configure("size_empty", background="#ffcdd2")
         self.scanner_tree.tag_configure("size_smaller", background="#ffe0e0")
         self.scanner_tree.tag_configure("size_larger", background="#fff8d0")
 
@@ -7531,6 +7532,7 @@ class QBitAdderApp:
             self.scanner_log("Fetching topic data from Rutracker API...")
             topic_ids = list(set(f["topic_id"] for f in found_folders))
             topic_data = {}
+            peer_stats = {}
 
             for batch_start in range(0, len(topic_ids), 100):
                 if self.scanner_stop_event.is_set():
@@ -7538,6 +7540,7 @@ class QBitAdderApp:
                 batch = topic_ids[batch_start:batch_start + 100]
                 self._scanner_update_progress(batch_start + len(batch), len(topic_ids), "Fetching topic data")
                 try:
+                    # 1. Fetch Metadata
                     api_resp = requests.get(
                         "https://api.rutracker.cc/v1/get_tor_topic_data",
                         params={"by": "topic_id", "val": ",".join(batch)},
@@ -7545,8 +7548,17 @@ class QBitAdderApp:
                     if api_resp.status_code == 200:
                         result = api_resp.json().get("result", {})
                         topic_data.update(result)
+                        
+                    # 2. Fetch Live Seeds/Leechers
+                    stats_resp = requests.get(
+                        "https://api.rutracker.cc/v1/get_peer_stats",
+                        params={"by": "topic_id", "val": ",".join(batch)},
+                        timeout=15)
+                    if stats_resp.status_code == 200:
+                        stats_res = stats_resp.json().get("result", {})
+                        peer_stats.update(stats_res)
                 except Exception as e:
-                    self.scanner_log(f"API error (get_tor_topic_data): {e}")
+                    self.scanner_log(f"API error: {e}")
 
             if self.scanner_stop_event.is_set():
                 self.scanner_log("Scan stopped by user.")
@@ -7837,8 +7849,14 @@ class QBitAdderApp:
                     entry["name"] = api_data.get("topic_title", "?")
                     entry["size"] = api_data.get("size", 0)
                     entry["size_str"] = format_size(int(api_data.get("size", 0)))
-                    entry["seeds"] = api_data.get("seeders", "?")
-                    entry["leech"] = api_data.get("leechers", "?")
+                    
+                    p_stats = peer_stats.get(str(tid), [])
+                    if p_stats:
+                        entry["seeds"] = p_stats[0] if len(p_stats) > 0 else "?"
+                        entry["leech"] = p_stats[1] if len(p_stats) > 1 else "?"
+                    else:
+                        entry["seeds"] = api_data.get("seeders", "?")
+                        entry["leech"] = api_data.get("leechers", "?")
 
                     tor_status = api_data.get("tor_status")
                     entry["rt_status"] = STATUS_MAP.get(tor_status, f"Status {tor_status}")
@@ -7866,7 +7884,9 @@ class QBitAdderApp:
                 # Size mismatch detection (>5% difference)
                 size_tag = None
                 rt_size = int(entry["size"] or 0)
-                if rt_size > 0 and disk_size > 0:
+                if disk_size == 0:
+                    size_tag = "size_empty"
+                elif rt_size > 0 and disk_size > 0:
                     ratio = disk_size / rt_size
                     if ratio < 0.95:
                         size_tag = "size_smaller"

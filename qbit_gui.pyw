@@ -1060,6 +1060,7 @@ class QBitAdderApp:
 
         # Bind Universal Copy behavior
         self.root.bind_class("Treeview", "<Control-c>", self._copy_treeview_selection)
+        self.root.bind_class("Treeview", "<Button-3>", self._on_treeview_right_click)
         
         # Bind Tab Navigation Hotkeys
         for i in range(1, 10):
@@ -1345,6 +1346,64 @@ class QBitAdderApp:
             self.root.clipboard_append(text)
             self.log(f"Copied {len(lines)} rows to clipboard.")
 
+    def _on_treeview_right_click(self, event):
+        """Universal Right-Click handler to copy path-like data from Treeviews."""
+        widget = event.widget
+        if not isinstance(widget, ttk.Treeview):
+            return
+            
+        region = widget.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+            
+        item = widget.identify_row(event.y)
+        column_id = widget.identify_column(event.x)
+        
+        if not item or not column_id:
+            return
+            
+        # Select the item
+        widget.selection_set(item)
+        widget.focus(item)
+        
+        col_idx = int(column_id.replace("#", "")) - 1
+        cols = widget.cget("columns")
+        
+        if col_idx < 0 or col_idx >= len(cols):
+            return
+            
+        col_name = str(cols[col_idx]).lower()
+        valid_path_cols = ["path", "disk_path", "cur_path", "new_path", "from", "to", "target"]
+        
+        vals = widget.item(item, "values")
+        if not vals:
+            return
+            
+        # If user exactly right-clicked the path column cell, copy directly
+        if col_name in valid_path_cols and len(vals) > col_idx:
+            path_str = str(vals[col_idx])
+            if path_str and path_str not in ("-", "?"):
+                menu = tk.Menu(self.root, tearoff=0)
+                menu.add_command(label="Copy Path", command=lambda p=path_str: self._copy_path_context(p))
+                menu.post(event.x_root, event.y_root)
+                return
+                
+        # Otherwise, search the row for any valid path columns and generate a menu
+        menu = None
+        for i, c_name in enumerate(cols):
+            if str(c_name).lower() in valid_path_cols:
+                if len(vals) > i and vals[i] and vals[i] not in ("-", "?"):
+                    if not menu:
+                        menu = tk.Menu(self.root, tearoff=0)
+                    menu.add_command(label=f"Copy {str(c_name).capitalize()}", command=lambda p=str(vals[i]): self._copy_path_context(p))
+        
+        if menu:
+            menu.post(event.x_root, event.y_root)
+
+    def _copy_path_context(self, path_str):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(path_str)
+        self.log(f"Copied path to clipboard: {path_str}")
 
     def _show_help(self):
         """Displays a Help dialog with feature descriptions, hotkeys, and color legends."""
@@ -1409,6 +1468,9 @@ Log Highlighting
 Double-Click Rows
 - Double-clicking an entry in the Treeview (like in the Folder Scanner) will instantly open your Default Browser directly to its Rutracker.org forum topic!
 
+Right-Click Rows
+- Right-clicking directly on any Treeview column containing an OS Directory (Save Path, Disk Path, etc.) will dynamically spawn a popup menu letting you instantly copy that folder's physical path to your clipboard cleanly!
+
 
 ## 🎨 TREEVIEW COLOR LEGEND (Folder Scanner)
 --------------------------------------------------
@@ -1424,18 +1486,6 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
 """
         txt.insert("1.0", help_content)
         txt.config(state="disabled")
-
-    # In create_keepers_ui:
-    # ...
-        cols = ("id", "name", "size", "seeds", "leech", "status")
-        self.keepers_tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
-        self.keepers_tree.heading("id", text="ID", command=lambda: self.sort_tree(self.keepers_tree, "id", False))
-        self.keepers_tree.heading("name", text="Name", command=lambda: self.sort_tree(self.keepers_tree, "name", False))
-        self.keepers_tree.heading("size", text="Size", command=lambda: self.sort_tree(self.keepers_tree, "size", False))
-        self.keepers_tree.heading("seeds", text="Seeds", command=lambda: self.sort_tree(self.keepers_tree, "seeds", False))
-        self.keepers_tree.heading("leech", text="Leech", command=lambda: self.sort_tree(self.keepers_tree, "leech", False))
-        self.keepers_tree.heading("status", text="Status", command=lambda: self.sort_tree(self.keepers_tree, "status", False))
-
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):

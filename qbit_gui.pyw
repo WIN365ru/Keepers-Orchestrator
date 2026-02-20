@@ -14,6 +14,7 @@ import html
 import webbrowser
 import hashlib
 import shutil
+import configparser
 
 # --- Copyable ScrolledText Monkey-Patch ---
 # Tkinter prevents text selection when state="disabled".
@@ -82,7 +83,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.13.0"
+APP_VERSION = "0.14.0"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1902,7 +1903,130 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             return {"http": url, "https": url}
         return None
 
+    def import_webtlo_config(self):
+        init_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".debug")
+        if not os.path.exists(init_dir):
+            init_dir = os.path.dirname(os.path.abspath(__file__))
+            
+        file_path = filedialog.askopenfilename(
+            title="Select webtlo config.ini",
+            initialdir=init_dir,
+            filetypes=[("INI files", "*.ini"), ("All files", "*.*")]
+        )
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.read_string(content)
+
+            import_count = 0
+
+            # 1. Proxy
+            if parser.has_section("proxy"):
+                p_type = parser.get("proxy", "type", fallback="").strip('"')
+                p_host = parser.get("proxy", "hostname", fallback="").strip('"')
+                p_port = parser.get("proxy", "port", fallback="").strip('"')
+                p_user = parser.get("proxy", "login", fallback="").strip('"')
+                p_pass = parser.get("proxy", "password", fallback="").strip('"')
+
+                if p_host and p_port:
+                    proxy_url = f"{p_type}://{p_host}:{p_port}"
+                    msg = f"Found Proxy settings:\nURL: {proxy_url}\nUser: {p_user}\n\nImport this proxy?"
+                    if messagebox.askyesno("Import Proxy", msg, parent=self.root):
+                        if "proxy" not in self.config:
+                            self.config["proxy"] = {}
+                        self.config["proxy"]["enabled"] = True
+                        self.config["proxy"]["url"] = proxy_url
+                        self.config["proxy"]["username"] = p_user
+                        self.config["proxy"]["password"] = p_pass
+                        
+                        self.proxy_enabled_var.set(True)
+                        self.entry_proxy_url.delete(0, tk.END)
+                        self.entry_proxy_url.insert(0, proxy_url)
+                        self.entry_proxy_user.delete(0, tk.END)
+                        self.entry_proxy_user.insert(0, p_user)
+                        self.entry_proxy_pass.delete(0, tk.END)
+                        self.entry_proxy_pass.insert(0, p_pass)
+                        import_count += 1
+
+            # 2. Rutracker Auth
+            if parser.has_section("torrent-tracker"):
+                rt_user = parser.get("torrent-tracker", "login", fallback="").strip('"')
+                rt_pass = parser.get("torrent-tracker", "password", fallback="").strip('"')
+                if rt_user:
+                    msg = f"Found Rutracker account:\nUser: {rt_user}\n\nImport this account?"
+                    if messagebox.askyesno("Import Rutracker Account", msg, parent=self.root):
+                        if "rutracker_auth" not in self.config:
+                            self.config["rutracker_auth"] = {}
+                        self.config["rutracker_auth"]["username"] = rt_user
+                        self.config["rutracker_auth"]["password"] = rt_pass
+                        
+                        self.entry_rt_user.delete(0, tk.END)
+                        self.entry_rt_user.insert(0, rt_user)
+                        self.entry_rt_pass.delete(0, tk.END)
+                        self.entry_rt_pass.insert(0, rt_pass)
+                        import_count += 1
+
+            # 3. Clients
+            found_clients = []
+            for sec in parser.sections():
+                if sec.startswith("torrent-client-"):
+                    c_name = parser.get(sec, "comment", fallback="").strip('"')
+                    c_host = parser.get(sec, "hostname", fallback="").strip('"')
+                    c_port = parser.get(sec, "port", fallback="").strip('"')
+                    c_ssl = parser.get(sec, "ssl", fallback="0").strip('"')
+                    c_user = parser.get(sec, "login", fallback="").strip('"')
+                    c_pass = parser.get(sec, "password", fallback="").strip('"')
+                    
+                    if c_host and c_port:
+                        scheme = "https" if c_ssl == "1" else "http"
+                        c_url = f"{scheme}://{c_host}:{c_port}"
+                        found_clients.append({
+                            "name": c_name or f"Imported_{c_host}",
+                            "url": c_url,
+                            "use_global_auth": False if c_user else True,
+                            "username": c_user,
+                            "password": c_pass,
+                            "base_save_path": "C:/Torrents/"
+                        })
+            
+            if found_clients:
+                client_names = "\n".join([c["name"] for c in found_clients])
+                msg = f"Found {len(found_clients)} qBittorrent clients:\n{client_names}\n\nImport these clients?"
+                if messagebox.askyesno("Import Clients", msg, parent=self.root):
+                    existing_urls = [c.get("url", "") for c in self.config.get("clients", [])]
+                    added_count = 0
+                    for c in found_clients:
+                        if c["url"] not in existing_urls:
+                            self.config["clients"].append(c)
+                            existing_urls.append(c["url"])
+                            added_count += 1
+                    
+                    self.refresh_client_list()
+                    if added_count > 0:
+                        import_count += added_count
+                        messagebox.showinfo("Import Clients", f"Added {added_count} new clients.", parent=self.root)
+
+            if import_count > 0:
+                self.save_config()
+                messagebox.showinfo("Import Complete", "Selected settings were imported and saved!", parent=self.root)
+            else:
+                messagebox.showinfo("Import Result", "Nothing was imported.", parent=self.root)
+
+        except Exception as e:
+            self.log(f"Error parsing webtlo config: {e}")
+            messagebox.showerror("Error", f"Failed to parse config.ini:\n{e}", parent=self.root)
+
     def create_settings_ui(self):
+        # -1. Migration / Import Data
+        migration_frame = tk.LabelFrame(self.settings_tab, text="Migration / Import Data", padx=10, pady=5)
+        migration_frame.pack(fill="x", padx=10, pady=5)
+        tk.Button(migration_frame, text="Import from webtlo config.ini", command=self.import_webtlo_config).pack(anchor="w", pady=5)
+
         # 0. Proxy Settings Section
         proxy_frame = tk.LabelFrame(self.settings_tab, text="Proxy Settings (HTTP/HTTPS/SOCKS5)", padx=10, pady=10)
         proxy_frame.pack(fill="x", padx=10, pady=5)

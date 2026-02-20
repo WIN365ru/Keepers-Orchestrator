@@ -7460,8 +7460,11 @@ class QBitAdderApp:
             skip_subid = self.scanner_skip_subid_var.get()
 
             processed_dirs = 0
+            total_disk_size = 0
+            phase1_start = time.time()
+
             if recursive:
-                self.scanner_log("Scanning directories...")
+                self.scanner_log("Phase 1/5: Scanning directories & measuring folder sizes...")
                 self.root.after(0, lambda: self.scanner_progress.config(mode='indeterminate'))
                 self.root.after(0, lambda: self.scanner_progress.start(15))
 
@@ -7473,20 +7476,26 @@ class QBitAdderApp:
                     basename = os.path.basename(dirpath)
 
                     if basename.isdigit():
-                        self.root.after(0, lambda n=processed_dirs, f=len(found_folders)+1, c=basename:
-                            self.scanner_progress_label.config(
-                                text=f"Scanning... [{n} dirs] Measuring folder {c} ({f} found)"))
+                        folder_size = self._get_folder_size(dirpath)
+                        total_disk_size += folder_size
                         found_folders.append({
                             "topic_id": basename,
                             "disk_path": dirpath.replace("\\", "/"),
-                            "disk_size": self._get_folder_size(dirpath),
+                            "disk_size": folder_size,
                         })
+                        elapsed = self._format_elapsed(time.time() - phase1_start)
+                        self.root.after(0, lambda n=processed_dirs, f=len(found_folders), c=basename,
+                                        sz=format_size(total_disk_size), el=elapsed:
+                            self.scanner_progress_label.config(
+                                text=f"Phase 1: {n} dirs | {f} found ({sz}) | Measuring /{c}  [{el}]"))
                         if skip_subid:
                             dirnames.clear()
                     elif processed_dirs % 20 == 0:
-                        self.root.after(0, lambda n=processed_dirs, f=len(found_folders), c=basename[:30]:
+                        elapsed = self._format_elapsed(time.time() - phase1_start)
+                        self.root.after(0, lambda n=processed_dirs, f=len(found_folders),
+                                        c=basename[:30], el=elapsed:
                             self.scanner_progress_label.config(
-                                text=f"Scanning... [{n} dirs, {f} found] ({c})"))
+                                text=f"Phase 1: {n} dirs | {f} found | Scanning: {c}  [{el}]"))
 
                 self.root.after(0, lambda: self.scanner_progress.stop())
                 self.root.after(0, lambda: self.scanner_progress.config(mode='determinate'))
@@ -7494,6 +7503,7 @@ class QBitAdderApp:
                 try:
                     entries = [e for e in os.listdir(root_folder)]
                     total_entries = len(entries)
+                    self.scanner_log(f"Phase 1/5: Scanning {total_entries} entries & measuring folder sizes...")
                     for i, entry in enumerate(entries):
                         if self.scanner_stop_event.is_set():
                             break
@@ -7501,16 +7511,24 @@ class QBitAdderApp:
                         if os.path.isdir(full):
                             processed_dirs += 1
                             if entry.isdigit():
-                                self.root.after(0, lambda n=processed_dirs, t=total_entries, f=len(found_folders)+1, c=entry:
-                                    self.scanner_progress_label.config(
-                                        text=f"Scanning {n}/{t}... Measuring folder {c} ({f} found)"))
+                                folder_size = self._get_folder_size(full)
+                                total_disk_size += folder_size
                                 found_folders.append({
                                     "topic_id": entry,
                                     "disk_path": full.replace("\\", "/"),
-                                    "disk_size": self._get_folder_size(full),
+                                    "disk_size": folder_size,
                                 })
+                                elapsed = self._format_elapsed(time.time() - phase1_start)
+                                self.root.after(0, lambda n=processed_dirs, t=total_entries, f=len(found_folders),
+                                                c=entry, sz=format_size(total_disk_size), el=elapsed:
+                                    self.scanner_progress_label.config(
+                                        text=f"Phase 1: {n}/{t} | {f} found ({sz}) | Measuring /{c}  [{el}]"))
                             elif processed_dirs % 20 == 0:
-                                self._scanner_update_progress(processed_dirs, max(total_entries, 1), "Scanning folders")
+                                elapsed = self._format_elapsed(time.time() - phase1_start)
+                                self.root.after(0, lambda n=processed_dirs, t=total_entries,
+                                                f=len(found_folders), el=elapsed:
+                                    self.scanner_progress_label.config(
+                                        text=f"Phase 1: {n}/{t} | {f} found | Scanning...  [{el}]"))
                 except Exception as e:
                     self.scanner_log(f"Error listing folder: {e}")
 
@@ -7519,8 +7537,9 @@ class QBitAdderApp:
                 self._scanner_scan_finished()
                 return
 
-            self._scanner_update_progress(processed_dirs, processed_dirs, "Folder scan complete")
-            self.scanner_log(f"Scanned {processed_dirs} directories, found {len(found_folders)} numeric-named folders.")
+            phase1_elapsed = self._format_elapsed(time.time() - phase1_start)
+            self.scanner_log(f"Phase 1 done: {processed_dirs} dirs, {len(found_folders)} ID folders, "
+                             f"total disk size {format_size(total_disk_size)}  [{phase1_elapsed}]")
 
             if not found_folders:
                 self.root.after(0, lambda: self.scanner_summary_label.config(
@@ -7528,19 +7547,26 @@ class QBitAdderApp:
                 self._scanner_scan_finished()
                 return
 
-            # === Phase 2: Batch API - get_tor_topic_data ===
-            self.scanner_log("Fetching topic data from Rutracker API...")
+            # === Phase 2: Batch API - get_tor_topic_data + peer_stats ===
             topic_ids = list(set(f["topic_id"] for f in found_folders))
+            total_batches = (len(topic_ids) + 99) // 100
+            self.scanner_log(f"Phase 2/5: Fetching API data for {len(topic_ids)} topics ({total_batches} batches)...")
             topic_data = {}
             peer_stats = {}
+            phase2_start = time.time()
 
             for batch_start in range(0, len(topic_ids), 100):
                 if self.scanner_stop_event.is_set():
                     break
                 batch = topic_ids[batch_start:batch_start + 100]
-                self._scanner_update_progress(batch_start + len(batch), len(topic_ids), "Fetching topic data")
+                batch_num = batch_start // 100 + 1
+                done_count = batch_start + len(batch)
+                elapsed = self._format_elapsed(time.time() - phase2_start)
+                self._update_progress(self.scanner_progress, self.scanner_progress_label,
+                    done_count, len(topic_ids),
+                    f"Phase 2: API batch {batch_num}/{total_batches} ({done_count}/{len(topic_ids)} topics)",
+                    phase2_start)
                 try:
-                    # 1. Fetch Metadata
                     api_resp = requests.get(
                         "https://api.rutracker.cc/v1/get_tor_topic_data",
                         params={"by": "topic_id", "val": ",".join(batch)},
@@ -7548,8 +7574,7 @@ class QBitAdderApp:
                     if api_resp.status_code == 200:
                         result = api_resp.json().get("result", {})
                         topic_data.update(result)
-                        
-                    # 2. Fetch Live Seeds/Leechers
+
                     stats_resp = requests.get(
                         "https://api.rutracker.cc/v1/get_peer_stats",
                         params={"by": "topic_id", "val": ",".join(batch)},
@@ -7558,42 +7583,57 @@ class QBitAdderApp:
                         stats_res = stats_resp.json().get("result", {})
                         peer_stats.update(stats_res)
                 except Exception as e:
-                    self.scanner_log(f"API error: {e}")
+                    self.scanner_log(f"API error (batch {batch_num}): {e}")
 
             if self.scanner_stop_event.is_set():
                 self.scanner_log("Scan stopped by user.")
                 self._scanner_scan_finished()
                 return
 
-            self.scanner_log(f"Got API data for {len(topic_data)} topics.")
+            phase2_elapsed = self._format_elapsed(time.time() - phase2_start)
+            self.scanner_log(f"Phase 2 done: got data for {len(topic_data)} topics, "
+                             f"peer stats for {len(peer_stats)}  [{phase2_elapsed}]")
 
             # === Phase 3: Fetch qBit torrent list ===
+            self.root.after(0, lambda: self.scanner_progress_label.config(
+                text=f"Phase 3: Loading torrent list from qBittorrent ({client['name']})..."))
+            self.scanner_log(f"Phase 3/5: Loading torrent list from qBittorrent ({client['name']})...")
             client_name = client["name"]
             cached, ts = self._cache_get(client_name)
             if cached is not None:
                 all_torrents = cached
-                self.scanner_log(f"Using cached torrent list ({len(all_torrents)} torrents).")
+                self.scanner_log(f"Phase 3 done: using cached list ({len(all_torrents)} torrents).")
                 self.root.after(0, lambda: self._show_cache_time_for_client(client_name, self.scanner_cache_label))
             else:
-                self.scanner_log("Connecting to qBittorrent...")
+                self.root.after(0, lambda: self.scanner_progress.config(mode='indeterminate'))
+                self.root.after(0, lambda: self.scanner_progress.start(15))
                 session = self._get_qbit_session(client)
                 if not session:
                     self.scanner_log("Could not connect to qBittorrent.")
+                    self.root.after(0, lambda: self.scanner_progress.stop())
+                    self.root.after(0, lambda: self.scanner_progress.config(mode='determinate'))
                     self._scanner_scan_finished()
                     return
                 try:
                     resp = session.get(f"{client['url'].rstrip('/')}/api/v2/torrents/info", timeout=30)
                     if resp.status_code != 200:
                         self.scanner_log(f"Failed to get torrent list: HTTP {resp.status_code}")
+                        self.root.after(0, lambda: self.scanner_progress.stop())
+                        self.root.after(0, lambda: self.scanner_progress.config(mode='determinate'))
                         self._scanner_scan_finished()
                         return
                     all_torrents = resp.json()
                     ts = self._cache_put(client_name, all_torrents)
                     self.root.after(0, lambda: self._update_cache_labels(client_name, ts))
+                    self.scanner_log(f"Phase 3 done: fetched {len(all_torrents)} torrents from qBittorrent.")
                 except Exception as e:
                     self.scanner_log(f"Failed to get torrent list: {e}")
+                    self.root.after(0, lambda: self.scanner_progress.stop())
+                    self.root.after(0, lambda: self.scanner_progress.config(mode='determinate'))
                     self._scanner_scan_finished()
                     return
+                self.root.after(0, lambda: self.scanner_progress.stop())
+                self.root.after(0, lambda: self.scanner_progress.config(mode='determinate'))
 
             # Build hash lookup
             qbit_hashes = {}
@@ -7601,7 +7641,6 @@ class QBitAdderApp:
                 qbit_hashes[t["hash"].lower()] = t
 
             # === Phase 4: Resolve categories ===
-            self.scanner_log("Resolving categories...")
             forum_ids_needed = set()
             for tid, data in topic_data.items():
                 if data and isinstance(data, dict):
@@ -7609,8 +7648,13 @@ class QBitAdderApp:
                     if fid:
                         forum_ids_needed.add(fid)
 
+            self.scanner_log(f"Phase 4/5: Resolving {len(forum_ids_needed)} categories...")
             forum_to_category = {}
-            for forum_id in forum_ids_needed:
+            for i, forum_id in enumerate(forum_ids_needed):
+                if i % 10 == 0:
+                    self.root.after(0, lambda n=i+1, t=len(forum_ids_needed):
+                        self.scanner_progress_label.config(
+                            text=f"Phase 4: Resolving categories {n}/{t}..."))
                 try:
                     breadcrumb = self.cat_manager._build_breadcrumb_path(forum_id)
                     if breadcrumb:
@@ -7621,20 +7665,31 @@ class QBitAdderApp:
                             forum_to_category[forum_id] = name
                 except Exception:
                     pass
+            self.scanner_log(f"Phase 4 done: resolved {len(forum_to_category)}/{len(forum_ids_needed)} categories.")
 
             # === Phase 4.5: Deep Scan / Deep Scan+ Verification ===
             deep_scan_plus = self.scanner_deep_scan_plus_var.get()
             deep_scan = self.scanner_deep_scan_var.get() or deep_scan_plus
             deep_scan_results = {} # topic_id -> {"extra": 0, "missing": 0, "mismatch": 0, "pieces": "0 / 0"}
-            
+
             if deep_scan:
                 mode_str = "Deep Scan+" if deep_scan_plus else "Deep Scan"
-                self.scanner_log(f"Starting {mode_str} verification...")
+                ds_start = time.time()
+                ds_cached = 0
+                ds_downloaded = 0
+                self.scanner_log(f"{mode_str}: Verifying {len(found_folders)} folders...")
                 for idx, folder in enumerate(found_folders):
                     if self.scanner_stop_event.is_set():
                         break
-                    
-                    self._scanner_update_progress(idx + 1, len(found_folders), f"{mode_str}ing")
+
+                    tid = folder["topic_id"]
+                    topic_name = topic_data.get(tid, {}).get("topic_title", tid) if topic_data.get(tid) else tid
+                    if isinstance(topic_name, str) and len(topic_name) > 40:
+                        topic_name = topic_name[:37] + "..."
+                    self._update_progress(self.scanner_progress, self.scanner_progress_label,
+                        idx + 1, len(found_folders),
+                        f"{mode_str} {idx+1}/{len(found_folders)}: {topic_name}",
+                        ds_start)
                     tid = folder["topic_id"]
                     disk_path = folder["disk_path"]
                     api_data = topic_data.get(tid)
@@ -7797,15 +7852,25 @@ class QBitAdderApp:
                         "pieces": pieces_str
                     }
 
+            if deep_scan:
+                ds_elapsed = self._format_elapsed(time.time() - ds_start)
+                self.scanner_log(f"{mode_str} done: verified {len(deep_scan_results)} folders  [{ds_elapsed}]")
+
             # === Phase 5: Match and populate treeview ===
+            self.scanner_log(f"Phase 5/5: Building results for {len(found_folders)} folders...")
             results = []
             in_qbit_count = 0
             missing_count = 0
             dead_count = 0
+            size_mismatch_count = 0
+            phase5_start = time.time()
 
-            for folder in found_folders:
+            for idx, folder in enumerate(found_folders):
                 if self.scanner_stop_event.is_set():
                     break
+                if (idx + 1) % 10 == 0 or idx + 1 == len(found_folders):
+                    self._update_progress(self.scanner_progress, self.scanner_progress_label,
+                        idx + 1, len(found_folders), "Phase 5: Building results", phase5_start)
 
                 tid = folder["topic_id"]
                 disk_path = folder["disk_path"]
@@ -7890,8 +7955,10 @@ class QBitAdderApp:
                     ratio = disk_size / rt_size
                     if ratio < 0.95:
                         size_tag = "size_smaller"
+                        size_mismatch_count += 1
                     elif ratio > 1.05:
                         size_tag = "size_larger"
+                        size_mismatch_count += 1
 
                 results.append(entry)
                 tags = [entry["tag"]]
@@ -7906,12 +7973,14 @@ class QBitAdderApp:
 
             self.scanner_scan_results = results
 
-            elapsed = time.time() - scan_start
-            summary = (f"Found {len(found_folders)} folders: "
+            total_elapsed = self._format_elapsed(time.time() - scan_start)
+            summary = (f"Done: {len(found_folders)} folders | "
                        f"{in_qbit_count} in client, "
-                       f"{missing_count} missing (alive), "
-                       f"{dead_count} dead/not on RT "
-                       f"({elapsed:.1f}s)")
+                       f"{missing_count} missing, "
+                       f"{dead_count} dead")
+            if size_mismatch_count > 0:
+                summary += f", {size_mismatch_count} size mismatch"
+            summary += f"  | Disk: {format_size(total_disk_size)}  [{total_elapsed}]"
             self.scanner_log(summary)
             self.root.after(0, lambda s=summary: self.scanner_summary_label.config(text=s, fg="black"))
 

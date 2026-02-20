@@ -49,7 +49,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.11.9"
+APP_VERSION = "0.11.10"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -348,6 +348,26 @@ class DatabaseManager:
         except Exception as e:
             print(f"Error loading PVC cache: {e}")
         return None
+
+    def save_keepers_users(self, user_dict):
+        try:
+            with self._get_conn() as conn:
+                conn.executemany("""
+                    INSERT OR REPLACE INTO keepers_users (user_id, username)
+                    VALUES (?, ?)
+                """, [(int(uid), data[0]) for uid, data in user_dict.items()])
+        except Exception as e:
+            print(f"Error saving Keepers Users: {e}")
+            
+    def get_keepers_user(self, user_id):
+        try:
+            with self._get_conn() as conn:
+                row = conn.execute("SELECT username FROM keepers_users WHERE user_id = ?", (user_id,)).fetchone()
+                if row:
+                    return row[0]
+        except Exception as e:
+            pass
+        return f"Unknown ({user_id})"
 
     def add_kept_torrent(self, topic_id, info_hash, name, size, seeds, leechers, cat_id):
         try:
@@ -6563,12 +6583,15 @@ class QBitAdderApp:
                     ids_to_fetch = [str(c['id']) for c in candidates]
                     fetched_hashes = {}
                     api_data = {}
+                    peer_stats = {}
 
                     if ids_to_fetch:
                          api_url = "https://api.rutracker.cc/v1/get_tor_topic_data"
+                         stats_url = "https://api.rutracker.cc/v1/get_peer_stats"
                          params = {"by": "topic_id", "val": ",".join(ids_to_fetch)}
 
                          try:
+                             # 2a. Fetch Title, Size, Forum IDs
                              api_resp = self.cat_manager.session.get(api_url, params=params, timeout=10)
                              if api_resp.status_code == 200:
                                  res = api_resp.json().get("result")
@@ -6579,22 +6602,44 @@ class QBitAdderApp:
                                              if "info_hash" in info:
                                                  fetched_hashes[tid_int] = info["info_hash"]
                                              api_data[tid_int] = info
+                             
+                             # 2b. Fetch Live Seeds & Leechers
+                             stats_resp = self.cat_manager.session.get(stats_url, params=params, timeout=10)
+                             if stats_resp.status_code == 200:
+                                 peer_stats = stats_resp.json().get("result", {})
 
                          except Exception as e:
                              self.keepers_log(f"  API Warning: {e}")
 
                     # Overwrite scraped values with API data (more reliable)
                     for c in candidates:
-                        info = api_data.get(c['id'])
+                        tid_int = int(c['id'])
+                        
+                        # 1. Base API Hydration
+                        info = api_data.get(tid_int)
                         if info:
-                            c['seeds'] = int(info.get('seeders', 0) or 0)
-                            c['leech'] = int(info.get('leechers', 0) or 0)
                             api_size = int(info.get('size', 0) or 0)
                             if api_size > 0:
                                 c['raw_size'] = api_size
                                 c['size_str'] = format_size(api_size)
                             if info.get('topic_title'):
                                 c['name'] = html.unescape(info['topic_title'])
+                        
+                        # 2. Live Peer Stats Hydration
+                        p_stats = peer_stats.get(str(tid_int), [])
+                        if p_stats:
+                            c['seeds'] = p_stats[0] if len(p_stats) > 0 else c['seeds']
+                            c['leech'] = p_stats[1] if len(p_stats) > 1 else c['leech']
+                            
+                        # 3. Static PVC Fallback (Ensures Keepers always have data)
+                        if hasattr(self, 'keepers_pvc_data') and tid_int in self.keepers_pvc_data:
+                            pd = self.keepers_pvc_data[tid_int]
+                            c['seeds'] = pd.get('seeds', c['seeds'])
+                            c['leech'] = pd.get('leechers', c['leech'])
+                            pvc_size = pd.get('size_bytes', 0)
+                            if pvc_size > 0:
+                                c['raw_size'] = pvc_size
+                                c['size_str'] = format_size(pvc_size)
 
                     # Filter by seeds AFTER enrichment
                     filtered = [c for c in candidates if c['seeds'] <= max_seeds]

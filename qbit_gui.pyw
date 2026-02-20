@@ -49,7 +49,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.11.8"
+APP_VERSION = "0.11.9"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -3759,26 +3759,33 @@ class QBitAdderApp:
 
     def _search_by_api(self, query, s_type):
         # s_type: 'id' or 'hash'
-        # Endpoint: get_tor_topic_data?by=topic_id&val=... or by=hash&val=...
         
         # Clean query: split by commas/spaces/newlines and join with comma
-        # This supports "id1, id2 id3" -> "id1,id2,id3"
         raw_vals = re.split(r'[,\s\n]+', query)
         val = ",".join(v for v in raw_vals if v)
         
         by = "topic_id" if s_type == "id" else "hash"
         
-        url = "https://api.rutracker.cc/v1/get_tor_topic_data"
+        url_data = "https://api.rutracker.cc/v1/get_tor_topic_data"
+        url_stats = "https://api.rutracker.cc/v1/get_peer_stats"
         params = {"by": by, "val": val}
         
-        resp = requests.get(url, params=params, timeout=15)
-        if resp.status_code != 200:
-            raise Exception(f"API HTTP {resp.status_code}")
+        try:
+            resp_data = self.cat_manager.session.get(url_data, params=params, timeout=15)
+            if resp_data.status_code != 200:
+                raise Exception(f"API HTTP {resp_data.status_code}")
+            data = resp_data.json().get("result", {})
             
-        data = resp.json().get("result", {})
+            # Fetch peer stats natively mapped to the exact query array
+            peer_data = {}
+            resp_stats = self.cat_manager.session.get(url_stats, params=params, timeout=15)
+            if resp_stats.status_code == 200:
+                peer_data = resp_stats.json().get("result", {})
+        except Exception as e:
+            raise Exception(f"API Error: {e}")
+            
         results = []
         
-        # Data format: { "ID": { ... } }
         for tid, info in data.items():
             if not info: continue
             
@@ -3786,12 +3793,20 @@ class QBitAdderApp:
             cat_id = info.get("forum_id")
             cat_name = self.cat_manager.get_category_name(cat_id) if cat_id else "?"
             
+            # Peer stats from `get_peer_stats`: [seeders, leechers, seeder_last_seen]
+            p_stats = peer_data.get(tid, [])
+            api_seeds = p_stats[0] if len(p_stats) > 0 else info.get("seeders", "?")
+            api_leech = p_stats[1] if len(p_stats) > 1 else 0
+            
+            # If by="hash", the rutracker JSON key is the hash itself and we must extract the nested topic_id
+            real_id = info.get("topic_id", tid)
+            
             results.append({
-                "id": tid,
+                "id": real_id,
                 "name": info.get("topic_title", "Unknown"),
                 "size": format_size(info.get("size", 0)),
-                "seeds": info.get("seeders", "?"),
-                "leech": 0, # API doesn't seem to return leechers in topic_data?
+                "seeds": api_seeds,
+                "leech": api_leech,
                 "category": cat_name
             })
             
@@ -3799,9 +3814,6 @@ class QBitAdderApp:
 
     def _search_by_name_scrape(self, query):
         # Requires Login
-        # url = https://rutracker.org/forum/tracker.php
-        # POST data: nm=query
-        
         user, pwd = self._get_rutracker_creds()
         if not user or not pwd:
             raise Exception("Login credentials required for Name search")
@@ -3814,73 +3826,24 @@ class QBitAdderApp:
         data = {"nm": query}
         
         resp = self.cat_manager.session.post(url, data=data, timeout=30)
-        # Parse HTML (Regex for speed/simplicity without bs4)
-        # Row format: <tr class="tCenter"> ... </tr>
-        # ID: viewtopic.php?t=(\d+)
-        # Name: <a data-topic_id="..." ...>(.*?)</a>
-        # Size: <div class="small">...</div> (might be tricky with regex)
-        # Category: <a href="viewforum.php?f=...">...</a>
         
-        results = []
-        # Find all rows (approximate)
-        # Pattern to capture main fields. 
-        # This is fragile. Ideally use BeautifulSoup, but we stick to stdlib/requests per constraints unless bs4 is available? 
-        # User environment likely has standard libs. Regex is safer to keep deps low if not requested.
-        
-        # Let's try a row-by-row split
+        # Parse HTML merely for topic IDs, stripping all fragile Regex dependencies
+        topic_ids = []
         rows = resp.text.split('<tr class="tCenter">')
         for row in rows[1:]: # Skip header
              try:
-                 # ID & Name
-                 # viewtopic.php?t=6562095
                  id_match = re.search(r'viewtopic\.php\?t=(\d+)', row)
-                 if not id_match: continue
-                 tid = id_match.group(1)
-                 
-                 name_match = re.search(r'data-topic_id="' + tid + r'">([^<]+)</a>', row)
-                 name = name_match.group(1) if name_match else "Unknown"
-                 
-                 # Category
-                 cat_match = re.search(r'viewforum\.php\?f=(\d+)"[^>]*>([^<]+)</a>', row)
-                 cat = cat_match.group(2) if cat_match else "?"
-                 
-                 # Seeds
-                 seed_match = re.search(r'<b class="seedmed">(\d+)</b>', row)
-                 seeds = seed_match.group(1) if seed_match else "0"
-
-                 # Leech
-                 leech_match = re.search(r'<span class="leechmed">(\d+)</span>', row)
-                 leeches = leech_match.group(1) if leech_match else "0"
-                 
-                 # Size
-                 # <td class="tor-size"...><a>...</a></td> -> inner text
-                 # Simple regex for size (usually format: 2.5 GB)
-                 size_match = re.search(r'class="tor-size"[^>]*>.*?data-ts_text="(\d+)"', row) # timestamp? no.
-                 # The raw html for size is often like: <div class="small">2.34 GB</div> inside the td
-                 # Actually check raw source pattern...
-                 # <td class="tor-size" data-ts_text="1723456789">...</td>
-                 # Let's try finding the cell content.
-                 
-                 # Simplified size extraction (look for pattern like Number Unit)
-                 size_val = "?"
-                 size_cell = re.search(r'<td class="tor-size"[^>]*>(.*?)</td>', row, re.DOTALL)
-                 if size_cell:
-                     # Strip tags
-                     txt = re.sub(r'<[^>]+>', '', size_cell.group(1)).strip()
-                     size_val = txt
-                 
-                 results.append({
-                     "id": tid,
-                     "name": name,
-                     "size": size_val,
-                     "seeds": seeds,
-                     "leech": leeches,
-                     "category": cat
-                 })
+                 if id_match:
+                     topic_ids.append(id_match.group(1))
              except:
                  continue
                  
-        return results
+        if not topic_ids:
+            return []
+            
+        # Hydrate perfect metadata arrays via the native `get_tor_topic_data` & `get_peer_stats` routines
+        val_string = ",".join(topic_ids)
+        return self._search_by_api(val_string, "id")
 
     def download_selected_torrent(self):
         sel = self.search_tree.selection()

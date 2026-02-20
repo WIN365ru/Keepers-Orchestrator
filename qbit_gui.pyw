@@ -48,7 +48,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.11.1"
+APP_VERSION = "0.11.2"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -259,8 +259,35 @@ class DatabaseManager:
                         files_json TEXT
                     )
                 """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS bitrot_history (
+                        hash TEXT PRIMARY KEY,
+                        last_checked REAL,
+                        status TEXT
+                    )
+                """)
         except Exception as e:
             print(f"DB Init Error: {e}")
+
+    def save_bitrot_history(self, info_hash, status):
+        try:
+            with self._get_conn() as conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO bitrot_history (hash, last_checked, status)
+                    VALUES (?, ?, ?)
+                """, (info_hash, time.time(), status))
+                conn.commit()
+        except Exception as e:
+            print(f"Error saving bitrot history: {e}")
+
+    def get_bitrot_history(self):
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.execute("SELECT hash, last_checked, status FROM bitrot_history")
+                return {row[0]: {"last_checked": row[1], "status": row[2]} for row in cursor.fetchall()}
+        except Exception as e:
+            print(f"Error loading bitrot history: {e}")
+            return {}
 
     def add_kept_torrent(self, topic_id, info_hash, name, size, seeds, leechers, cat_id):
         try:
@@ -3241,24 +3268,34 @@ class QBitAdderApp:
         tree_frame = tk.Frame(self.bitrot_tab)
         tree_frame.pack(fill="both", expand=True, padx=10, pady=5)
         
-        cols = ("topic_id", "name", "size", "added_on", "status", "progress", "bitrot_state")
+        cols = ("topic_id", "name", "size", "added_on", "last_active", "up_speed", "seed", "path", "last_checked", "status", "progress", "bitrot_state")
         self.bitrot_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="extended")
         
         self.bitrot_tree.heading("topic_id", text="Topic ID")
         self.bitrot_tree.heading("name", text="Name", command=lambda: self.sort_tree(self.bitrot_tree, "name", False))
         self.bitrot_tree.heading("size", text="Size", command=lambda: self.sort_tree(self.bitrot_tree, "size", False))
-        self.bitrot_tree.heading("added_on", text="Added On", command=lambda: self.sort_tree(self.bitrot_tree, "added_on", False))
+        self.bitrot_tree.heading("added_on", text="Added", command=lambda: self.sort_tree(self.bitrot_tree, "added_on", False))
+        self.bitrot_tree.heading("last_active", text="Last Active", command=lambda: self.sort_tree(self.bitrot_tree, "last_active", False))
+        self.bitrot_tree.heading("up_speed", text="UP Speed", command=lambda: self.sort_tree(self.bitrot_tree, "up_speed", False))
+        self.bitrot_tree.heading("seed", text="Seeds", command=lambda: self.sort_tree(self.bitrot_tree, "seed", False))
+        self.bitrot_tree.heading("path", text="Path", command=lambda: self.sort_tree(self.bitrot_tree, "path", False))
+        self.bitrot_tree.heading("last_checked", text="Last Checked", command=lambda: self.sort_tree(self.bitrot_tree, "last_checked", False))
         self.bitrot_tree.heading("status", text="Status")
         self.bitrot_tree.heading("progress", text="Progress")
         self.bitrot_tree.heading("bitrot_state", text="Bitrot State", command=lambda: self.sort_tree(self.bitrot_tree, "bitrot_state", False))
 
         self.bitrot_tree.column("topic_id", width=80, stretch=False)
-        self.bitrot_tree.column("name", width=400)
+        self.bitrot_tree.column("name", width=300)
         self.bitrot_tree.column("size", width=80, stretch=False)
         self.bitrot_tree.column("added_on", width=120, stretch=False)
+        self.bitrot_tree.column("last_active", width=120, stretch=False)
+        self.bitrot_tree.column("up_speed", width=80, stretch=False)
+        self.bitrot_tree.column("seed", width=50, stretch=False)
+        self.bitrot_tree.column("path", width=150, stretch=False)
+        self.bitrot_tree.column("last_checked", width=120, stretch=False)
         self.bitrot_tree.column("status", width=100, stretch=False)
         self.bitrot_tree.column("progress", width=80, stretch=False)
-        self.bitrot_tree.column("bitrot_state", width=120, stretch=False)
+        self.bitrot_tree.column("bitrot_state", width=100, stretch=False)
 
         # Tags for colors
         self.bitrot_tree.tag_configure("clean", background="#d4ffd4") # Light green
@@ -3287,6 +3324,9 @@ class QBitAdderApp:
         
         self.bitrot_progress = ttk.Progressbar(progress_frame, orient="horizontal", mode="determinate")
         self.bitrot_progress.pack(side="left", fill="x", expand=True, padx=5)
+        
+        self.bitrot_stats_lbl = tk.Label(progress_frame, text="Total: 0 torrents (0 B)", fg="blue", anchor="e")
+        self.bitrot_stats_lbl.pack(side="right", padx=10)
         
         # Populate client dropdown correctly on startup
         self.update_bitrot_client_dropdown()
@@ -3346,13 +3386,25 @@ class QBitAdderApp:
                 return
                 
             cutoff_timestamp = time.time() - (age_days * 86400)
+            history = self.db_manager.get_bitrot_history()
             
-            # Filter logically: progress == 1, added_on <= cutoff
+            # Filter logically: progress == 1
             filtered = []
             for t in torrents:
-                if t.get("progress", 0) == 1.0 and t.get("added_on", time.time()) <= cutoff_timestamp:
-                    filtered.append(t)
+                if t.get("progress", 0) == 1.0:
+                    t_hash = t.get("hash")
+                    hist = history.get(t_hash, {})
+                    last_col = hist.get("last_checked", t.get("added_on", time.time()))
                     
+                    if last_col <= cutoff_timestamp:
+                        t["_bitrot_hist"] = hist
+                        filtered.append(t)
+                        
+            # update UI Stats
+            total_size = sum(t.get("size", 0) for t in filtered)
+            size_str = format_size(total_size)
+            self.root.after(0, lambda c=len(filtered), s=size_str: self.bitrot_stats_lbl.configure(text=f"Total: {c} torrents ({s})"))
+            
             self.root.after(0, self._bitrot_populate_tree, filtered)
             
         threading.Thread(target=_fetch, daemon=True).start()
@@ -3360,6 +3412,18 @@ class QBitAdderApp:
     def _bitrot_populate_tree(self, torrents):
         for t in torrents:
             added_on = datetime.datetime.fromtimestamp(t.get("added_on", 0)).strftime('%Y-%m-%d %H:%M')
+            last_activity_ts = t.get("last_activity", 0)
+            last_active = datetime.datetime.fromtimestamp(last_activity_ts).strftime('%Y-%m-%d %H:%M') if last_activity_ts > 0 else "Never"
+            
+            up_speed = format_size(t.get("upspeed", 0)) + "/s"
+            seed = t.get("num_seeds", 0)
+            path = t.get("save_path", t.get("content_path", ""))
+            
+            history = t.get("_bitrot_hist", {})
+            last_checked_ts = history.get("last_checked", 0)
+            last_checked = datetime.datetime.fromtimestamp(last_checked_ts).strftime('%Y-%m-%d %H:%M') if last_checked_ts > 0 else "Never"
+            hist_state = history.get("status", "Pending Check")
+            
             size_fmt = format_size(t.get("size", 0))
             name = t.get("name", "Unknown")
             status = t.get("state", "")
@@ -3374,9 +3438,15 @@ class QBitAdderApp:
                 if "viewtopic.php?t=" in comment:
                     topic_id = comment.split("t=")[-1]
 
+            tags = ()
+            if hist_state == "Clean":
+                tags = ("clean",)
+            elif hist_state == "Bitrot Detected":
+                tags = ("rot",)
+
             item_id = self.bitrot_tree.insert("", "end", values=(
-                topic_id, name, size_fmt, added_on, status, progress, "Pending Check"
-            ))
+                topic_id, name, size_fmt, added_on, last_active, up_speed, seed, path, last_checked, status, progress, hist_state
+            ), tags=tags)
             
             self.bitrot_scan_results.append({
                 "hash": t.get("hash"),
@@ -3491,13 +3561,18 @@ class QBitAdderApp:
                                         self.bitrot_tree.set(tree_id, "status", s)
                                         self.bitrot_tree.set(tree_id, "progress", f"{p*100:.1f}%")
                                         
+                                        now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+                                        self.bitrot_tree.set(tree_id, "last_checked", now_str)
+                                        
                                         if p < 1.0:
                                             self.bitrot_tree.set(tree_id, "bitrot_state", "Bitrot Detected")
                                             self.bitrot_tree.item(tree_id, tags=("rot",))
                                             self.bitrot_log(f"! BITROT DETECTED: {entry.get('name')} dropped to {p*100:.1f}%")
+                                            self.db_manager.save_bitrot_history(tid, "Bitrot Detected")
                                         else:
                                             self.bitrot_tree.set(tree_id, "bitrot_state", "Clean")
                                             self.bitrot_tree.item(tree_id, tags=("clean",))
+                                            self.db_manager.save_bitrot_history(tid, "Clean")
                             self.root.after(0, _fin)
                             
                     self.root.after(0, lambda c=total_checked, t=total_targets: self.bitrot_progress.configure(value=(c/t*100) if t else 0))

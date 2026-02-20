@@ -6707,7 +6707,12 @@ class QBitAdderApp:
                     k_count = d.get('keepers_count', 0)
                     
                     p_num = d.get('keeping_priority', 0)
-                    priority = "1 (Normal)" if p_num == 1 else str(p_num)
+                    if p_num == 0:
+                        priority = "0 (Low)"
+                    elif p_num == 1:
+                        priority = "1 (Normal)"
+                    else:
+                        priority = str(p_num)
                     
                     poster = str(d.get('topic_poster', ''))
                     

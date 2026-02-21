@@ -83,7 +83,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.15.2"
+APP_VERSION = "0.15.3"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -2295,8 +2295,11 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         
         # Traffic light for Client
         self.canvas_client_status = tk.Canvas(details_frame, width=20, height=20, highlightthickness=0)
-        self.canvas_client_status.grid(row=0, column=2, padx=10)
+        self.canvas_client_status.grid(row=0, column=3, padx=0, sticky="e")
         self.oval_client_status = self.canvas_client_status.create_oval(2, 2, 18, 18, fill=self.status_data["client"], outline="gray")
+        
+        # Expand middle column so column 3 pushes to the right
+        details_frame.grid_columnconfigure(2, weight=1)
 
         tk.Label(details_frame, text="Name:").grid(row=0, column=0, sticky="w")
         self.entry_name = tk.Entry(details_frame, width=30)
@@ -2754,6 +2757,11 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
 
         self.client_use_global_auth_var.set(client.get("use_global_auth", True))
         self.toggle_client_auth_fields()
+        
+        # Immediately set status canvas color based on known state
+        with self.status_lock:
+            color = self.client_statuses[index] if index < len(self.client_statuses) else "gray"
+        self._update_ui_status("client", color)
 
     def on_global_auth_check_toggle(self):
         self.toggle_client_auth_fields()

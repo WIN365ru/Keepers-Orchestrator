@@ -406,6 +406,16 @@ class DatabaseManager:
             pass
         return f"Unknown ({user_id})"
 
+    def get_all_keeper_usernames(self):
+        """Return a set of all known keeper usernames (lowercase for case-insensitive matching)."""
+        try:
+            with self._get_conn() as conn:
+                rows = conn.execute("SELECT username FROM keepers_users").fetchall()
+                return {row[0].lower() for row in rows if row[0]}
+        except Exception as e:
+            pass
+        return set()
+
     def add_kept_torrent(self, topic_id, info_hash, name, size, seeds, leechers, cat_id):
         try:
             with self._get_conn() as conn:
@@ -1833,6 +1843,8 @@ class QBitAdderApp:
 
         self._pm_tree.tag_configure("unread", foreground="black", background="#ffd9b2", font=("Segoe UI", 9, "bold"))
         self._pm_tree.tag_configure("read", foreground="gray")
+        self._pm_tree.tag_configure("keeper_unread", foreground="black", background="#b2ffd9", font=("Segoe UI", 9, "bold"))
+        self._pm_tree.tag_configure("keeper_read", foreground="#006633", background="#d9ffec")
 
         # Selection highlight uses the contour color for unread emphasis
         pm_style = ttk.Style()
@@ -1950,22 +1962,33 @@ class QBitAdderApp:
                     text="Login failed", fg="red"))
                 return
 
+            # Load keeper usernames for highlighting
+            keeper_names = self.db_manager.get_all_keeper_usernames()
+
             def _update():
                 try:
                     for item in self._pm_tree.get_children():
                         self._pm_tree.delete(item)
 
                     for msg in messages:
-                        tag = "unread" if msg["is_unread"] else "read"
-                        status_text = "Unread" if msg["is_unread"] else "Read"
+                        is_keeper = msg["sender"].lower() in keeper_names
+                        if is_keeper:
+                            tag = "keeper_unread" if msg["is_unread"] else "keeper_read"
+                            status_text = "Keeper" if not msg["is_unread"] else "Keeper!"
+                        else:
+                            tag = "unread" if msg["is_unread"] else "read"
+                            status_text = "Unread" if msg["is_unread"] else "Read"
                         self._pm_tree.insert("", "end", values=(
                             msg["msg_id"], msg["subject"], msg["sender"],
                             msg["date"], status_text
                         ), tags=(tag,))
 
                     unread_count = sum(1 for m in messages if m["is_unread"])
-                    self._pm_status_label.config(
-                        text=f"{len(messages)} messages ({unread_count} unread)", fg="black")
+                    keeper_count = sum(1 for m in messages if m["sender"].lower() in keeper_names)
+                    status_text = f"{len(messages)} messages ({unread_count} unread)"
+                    if keeper_count:
+                        status_text += f"  |  {keeper_count} from keepers"
+                    self._pm_status_label.config(text=status_text, fg="black")
                 except tk.TclError:
                     pass
             self.root.after(0, _update)

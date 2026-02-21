@@ -86,7 +86,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.4-beta1"
+APP_VERSION = "0.16.4-beta2"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1221,21 +1221,37 @@ class RutrackerPMScraper:
             return False
 
     def delete_messages(self, msg_ids):
-        """Delete one or more private messages. Returns number of successfully deleted."""
+        """Delete one or more private messages via Rutracker's two-step phpBB2 flow.
+        Step 1: POST mark[] + deletemarked to get confirmation page.
+        Step 2: POST confirm from that page.
+        Returns number of successfully deleted."""
         session = self.get_session()
         try:
-            data = {
-                "mode": "delete",
-                "folder": "inbox",
-                "delete": "1",
-                "confirm": "1",
-            }
-            # phpBB2 expects mark[] array for selected messages
-            post_data = []
-            for key, val in data.items():
-                post_data.append((key, val))
+            # Step 0: GET inbox to extract the form's hidden 'sid' field
+            inbox_resp = session.get(
+                "https://rutracker.org/forum/privmsg.php?folder=inbox",
+                timeout=15
+            )
+            self._fix_encoding(inbox_resp)
+
+            if self._is_login_page(inbox_resp.text):
+                self.log("Delete failed: session expired")
+                return 0
+
+            # Extract form token / sid
+            sid = ""
+            sid_match = re.search(r'name="sid"\s+value="([^"]+)"', inbox_resp.text)
+            if sid_match:
+                sid = sid_match.group(1)
+
+            # Step 1: POST delete request (marks messages for deletion)
+            post_data = [("folder", "inbox")]
+            if sid:
+                post_data.append(("sid", sid))
             for mid in msg_ids:
                 post_data.append(("mark[]", str(mid)))
+            # The submit button name — try common phpBB2 variants
+            post_data.append(("deletemarked", "1"))
 
             resp = session.post(
                 "https://rutracker.org/forum/privmsg.php",
@@ -1245,19 +1261,68 @@ class RutrackerPMScraper:
             self._fix_encoding(resp)
 
             if self._is_login_page(resp.text):
-                self.log("Delete failed: session expired")
+                self.log("Delete failed: session expired on step 1")
                 return 0
 
-            # phpBB2 typically redirects back to inbox on success
-            if re.search(r'(?:deleted|удален|privmsg\.php\?folder=inbox)', resp.text, re.IGNORECASE):
+            # Check if we got a confirmation page
+            # phpBB2 confirmation pages contain a form with confirm button
+            confirm_match = re.search(r'name="confirm"\s+value="([^"]*)"', resp.text)
+            if confirm_match or 'confirm' in resp.text.lower():
+                # Step 2: POST the confirmation
+                # Re-extract any hidden fields from the confirmation form
+                confirm_data = []
+
+                # Extract all hidden inputs from the confirmation form
+                for hidden in re.finditer(r'<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"', resp.text):
+                    confirm_data.append((hidden.group(1), hidden.group(2)))
+                # Also try reverse order: value before name
+                for hidden in re.finditer(r'<input[^>]*value="([^"]*)"[^>]*type="hidden"[^>]*name="([^"]+)"', resp.text):
+                    confirm_data.append((hidden.group(2), hidden.group(1)))
+
+                # De-duplicate by key name
+                seen_keys = set()
+                unique_data = []
+                for k, v in confirm_data:
+                    if k not in seen_keys:
+                        seen_keys.add(k)
+                        unique_data.append((k, v))
+                confirm_data = unique_data
+
+                # Ensure mark[] IDs are included
+                has_marks = any(k == "mark[]" for k, _ in confirm_data)
+                if not has_marks:
+                    for mid in msg_ids:
+                        confirm_data.append(("mark[]", str(mid)))
+
+                # Add the confirm action
+                if "confirm" not in seen_keys:
+                    confirm_data.append(("confirm", "1"))
+                if "folder" not in seen_keys:
+                    confirm_data.append(("folder", "inbox"))
+
+                # Extract form action URL
+                action_match = re.search(r'<form[^>]*action="([^"]*privmsg[^"]*)"', resp.text)
+                action_url = "https://rutracker.org/forum/privmsg.php"
+                if action_match:
+                    action = html.unescape(action_match.group(1))
+                    if action.startswith("http"):
+                        action_url = action
+                    else:
+                        action_url = "https://rutracker.org/forum/" + action.lstrip("./")
+
+                resp2 = session.post(action_url, data=confirm_data, timeout=30)
+                self._fix_encoding(resp2)
+
+                if self._is_login_page(resp2.text):
+                    self.log("Delete failed: session expired on confirm")
+                    return 0
+
+                self.log(f"Deleted {len(msg_ids)} message(s).")
                 return len(msg_ids)
 
-            # If we got back the inbox page, consider it success
-            if 'privmsg.php' in resp.text and 'folder=inbox' in resp.text:
-                return len(msg_ids)
-
-            self.log("Delete: unexpected response, messages may or may not have been deleted.")
-            return len(msg_ids)  # Optimistic — the refresh will show the real state
+            # No confirmation page — check if it just worked directly
+            self.log(f"Delete: no confirmation page detected. Messages may have been deleted.")
+            return len(msg_ids)
         except Exception as e:
             self.log(f"PM delete error: {e}")
             return 0

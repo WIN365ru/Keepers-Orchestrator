@@ -74,7 +74,10 @@ DEFAULT_CONFIG = {
         }
     ],
     "last_selected_client_index": 0,
-    "torrent_cache_ttl_hours": 6
+    "torrent_cache_ttl_hours": 6,
+    "pm_polling_enabled": True,
+    "pm_poll_interval_sec": 300,
+    "pm_toast_enabled": True
 }
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
@@ -83,7 +86,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.15.3"
+APP_VERSION = "0.16.0"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1000,6 +1003,199 @@ class CategoryManager:
             self.log(f"API refresh failed: {e}")
 
 
+class RutrackerPMScraper:
+    """Scrapes Rutracker private message inbox, reads messages, and sends replies."""
+
+    def __init__(self, session_provider, log_func):
+        self.get_session = session_provider
+        self.log = log_func
+
+    def _fix_encoding(self, response):
+        if response.encoding == 'ISO-8859-1':
+            response.encoding = 'cp1251'
+
+    def _is_login_page(self, html_text):
+        return 'login_username' in html_text
+
+    def fetch_inbox(self):
+        """Fetch inbox message list. Returns list of dicts or None if login needed."""
+        session = self.get_session()
+        try:
+            resp = session.get(
+                "https://rutracker.org/forum/privmsg.php?folder=inbox",
+                timeout=15
+            )
+            self._fix_encoding(resp)
+
+            if self._is_login_page(resp.text):
+                return None
+
+            messages = []
+            rows = re.split(r'<tr\b[^>]*>', resp.text)
+
+            for row in rows:
+                link_match = re.search(
+                    r'privmsg\.php\?folder=inbox&(?:amp;)?mode=read&(?:amp;)?p=(\d+)',
+                    row
+                )
+                if not link_match:
+                    continue
+
+                msg_id = link_match.group(1)
+
+                # Subject
+                subj_match = re.search(
+                    r'<a[^>]*privmsg\.php\?folder=inbox[^>]*mode=read[^>]*>([^<]+)</a>',
+                    row
+                )
+                if not subj_match:
+                    subj_match = re.search(
+                        r'<a[^>]*privmsg\.php[^>]*>([^<]+)</a>',
+                        row
+                    )
+                subject = html.unescape(subj_match.group(1).strip()) if subj_match else "No Subject"
+
+                # Unread detection
+                is_unread = bool(re.search(
+                    r'(?:folder_new|pm_unread|topic_new|icon_unread|pm_new)',
+                    row, re.IGNORECASE
+                ))
+
+                # Sender
+                sender_match = re.search(
+                    r'profile\.php\?mode=viewprofile&(?:amp;)?u=(\d+)[^>]*>([^<]+)</a>',
+                    row
+                )
+                sender = html.unescape(sender_match.group(2).strip()) if sender_match else "Unknown"
+                sender_id = sender_match.group(1) if sender_match else ""
+
+                # Date
+                date_match = re.search(
+                    r'(\d{1,2}[-./]\w+[-./]\d{2,4}\s+\d{1,2}:\d{2})',
+                    row
+                )
+                if not date_match:
+                    date_match = re.search(r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})', row)
+                date_str = date_match.group(1) if date_match else ""
+
+                messages.append({
+                    "msg_id": msg_id,
+                    "subject": subject,
+                    "sender": sender,
+                    "sender_id": sender_id,
+                    "date": date_str,
+                    "is_unread": is_unread,
+                })
+
+            return messages
+        except Exception as e:
+            self.log(f"PM fetch_inbox error: {e}")
+            return None
+
+    def fetch_message(self, msg_id):
+        """Fetch a single message content. Returns dict or None if login needed."""
+        session = self.get_session()
+        try:
+            resp = session.get(
+                f"https://rutracker.org/forum/privmsg.php?folder=inbox&mode=read&p={msg_id}",
+                timeout=15
+            )
+            self._fix_encoding(resp)
+
+            if self._is_login_page(resp.text):
+                return None
+
+            result = {"msg_id": msg_id}
+
+            # Subject
+            subj_match = re.search(r'<b>(?:Subject|Тема):</b>\s*(.+?)(?:<|$)', resp.text)
+            if not subj_match:
+                subj_match = re.search(r'class="[^"]*subj[^"]*"[^>]*>(.*?)</(?:td|div)>', resp.text, re.DOTALL)
+            if not subj_match:
+                subj_match = re.search(r'<title>(.*?)(?:\s*[-:]|</title>)', resp.text)
+            result["subject"] = html.unescape(re.sub(r'<[^>]+>', '', subj_match.group(1)).strip()) if subj_match else "No Subject"
+
+            # Sender
+            sender_match = re.search(
+                r'profile\.php\?mode=viewprofile&(?:amp;)?u=(\d+)[^>]*>([^<]+)</a>',
+                resp.text
+            )
+            result["sender"] = html.unescape(sender_match.group(2).strip()) if sender_match else "Unknown"
+            result["sender_id"] = sender_match.group(1) if sender_match else ""
+
+            # Date
+            date_match = re.search(r'(?:Sent|Date|Отправлено)[:\s]*([^<\n]+)', resp.text, re.IGNORECASE)
+            if not date_match:
+                date_match = re.search(r'(\d{1,2}[-./]\w+[-./]\d{2,4}\s+\d{1,2}:\d{2})', resp.text)
+            result["date"] = date_match.group(1).strip() if date_match else ""
+
+            # Message body
+            body_match = re.search(
+                r'<div[^>]*class="[^"]*(?:postbody|post_text|msg-body|post_body)[^"]*"[^>]*>(.*?)</div>',
+                resp.text, re.DOTALL | re.IGNORECASE
+            )
+            if not body_match:
+                body_match = re.search(
+                    r'<td[^>]*class="[^"]*(?:postbody|row1|message)[^"]*"[^>]*>(.*?)</td>',
+                    resp.text, re.DOTALL
+                )
+            body_html = body_match.group(1).strip() if body_match else ""
+            result["body_html"] = body_html
+
+            # Convert to plain text
+            body_text = re.sub(r'<br\s*/?>', '\n', body_html)
+            body_text = re.sub(r'<[^>]+>', '', body_text)
+            result["body_text"] = html.unescape(body_text).strip() if body_text else "(Could not parse message body)"
+
+            # Form token for reply
+            token_match = re.search(r'name="form_token"\s+value="([^"]+)"', resp.text)
+            if not token_match:
+                token_match = re.search(r'name="sid"\s+value="([^"]+)"', resp.text)
+            result["form_token"] = token_match.group(1) if token_match else ""
+
+            return result
+        except Exception as e:
+            self.log(f"PM fetch_message error for {msg_id}: {e}")
+            return None
+
+    def send_reply(self, msg_id, subject, body, form_token=""):
+        """Send a reply to a private message. Returns True on success."""
+        session = self.get_session()
+        try:
+            data = {
+                "mode": "reply",
+                "p": msg_id,
+                "subject": subject.encode("windows-1251", errors="replace"),
+                "message": body.encode("windows-1251", errors="replace"),
+                "post": "Отправить",
+            }
+            if form_token:
+                data["sid"] = form_token
+
+            resp = session.post(
+                "https://rutracker.org/forum/privmsg.php",
+                data=data,
+                timeout=30
+            )
+            self._fix_encoding(resp)
+
+            if self._is_login_page(resp.text):
+                self.log("Reply failed: session expired")
+                return False
+
+            if re.search(r'(?:message.*sent|сообщение.*отправлено|privmsg\.php\?folder=sentbox)', resp.text, re.IGNORECASE):
+                return True
+
+            error_match = re.search(r'class="[^"]*gen[^"]*"[^>]*>(.*?error.*?)</td>', resp.text, re.IGNORECASE | re.DOTALL)
+            if error_match:
+                self.log(f"Reply error: {html.unescape(re.sub(r'<[^>]+>', '', error_match.group(1))).strip()}")
+
+            return False
+        except Exception as e:
+            self.log(f"PM send_reply error: {e}")
+            return False
+
+
 class ToolTip:
     def __init__(self, widget):
         self.widget = widget
@@ -1161,6 +1357,16 @@ class QBitAdderApp:
         self.client_statuses = [] # list of colors for each client
         self.status_loop_active = False
 
+        # PM inbox state
+        self.pm_unread_count = 0
+        self.pm_last_known_ids = set()
+        self.pm_poll_interval = self.config.get("pm_poll_interval_sec", 300)
+        self.pm_poll_active = False
+        self.pm_scraper = None
+        self._pm_toast_available = True
+        self._pm_current_message = None
+        self._pm_window = None
+
         self.create_keepers_ui()
 
 
@@ -1211,11 +1417,24 @@ class QBitAdderApp:
         self.is_initializing = False
         self.trigger_status_check()
 
+        # Start PM polling
+        self._pm_start_polling()
+
         # Auto-scan when switching to Update tab
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
-        self.status_bar = tk.Label(self.root, text="Ready", bd=1, relief=tk.SUNKEN, anchor=tk.W)
-        self.status_bar.pack(side="bottom", fill="x")
+        status_frame = tk.Frame(self.root)
+        status_frame.pack(side="bottom", fill="x")
+
+        self.status_bar = tk.Label(status_frame, text="Ready", bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar.pack(side="left", fill="x", expand=True)
+
+        self.pm_indicator = tk.Label(
+            status_frame, text="  PM  ", bd=1, relief=tk.RAISED,
+            cursor="hand2", bg="#e0e0e0", fg="gray", padx=4
+        )
+        self.pm_indicator.pack(side="right", padx=2)
+        self.pm_indicator.bind("<Button-1>", lambda e: self._pm_open_inbox_dialog())
 
         # Start Category Manager (Auto-fetch if needed)
         threading.Thread(target=self._initial_category_fetch, daemon=True).start()
@@ -1417,6 +1636,396 @@ class QBitAdderApp:
         if user and pwd:
             return user, pwd
         return None, None
+
+    # ======== PM Inbox Methods ========
+
+    def _pm_start_polling(self):
+        """Start PM background polling thread if credentials available."""
+        if self.pm_poll_active:
+            return
+        if not self.config.get("pm_polling_enabled", True):
+            return
+        user, pwd = self._get_rutracker_creds()
+        if not user or not pwd:
+            return
+
+        self.pm_scraper = RutrackerPMScraper(
+            session_provider=lambda: self.cat_manager.session,
+            log_func=self.log
+        )
+        self.pm_poll_active = True
+        threading.Thread(target=self._pm_check_loop, daemon=True).start()
+
+    def _pm_check_loop(self):
+        """Background: polls inbox every pm_poll_interval seconds."""
+        while self.pm_poll_active:
+            self._pm_do_check()
+            for _ in range(self.pm_poll_interval):
+                if not self.pm_poll_active:
+                    break
+                time.sleep(1)
+
+    def _pm_do_check(self):
+        """Single inbox check iteration."""
+        try:
+            self.root.after(0, lambda: self._pm_update_indicator("#cccc00", " PM... "))
+
+            if 'bb_session' not in self.cat_manager.session.cookies.get_dict():
+                user, pwd = self._get_rutracker_creds()
+                if user and pwd:
+                    self.cat_manager.login(user, pwd)
+                else:
+                    self.root.after(0, lambda: self._pm_update_indicator("#e0e0e0", "  PM  "))
+                    return
+
+            messages = self.pm_scraper.fetch_inbox()
+
+            if messages is None:
+                user, pwd = self._get_rutracker_creds()
+                if user and pwd and self.cat_manager.login(user, pwd):
+                    messages = self.pm_scraper.fetch_inbox()
+                if messages is None:
+                    self.root.after(0, lambda: self._pm_update_indicator("#ff6666", " PM! "))
+                    return
+
+            unread = [m for m in messages if m["is_unread"]]
+            self.pm_unread_count = len(unread)
+
+            current_ids = {m["msg_id"] for m in messages}
+            new_ids = current_ids - self.pm_last_known_ids
+            new_unread = [m for m in unread if m["msg_id"] in new_ids]
+            self.pm_last_known_ids = current_ids
+
+            if self.pm_unread_count > 0:
+                text = f" PM({self.pm_unread_count}) "
+                self.root.after(0, lambda t=text: self._pm_update_indicator("#ff6666", t))
+            else:
+                self.root.after(0, lambda: self._pm_update_indicator("#90EE90", "  PM  "))
+
+            if new_unread and self.config.get("pm_toast_enabled", True):
+                self._pm_send_toast(new_unread)
+
+        except Exception as e:
+            self.log(f"PM check error: {e}")
+            self.root.after(0, lambda: self._pm_update_indicator("#e0e0e0", "  PM  "))
+
+    def _pm_update_indicator(self, bg_color, text):
+        """Thread-safe indicator update."""
+        try:
+            self.pm_indicator.config(text=text, bg=bg_color)
+        except tk.TclError:
+            pass
+
+    def _pm_send_toast(self, new_messages):
+        """Windows toast notification for new PMs."""
+        if not self._pm_toast_available:
+            return
+        try:
+            from winotify import Notification
+
+            if len(new_messages) == 1:
+                msg = new_messages[0]
+                title = f"New PM from {msg['sender']}"
+                body = msg['subject']
+            else:
+                title = f"{len(new_messages)} new private messages"
+                senders = ", ".join(m['sender'] for m in new_messages[:3])
+                body = f"From: {senders}"
+                if len(new_messages) > 3:
+                    body += f" (+{len(new_messages) - 3} more)"
+
+            toast = Notification(
+                app_id="Keepers Orchestrator",
+                title=title,
+                msg=body,
+                duration="short"
+            )
+            toast.show()
+        except ImportError:
+            self._pm_toast_available = False
+            self.log("Toast notifications unavailable (install winotify: pip install winotify)")
+        except Exception as e:
+            self.log(f"Toast notification error: {e}")
+
+    def _pm_open_inbox_dialog(self):
+        """Open the PM inbox popup dialog."""
+        user, pwd = self._get_rutracker_creds()
+        if not user or not pwd:
+            messagebox.showwarning("Private Messages",
+                "Please configure Rutracker credentials in Settings first.")
+            return
+
+        if self._pm_window and self._pm_window.winfo_exists():
+            self._pm_window.lift()
+            self._pm_window.focus_force()
+            return
+
+        if not self.pm_scraper:
+            self.pm_scraper = RutrackerPMScraper(
+                session_provider=lambda: self.cat_manager.session,
+                log_func=self.log
+            )
+
+        win = tk.Toplevel(self.root)
+        win.title("Private Messages - Inbox")
+        win.geometry("850x600")
+        win.transient(self.root)
+        self._pm_window = win
+
+        # Top bar
+        top_bar = tk.Frame(win)
+        top_bar.pack(fill="x", padx=10, pady=5)
+
+        tk.Label(top_bar, text="Inbox", font=("Segoe UI", 12, "bold")).pack(side="left")
+        self._pm_status_label = tk.Label(top_bar, text="", fg="gray")
+        self._pm_status_label.pack(side="left", padx=15)
+        tk.Button(top_bar, text="Refresh", command=self._pm_refresh_inbox).pack(side="right")
+
+        # Message list
+        list_frame = tk.Frame(win)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+
+        cols = ("msg_id", "subject", "sender", "date", "status")
+        self._pm_tree = ttk.Treeview(list_frame, columns=cols, show="headings",
+                                      selectmode="browse", height=8)
+
+        self._pm_tree.heading("msg_id", text="ID")
+        self._pm_tree.heading("subject", text="Subject")
+        self._pm_tree.heading("sender", text="From")
+        self._pm_tree.heading("date", text="Date")
+        self._pm_tree.heading("status", text="Status")
+
+        self._pm_tree.column("msg_id", width=70, stretch=False)
+        self._pm_tree.column("subject", width=350)
+        self._pm_tree.column("sender", width=120)
+        self._pm_tree.column("date", width=130, stretch=False)
+        self._pm_tree.column("status", width=70, stretch=False)
+
+        self._pm_tree.tag_configure("unread", foreground="black", font=("Segoe UI", 9, "bold"))
+        self._pm_tree.tag_configure("read", foreground="gray")
+
+        scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self._pm_tree.yview)
+        self._pm_tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        self._pm_tree.pack(side="left", fill="both", expand=True)
+
+        self._pm_tree.bind("<<TreeviewSelect>>", self._pm_on_message_select)
+
+        # Message preview pane
+        preview_frame = tk.LabelFrame(win, text="Message", padx=5, pady=5)
+        preview_frame.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+
+        header = tk.Frame(preview_frame)
+        header.pack(fill="x")
+        self._pm_preview_subject = tk.Label(header, text="", font=("Segoe UI", 10, "bold"), anchor="w")
+        self._pm_preview_subject.pack(fill="x")
+        self._pm_preview_meta = tk.Label(header, text="", fg="gray", anchor="w")
+        self._pm_preview_meta.pack(fill="x")
+
+        self._pm_preview_body = scrolledtext.ScrolledText(preview_frame, wrap="word",
+                                                           height=10, state="disabled",
+                                                           font=("Segoe UI", 10))
+        self._pm_preview_body.pack(fill="both", expand=True, pady=5)
+
+        btn_frame = tk.Frame(preview_frame)
+        btn_frame.pack(fill="x")
+        tk.Button(btn_frame, text="Reply", command=self._pm_open_reply_dialog).pack(side="left")
+        tk.Button(btn_frame, text="Open in Browser",
+                  command=self._pm_open_in_browser).pack(side="left", padx=10)
+
+        self._pm_refresh_inbox()
+
+    def _pm_on_message_select(self, event=None):
+        """Load selected message content."""
+        sel = self._pm_tree.selection()
+        if not sel:
+            return
+        msg_id = str(self._pm_tree.item(sel[0])["values"][0])
+
+        self._pm_preview_subject.config(text="Loading...")
+        self._pm_preview_meta.config(text="")
+        self._pm_preview_body.config(state="normal")
+        self._pm_preview_body.delete("1.0", tk.END)
+        self._pm_preview_body.config(state="disabled")
+        threading.Thread(target=self._pm_load_message, args=(msg_id,), daemon=True).start()
+
+    def _pm_load_message(self, msg_id):
+        """Background: fetch single message."""
+        try:
+            msg = self.pm_scraper.fetch_message(msg_id)
+            if msg is None:
+                user, pwd = self._get_rutracker_creds()
+                if user and pwd and self.cat_manager.login(user, pwd):
+                    msg = self.pm_scraper.fetch_message(msg_id)
+
+            if msg:
+                self._pm_current_message = msg
+                def _update():
+                    try:
+                        self._pm_preview_subject.config(text=msg["subject"])
+                        self._pm_preview_meta.config(
+                            text=f"From: {msg['sender']}  |  Date: {msg['date']}")
+                        self._pm_preview_body.config(state="normal")
+                        self._pm_preview_body.delete("1.0", tk.END)
+                        self._pm_preview_body.insert("1.0", msg["body_text"])
+                        self._pm_preview_body.config(state="disabled")
+                    except tk.TclError:
+                        pass
+                self.root.after(0, _update)
+            else:
+                self.root.after(0, lambda: self._pm_preview_subject.config(text="Failed to load message"))
+        except Exception as e:
+            self.root.after(0, lambda: self._pm_preview_subject.config(text=f"Error: {e}"))
+
+    def _pm_refresh_inbox(self):
+        """Refresh inbox message list."""
+        self._pm_status_label.config(text="Loading...", fg="blue")
+        threading.Thread(target=self._pm_refresh_inbox_thread, daemon=True).start()
+
+    def _pm_refresh_inbox_thread(self):
+        """Background: refresh inbox list."""
+        try:
+            if 'bb_session' not in self.cat_manager.session.cookies.get_dict():
+                user, pwd = self._get_rutracker_creds()
+                if user and pwd:
+                    self.cat_manager.login(user, pwd)
+
+            messages = self.pm_scraper.fetch_inbox()
+            if messages is None:
+                user, pwd = self._get_rutracker_creds()
+                if user and pwd and self.cat_manager.login(user, pwd):
+                    messages = self.pm_scraper.fetch_inbox()
+
+            if messages is None:
+                self.root.after(0, lambda: self._pm_status_label.config(
+                    text="Login failed", fg="red"))
+                return
+
+            def _update():
+                try:
+                    for item in self._pm_tree.get_children():
+                        self._pm_tree.delete(item)
+
+                    for msg in messages:
+                        tag = "unread" if msg["is_unread"] else "read"
+                        status_text = "Unread" if msg["is_unread"] else "Read"
+                        self._pm_tree.insert("", "end", values=(
+                            msg["msg_id"], msg["subject"], msg["sender"],
+                            msg["date"], status_text
+                        ), tags=(tag,))
+
+                    unread_count = sum(1 for m in messages if m["is_unread"])
+                    self._pm_status_label.config(
+                        text=f"{len(messages)} messages ({unread_count} unread)", fg="black")
+                except tk.TclError:
+                    pass
+            self.root.after(0, _update)
+        except Exception as e:
+            self.root.after(0, lambda: self._pm_status_label.config(
+                text=f"Error: {e}", fg="red"))
+
+    def _pm_open_reply_dialog(self):
+        """Open reply composition dialog."""
+        if not self._pm_current_message:
+            messagebox.showinfo("Reply", "Select a message first.")
+            return
+
+        msg = self._pm_current_message
+
+        reply_win = tk.Toplevel(self._pm_window)
+        reply_win.title(f"Reply to: {msg['subject']}")
+        reply_win.geometry("600x400")
+        reply_win.transient(self._pm_window)
+
+        tk.Label(reply_win, text=f"To: {msg['sender']}", anchor="w").pack(fill="x", padx=10, pady=5)
+
+        subj_frame = tk.Frame(reply_win)
+        subj_frame.pack(fill="x", padx=10)
+        tk.Label(subj_frame, text="Subject:").pack(side="left")
+        subj_entry = tk.Entry(subj_frame, width=50)
+        subj_entry.pack(side="left", padx=5, fill="x", expand=True)
+
+        subj_text = msg["subject"]
+        if not subj_text.lower().startswith("re:"):
+            subj_text = f"Re: {subj_text}"
+        subj_entry.insert(0, subj_text)
+
+        tk.Label(reply_win, text="Message:", anchor="w").pack(fill="x", padx=10, pady=(10, 0))
+        body_text = scrolledtext.ScrolledText(reply_win, wrap="word", height=15, font=("Segoe UI", 10))
+        body_text.pack(fill="both", expand=True, padx=10, pady=5)
+
+        btn_frame = tk.Frame(reply_win)
+        btn_frame.pack(fill="x", padx=10, pady=5)
+
+        send_btn = tk.Button(btn_frame, text="Send Reply")
+        send_btn.pack(side="left")
+        tk.Button(btn_frame, text="Cancel", command=reply_win.destroy).pack(side="right")
+
+        reply_status = tk.Label(btn_frame, text="", fg="gray")
+        reply_status.pack(side="left", padx=15)
+
+        def _send():
+            subject = subj_entry.get().strip()
+            body = body_text.get("1.0", tk.END).strip()
+            if not body:
+                messagebox.showwarning("Reply", "Message body cannot be empty.")
+                return
+
+            send_btn.config(state="disabled")
+            reply_status.config(text="Sending...", fg="blue")
+
+            def _do_send():
+                try:
+                    success = self.pm_scraper.send_reply(
+                        msg["msg_id"], subject, body, msg.get("form_token", ""))
+                    if success:
+                        def _on_success():
+                            reply_status.config(text="Sent!", fg="green")
+                            reply_win.after(1500, reply_win.destroy)
+                        self.root.after(0, _on_success)
+                    else:
+                        def _on_fail():
+                            reply_status.config(text="Send failed", fg="red")
+                            send_btn.config(state="normal")
+                        self.root.after(0, _on_fail)
+                except Exception as e:
+                    def _on_error():
+                        reply_status.config(text=f"Error: {e}", fg="red")
+                        send_btn.config(state="normal")
+                    self.root.after(0, _on_error)
+
+            threading.Thread(target=_do_send, daemon=True).start()
+
+        send_btn.config(command=_send)
+
+    def _pm_open_in_browser(self):
+        """Open current message in browser."""
+        if self._pm_current_message:
+            msg_id = self._pm_current_message["msg_id"]
+            webbrowser.open(f"https://rutracker.org/forum/privmsg.php?folder=inbox&mode=read&p={msg_id}")
+
+    def _save_pm_settings(self):
+        """Save PM polling configuration."""
+        self.config["pm_polling_enabled"] = self.pm_enabled_var.get()
+        try:
+            interval = int(self.pm_interval_entry.get())
+            if interval < 30:
+                interval = 30
+            self.config["pm_poll_interval_sec"] = interval
+            self.pm_poll_interval = interval
+        except ValueError:
+            pass
+        self.config["pm_toast_enabled"] = self.pm_toast_var.get()
+        self.save_config()
+        self.log("PM settings saved.")
+
+        if self.config["pm_polling_enabled"] and not self.pm_poll_active:
+            self._pm_start_polling()
+        elif not self.config["pm_polling_enabled"] and self.pm_poll_active:
+            self.pm_poll_active = False
+            self._pm_update_indicator("#e0e0e0", "  PM  ")
+
+    # ======== End PM Methods ========
 
     def _initial_category_fetch(self):
         # If cache is empty or never updated, try to fetch
@@ -1688,7 +2297,10 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 if "rutracker_auth" not in data: data["rutracker_auth"] = DEFAULT_CONFIG["rutracker_auth"]
                 if "auto_update_enabled" not in data: data["auto_update_enabled"] = False
                 if "auto_update_interval_min" not in data: data["auto_update_interval_min"] = 60
-                
+                if "pm_polling_enabled" not in data: data["pm_polling_enabled"] = True
+                if "pm_poll_interval_sec" not in data: data["pm_poll_interval_sec"] = 300
+                if "pm_toast_enabled" not in data: data["pm_toast_enabled"] = True
+
                 return data
             except Exception as e:
                 print(f"Error loading config: {e}")
@@ -2392,6 +3004,28 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         tk.Button(cache_btn_frame, text="Save Cache Settings", command=self._save_torrent_cache_settings).pack(side="left")
         tk.Button(cache_btn_frame, text="Clear All Cached Lists", command=self._clear_torrent_cache).pack(side="left", padx=10)
 
+        # PM Inbox Settings
+        pm_settings_frame = tk.LabelFrame(rt_frame, text="Private Messages", padx=5, pady=5)
+        pm_settings_frame.pack(fill="x", padx=5, pady=5)
+
+        pm_row1 = tk.Frame(pm_settings_frame)
+        pm_row1.pack(fill="x")
+
+        self.pm_enabled_var = tk.BooleanVar(value=self.config.get("pm_polling_enabled", True))
+        tk.Checkbutton(pm_row1, text="Enable PM inbox polling",
+                      variable=self.pm_enabled_var).pack(side="left")
+
+        tk.Label(pm_row1, text="Interval (sec):").pack(side="left", padx=(15, 0))
+        self.pm_interval_entry = tk.Entry(pm_row1, width=6)
+        self.pm_interval_entry.pack(side="left", padx=5)
+        self.pm_interval_entry.insert(0, str(self.config.get("pm_poll_interval_sec", 300)))
+
+        self.pm_toast_var = tk.BooleanVar(value=self.config.get("pm_toast_enabled", True))
+        tk.Checkbutton(pm_row1, text="Windows notifications",
+                      variable=self.pm_toast_var).pack(side="left", padx=(15, 0))
+
+        tk.Button(pm_row1, text="Save PM Settings", command=self._save_pm_settings).pack(side="left", padx=10)
+
         # 4. Data Sources Section
         data_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Data Sources")
         data_frame.pack(fill="x", padx=10, pady=5)
@@ -2705,6 +3339,8 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         # Clear session to force re-login with new credentials
         self.cat_manager.session.cookies.clear()
         self.log(f"Rutracker settings saved. Session cleared. TTL: {self.config['category_ttl_hours']}h")
+        # Start PM polling if not yet active (creds might have just been added)
+        self._pm_start_polling()
 
     def refresh_client_list(self):
         selection = self.client_listbox.curselection()

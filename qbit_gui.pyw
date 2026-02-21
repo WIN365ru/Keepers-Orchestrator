@@ -86,7 +86,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.4-beta2"
+APP_VERSION = "0.16.4-beta3"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1220,112 +1220,130 @@ class RutrackerPMScraper:
             self.log(f"PM send_reply error: {e}")
             return False
 
+    def _extract_forms(self, html_text):
+        """Extract all <form> blocks with their action URLs and fields."""
+        forms = []
+        for form_match in re.finditer(r'<form\b([^>]*)>(.*?)</form>', html_text, re.DOTALL | re.IGNORECASE):
+            attrs = form_match.group(1)
+            body = form_match.group(2)
+
+            action = ""
+            a_match = re.search(r'action="([^"]*)"', attrs)
+            if a_match:
+                action = html.unescape(a_match.group(1))
+
+            method = "get"
+            m_match = re.search(r'method="([^"]*)"', attrs, re.IGNORECASE)
+            if m_match:
+                method = m_match.group(1).lower()
+
+            fields = []
+            # Hidden inputs
+            for inp in re.finditer(r'<input\b([^>]*)>', body, re.IGNORECASE):
+                tag = inp.group(1)
+                name_m = re.search(r'name="([^"]+)"', tag)
+                value_m = re.search(r'value="([^"]*)"', tag)
+                if name_m:
+                    fields.append((name_m.group(1), value_m.group(1) if value_m else ""))
+
+            # Submit buttons (include their name=value)
+            submits = []
+            for inp in re.finditer(r'<input\b([^>]*type="submit"[^>]*)>', body, re.IGNORECASE):
+                tag = inp.group(1)
+                name_m = re.search(r'name="([^"]+)"', tag)
+                value_m = re.search(r'value="([^"]*)"', tag)
+                if name_m:
+                    submits.append((name_m.group(1), value_m.group(1) if value_m else ""))
+
+            forms.append({
+                "action": action,
+                "method": method,
+                "fields": fields,
+                "submits": submits,
+                "raw": body,
+            })
+        return forms
+
+    def _resolve_url(self, action):
+        """Resolve a form action to a full URL."""
+        if not action or action.startswith("http"):
+            return action or "https://rutracker.org/forum/privmsg.php"
+        return "https://rutracker.org/forum/" + action.lstrip("./")
+
+    def _submit_confirm_page(self, resp_text):
+        """Find and submit the confirmation form ('Да' button) on a Rutracker confirm page.
+        Returns the response or None."""
+        session = self.get_session()
+        forms = self._extract_forms(resp_text)
+        for form in forms:
+            # The confirmation form has a submit with text "Да" or name "confirm"
+            for s_name, s_val in form["submits"]:
+                if s_name == "confirm" or "Да" in s_val:
+                    post_data = list(form["fields"])
+                    post_data.append((s_name, s_val))
+                    url = self._resolve_url(form["action"])
+                    resp = session.post(url, data=post_data, timeout=30)
+                    self._fix_encoding(resp)
+                    return resp
+        return None
+
     def delete_messages(self, msg_ids):
-        """Delete one or more private messages via Rutracker's two-step phpBB2 flow.
-        Step 1: POST mark[] + deletemarked to get confirmation page.
-        Step 2: POST confirm from that page.
+        """Delete private messages one by one via the read page 'Удалить сообщение' button.
         Returns number of successfully deleted."""
         session = self.get_session()
-        try:
-            # Step 0: GET inbox to extract the form's hidden 'sid' field
-            inbox_resp = session.get(
-                "https://rutracker.org/forum/privmsg.php?folder=inbox",
-                timeout=15
-            )
-            self._fix_encoding(inbox_resp)
+        deleted = 0
+        for mid in msg_ids:
+            try:
+                # Step 1: GET the message read page
+                resp = session.get(
+                    f"https://rutracker.org/forum/privmsg.php?folder=inbox&mode=read&p={mid}",
+                    timeout=15
+                )
+                self._fix_encoding(resp)
+                if self._is_login_page(resp.text):
+                    self.log("Delete failed: session expired")
+                    return deleted
 
-            if self._is_login_page(inbox_resp.text):
-                self.log("Delete failed: session expired")
-                return 0
+                # Step 2: Find the form with "Удалить сообщение" submit button
+                forms = self._extract_forms(resp.text)
+                delete_submitted = False
+                for form in forms:
+                    for s_name, s_val in form["submits"]:
+                        if "далить" in s_val or "delete" in s_name.lower():
+                            # Found the delete button — submit this form
+                            post_data = list(form["fields"])
+                            post_data.append((s_name, s_val))
+                            url = self._resolve_url(form["action"])
+                            resp2 = session.post(url, data=post_data, timeout=30)
+                            self._fix_encoding(resp2)
 
-            # Extract form token / sid
-            sid = ""
-            sid_match = re.search(r'name="sid"\s+value="([^"]+)"', inbox_resp.text)
-            if sid_match:
-                sid = sid_match.group(1)
+                            if self._is_login_page(resp2.text):
+                                self.log("Delete failed: session expired on delete submit")
+                                return deleted
 
-            # Step 1: POST delete request (marks messages for deletion)
-            post_data = [("folder", "inbox")]
-            if sid:
-                post_data.append(("sid", sid))
-            for mid in msg_ids:
-                post_data.append(("mark[]", str(mid)))
-            # The submit button name — try common phpBB2 variants
-            post_data.append(("deletemarked", "1"))
+                            # Step 3: Handle confirmation page ("Да" button)
+                            if "ПОДТВЕРДИТЕ" in resp2.text or "confirm" in resp2.text.lower():
+                                resp3 = self._submit_confirm_page(resp2.text)
+                                if resp3 and not self._is_login_page(resp3.text):
+                                    deleted += 1
+                                    self.log(f"Deleted message {mid}.")
+                                else:
+                                    self.log(f"Delete confirm failed for message {mid}.")
+                            else:
+                                # No confirmation page — assume success
+                                deleted += 1
+                                self.log(f"Deleted message {mid}.")
+                            delete_submitted = True
+                            break
+                    if delete_submitted:
+                        break
 
-            resp = session.post(
-                "https://rutracker.org/forum/privmsg.php",
-                data=post_data,
-                timeout=30
-            )
-            self._fix_encoding(resp)
+                if not delete_submitted:
+                    self.log(f"Could not find delete form for message {mid}.")
 
-            if self._is_login_page(resp.text):
-                self.log("Delete failed: session expired on step 1")
-                return 0
-
-            # Check if we got a confirmation page
-            # phpBB2 confirmation pages contain a form with confirm button
-            confirm_match = re.search(r'name="confirm"\s+value="([^"]*)"', resp.text)
-            if confirm_match or 'confirm' in resp.text.lower():
-                # Step 2: POST the confirmation
-                # Re-extract any hidden fields from the confirmation form
-                confirm_data = []
-
-                # Extract all hidden inputs from the confirmation form
-                for hidden in re.finditer(r'<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"', resp.text):
-                    confirm_data.append((hidden.group(1), hidden.group(2)))
-                # Also try reverse order: value before name
-                for hidden in re.finditer(r'<input[^>]*value="([^"]*)"[^>]*type="hidden"[^>]*name="([^"]+)"', resp.text):
-                    confirm_data.append((hidden.group(2), hidden.group(1)))
-
-                # De-duplicate by key name
-                seen_keys = set()
-                unique_data = []
-                for k, v in confirm_data:
-                    if k not in seen_keys:
-                        seen_keys.add(k)
-                        unique_data.append((k, v))
-                confirm_data = unique_data
-
-                # Ensure mark[] IDs are included
-                has_marks = any(k == "mark[]" for k, _ in confirm_data)
-                if not has_marks:
-                    for mid in msg_ids:
-                        confirm_data.append(("mark[]", str(mid)))
-
-                # Add the confirm action
-                if "confirm" not in seen_keys:
-                    confirm_data.append(("confirm", "1"))
-                if "folder" not in seen_keys:
-                    confirm_data.append(("folder", "inbox"))
-
-                # Extract form action URL
-                action_match = re.search(r'<form[^>]*action="([^"]*privmsg[^"]*)"', resp.text)
-                action_url = "https://rutracker.org/forum/privmsg.php"
-                if action_match:
-                    action = html.unescape(action_match.group(1))
-                    if action.startswith("http"):
-                        action_url = action
-                    else:
-                        action_url = "https://rutracker.org/forum/" + action.lstrip("./")
-
-                resp2 = session.post(action_url, data=confirm_data, timeout=30)
-                self._fix_encoding(resp2)
-
-                if self._is_login_page(resp2.text):
-                    self.log("Delete failed: session expired on confirm")
-                    return 0
-
-                self.log(f"Deleted {len(msg_ids)} message(s).")
-                return len(msg_ids)
-
-            # No confirmation page — check if it just worked directly
-            self.log(f"Delete: no confirmation page detected. Messages may have been deleted.")
-            return len(msg_ids)
-        except Exception as e:
-            self.log(f"PM delete error: {e}")
-            return 0
+            except Exception as e:
+                self.log(f"PM delete error for {mid}: {e}")
+        return deleted
 
 
 class ToolTip:

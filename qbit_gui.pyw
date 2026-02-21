@@ -77,7 +77,7 @@ DEFAULT_CONFIG = {
     "torrent_cache_ttl_hours": 6,
     "pm_polling_enabled": True,
     "pm_poll_interval_sec": 300,
-    "pm_toast_enabled": True
+    "pm_toast_enabled": False
 }
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
@@ -86,7 +86,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.0"
+APP_VERSION = "0.16.1"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1230,7 +1230,7 @@ class QBitAdderApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Keepers Orchestrator")
-        self.root.geometry("1200x850")
+        self.root.geometry("1200x870")
 
         # Global Menu Bar
         menubar = tk.Menu(self.root)
@@ -1639,6 +1639,14 @@ class QBitAdderApp:
 
     # ======== PM Inbox Methods ========
 
+    def _pm_check_winotify(self):
+        """Check if winotify is available. Returns True if importable."""
+        try:
+            import winotify
+            return True
+        except ImportError:
+            return False
+
     def _pm_start_polling(self):
         """Start PM background polling thread if credentials available."""
         if self.pm_poll_active:
@@ -1648,6 +1656,13 @@ class QBitAdderApp:
         user, pwd = self._get_rutracker_creds()
         if not user or not pwd:
             return
+
+        # Check winotify on startup if toast is enabled
+        if self.config.get("pm_toast_enabled", False):
+            if not self._pm_check_winotify():
+                self._pm_toast_available = False
+                self.log("Warning: Windows notifications enabled but 'winotify' is not installed. "
+                         "Install it with: pip install winotify")
 
         self.pm_scraper = RutrackerPMScraper(
             session_provider=lambda: self.cat_manager.session,
@@ -1685,7 +1700,7 @@ class QBitAdderApp:
                 if user and pwd and self.cat_manager.login(user, pwd):
                     messages = self.pm_scraper.fetch_inbox()
                 if messages is None:
-                    self.root.after(0, lambda: self._pm_update_indicator("#ff6666", " PM! "))
+                    self.root.after(0, lambda: self._pm_update_indicator("#fdae62", " PM! ", "#d20903"))
                     return
 
             unread = [m for m in messages if m["is_unread"]]
@@ -1698,7 +1713,7 @@ class QBitAdderApp:
 
             if self.pm_unread_count > 0:
                 text = f" PM({self.pm_unread_count}) "
-                self.root.after(0, lambda t=text: self._pm_update_indicator("#ff6666", t))
+                self.root.after(0, lambda t=text: self._pm_update_indicator("#ffd9b2", t, "#d20903"))
             else:
                 self.root.after(0, lambda: self._pm_update_indicator("#90EE90", "  PM  "))
 
@@ -1709,10 +1724,10 @@ class QBitAdderApp:
             self.log(f"PM check error: {e}")
             self.root.after(0, lambda: self._pm_update_indicator("#e0e0e0", "  PM  "))
 
-    def _pm_update_indicator(self, bg_color, text):
+    def _pm_update_indicator(self, bg_color, text, fg_color="black"):
         """Thread-safe indicator update."""
         try:
-            self.pm_indicator.config(text=text, bg=bg_color)
+            self.pm_indicator.config(text=text, bg=bg_color, fg=fg_color)
         except tk.TclError:
             pass
 
@@ -1801,8 +1816,15 @@ class QBitAdderApp:
         self._pm_tree.column("date", width=130, stretch=False)
         self._pm_tree.column("status", width=70, stretch=False)
 
-        self._pm_tree.tag_configure("unread", foreground="black", font=("Segoe UI", 9, "bold"))
+        self._pm_tree.tag_configure("unread", foreground="black", background="#ffd9b2", font=("Segoe UI", 9, "bold"))
         self._pm_tree.tag_configure("read", foreground="gray")
+
+        # Selection highlight uses the contour color for unread emphasis
+        pm_style = ttk.Style()
+        pm_style.map("PM.Treeview",
+                      background=[("selected", "#fdae62")],
+                      foreground=[("selected", "black")])
+        self._pm_tree.configure(style="PM.Treeview")
 
         scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self._pm_tree.yview)
         self._pm_tree.configure(yscrollcommand=scroll.set)
@@ -2004,6 +2026,17 @@ class QBitAdderApp:
             msg_id = self._pm_current_message["msg_id"]
             webbrowser.open(f"https://rutracker.org/forum/privmsg.php?folder=inbox&mode=read&p={msg_id}")
 
+    def _pm_on_toast_toggle(self):
+        """Called when the Windows notifications checkbox is toggled."""
+        if self.pm_toast_var.get():
+            if not self._pm_check_winotify():
+                messagebox.showwarning("Missing Dependency",
+                    "Windows notifications require the 'winotify' package.\n\n"
+                    "Install it by running:\n"
+                    "pip install winotify\n\n"
+                    "Notifications will not work until the package is installed "
+                    "and the application is restarted.")
+
     def _save_pm_settings(self):
         """Save PM polling configuration."""
         self.config["pm_polling_enabled"] = self.pm_enabled_var.get()
@@ -2018,6 +2051,10 @@ class QBitAdderApp:
         self.config["pm_toast_enabled"] = self.pm_toast_var.get()
         self.save_config()
         self.log("PM settings saved.")
+
+        # Re-check winotify availability when toast is enabled
+        if self.config["pm_toast_enabled"]:
+            self._pm_toast_available = self._pm_check_winotify()
 
         if self.config["pm_polling_enabled"] and not self.pm_poll_active:
             self._pm_start_polling()
@@ -2299,7 +2336,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 if "auto_update_interval_min" not in data: data["auto_update_interval_min"] = 60
                 if "pm_polling_enabled" not in data: data["pm_polling_enabled"] = True
                 if "pm_poll_interval_sec" not in data: data["pm_poll_interval_sec"] = 300
-                if "pm_toast_enabled" not in data: data["pm_toast_enabled"] = True
+                if "pm_toast_enabled" not in data: data["pm_toast_enabled"] = False
 
                 return data
             except Exception as e:
@@ -3020,9 +3057,10 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.pm_interval_entry.pack(side="left", padx=5)
         self.pm_interval_entry.insert(0, str(self.config.get("pm_poll_interval_sec", 300)))
 
-        self.pm_toast_var = tk.BooleanVar(value=self.config.get("pm_toast_enabled", True))
+        self.pm_toast_var = tk.BooleanVar(value=self.config.get("pm_toast_enabled", False))
         tk.Checkbutton(pm_row1, text="Windows notifications",
-                      variable=self.pm_toast_var).pack(side="left", padx=(15, 0))
+                      variable=self.pm_toast_var,
+                      command=self._pm_on_toast_toggle).pack(side="left", padx=(15, 0))
 
         tk.Button(pm_row1, text="Save PM Settings", command=self._save_pm_settings).pack(side="left", padx=10)
 

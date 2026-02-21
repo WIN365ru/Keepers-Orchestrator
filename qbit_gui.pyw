@@ -86,7 +86,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.1"
+APP_VERSION = "0.16.3"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1043,17 +1043,23 @@ class RutrackerPMScraper:
 
                 msg_id = link_match.group(1)
 
-                # Subject
+                # Subject: capture everything inside <a> including nested tags like <b>, then strip HTML
                 subj_match = re.search(
-                    r'<a[^>]*privmsg\.php\?folder=inbox[^>]*mode=read[^>]*>([^<]+)</a>',
-                    row
+                    r'<a[^>]*privmsg\.php\?folder=inbox[^>]*mode=read[^>]*>(.*?)</a>',
+                    row, re.DOTALL
                 )
                 if not subj_match:
                     subj_match = re.search(
-                        r'<a[^>]*privmsg\.php[^>]*>([^<]+)</a>',
-                        row
+                        r'<a[^>]*privmsg\.php[^>]*>(.*?)</a>',
+                        row, re.DOTALL
                     )
-                subject = html.unescape(subj_match.group(1).strip()) if subj_match else "No Subject"
+                if subj_match:
+                    subject = re.sub(r'<[^>]+>', '', subj_match.group(1))
+                    subject = html.unescape(subject).strip()
+                    if not subject:
+                        subject = "No Subject"
+                else:
+                    subject = "No Subject"
 
                 # Unread detection
                 is_unread = bool(re.search(
@@ -1107,13 +1113,20 @@ class RutrackerPMScraper:
 
             result = {"msg_id": msg_id}
 
-            # Subject
-            subj_match = re.search(r'<b>(?:Subject|Тема):</b>\s*(.+?)(?:<|$)', resp.text)
+            # Subject: try multiple patterns for Rutracker's phpBB2 PM read page
+            # Pattern 1: "ТЕМА" header row (Rutracker uses this label)
+            subj_match = re.search(r'(?:ТЕМА|Тема|Subject)\s*(?:</[^>]+>)?\s*(?:<[^>]+>\s*)*(.+?)(?:</td|</div|</span)', resp.text, re.DOTALL | re.IGNORECASE)
             if not subj_match:
-                subj_match = re.search(r'class="[^"]*subj[^"]*"[^>]*>(.*?)</(?:td|div)>', resp.text, re.DOTALL)
+                # Pattern 2: link text on the read page itself
+                subj_match = re.search(r'<a[^>]*privmsg\.php[^>]*>(.*?)</a>', resp.text, re.DOTALL)
             if not subj_match:
+                # Pattern 3: page title
                 subj_match = re.search(r'<title>(.*?)(?:\s*[-:]|</title>)', resp.text)
-            result["subject"] = html.unescape(re.sub(r'<[^>]+>', '', subj_match.group(1)).strip()) if subj_match else "No Subject"
+            if subj_match:
+                subj_raw = re.sub(r'<[^>]+>', '', subj_match.group(1))
+                result["subject"] = html.unescape(subj_raw).strip() or "No Subject"
+            else:
+                result["subject"] = "No Subject"
 
             # Sender
             sender_match = re.search(
@@ -1123,8 +1136,10 @@ class RutrackerPMScraper:
             result["sender"] = html.unescape(sender_match.group(2).strip()) if sender_match else "Unknown"
             result["sender_id"] = sender_match.group(1) if sender_match else ""
 
-            # Date
-            date_match = re.search(r'(?:Sent|Date|Отправлено)[:\s]*([^<\n]+)', resp.text, re.IGNORECASE)
+            # Date: Rutracker uses format like "26-02-22 02:15" in the PM page
+            date_match = re.search(r'(\d{2}-\d{2}-\d{2}\s+\d{2}:\d{2})', resp.text)
+            if not date_match:
+                date_match = re.search(r'(?:Sent|Date|Отправлено)[:\s]*([^<\n]+)', resp.text, re.IGNORECASE)
             if not date_match:
                 date_match = re.search(r'(\d{1,2}[-./]\w+[-./]\d{2,4}\s+\d{1,2}:\d{2})', resp.text)
             result["date"] = date_match.group(1).strip() if date_match else ""
@@ -1832,6 +1847,7 @@ class QBitAdderApp:
         self._pm_tree.pack(side="left", fill="both", expand=True)
 
         self._pm_tree.bind("<<TreeviewSelect>>", self._pm_on_message_select)
+        self._pm_tree.bind("<Double-1>", self._pm_on_message_select)
 
         # Message preview pane
         preview_frame = tk.LabelFrame(win, text="Message", padx=5, pady=5)
@@ -1862,17 +1878,24 @@ class QBitAdderApp:
         sel = self._pm_tree.selection()
         if not sel:
             return
-        msg_id = str(self._pm_tree.item(sel[0])["values"][0])
+        vals = self._pm_tree.item(sel[0])["values"]
+        # vals: (msg_id, subject, sender, date, status)
+        msg_id = str(vals[0])
+        inbox_meta = {
+            "subject": str(vals[1]),
+            "sender": str(vals[2]),
+            "date": str(vals[3]),
+        }
 
         self._pm_preview_subject.config(text="Loading...")
-        self._pm_preview_meta.config(text="")
+        self._pm_preview_meta.config(text=f"From: {inbox_meta['sender']}  |  Date: {inbox_meta['date']}")
         self._pm_preview_body.config(state="normal")
         self._pm_preview_body.delete("1.0", tk.END)
         self._pm_preview_body.config(state="disabled")
-        threading.Thread(target=self._pm_load_message, args=(msg_id,), daemon=True).start()
+        threading.Thread(target=self._pm_load_message, args=(msg_id, inbox_meta), daemon=True).start()
 
-    def _pm_load_message(self, msg_id):
-        """Background: fetch single message."""
+    def _pm_load_message(self, msg_id, inbox_meta):
+        """Background: fetch single message body. Uses inbox_meta for subject/sender/date."""
         try:
             msg = self.pm_scraper.fetch_message(msg_id)
             if msg is None:
@@ -1881,6 +1904,10 @@ class QBitAdderApp:
                     msg = self.pm_scraper.fetch_message(msg_id)
 
             if msg:
+                # Use reliable metadata from inbox list, only body + form_token from the read page
+                msg["subject"] = inbox_meta["subject"]
+                msg["sender"] = inbox_meta["sender"]
+                msg["date"] = inbox_meta["date"]
                 self._pm_current_message = msg
                 def _update():
                     try:

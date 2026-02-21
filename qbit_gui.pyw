@@ -86,7 +86,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.3"
+APP_VERSION = "0.16.4-beta1"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1220,6 +1220,48 @@ class RutrackerPMScraper:
             self.log(f"PM send_reply error: {e}")
             return False
 
+    def delete_messages(self, msg_ids):
+        """Delete one or more private messages. Returns number of successfully deleted."""
+        session = self.get_session()
+        try:
+            data = {
+                "mode": "delete",
+                "folder": "inbox",
+                "delete": "1",
+                "confirm": "1",
+            }
+            # phpBB2 expects mark[] array for selected messages
+            post_data = []
+            for key, val in data.items():
+                post_data.append((key, val))
+            for mid in msg_ids:
+                post_data.append(("mark[]", str(mid)))
+
+            resp = session.post(
+                "https://rutracker.org/forum/privmsg.php",
+                data=post_data,
+                timeout=30
+            )
+            self._fix_encoding(resp)
+
+            if self._is_login_page(resp.text):
+                self.log("Delete failed: session expired")
+                return 0
+
+            # phpBB2 typically redirects back to inbox on success
+            if re.search(r'(?:deleted|удален|privmsg\.php\?folder=inbox)', resp.text, re.IGNORECASE):
+                return len(msg_ids)
+
+            # If we got back the inbox page, consider it success
+            if 'privmsg.php' in resp.text and 'folder=inbox' in resp.text:
+                return len(msg_ids)
+
+            self.log("Delete: unexpected response, messages may or may not have been deleted.")
+            return len(msg_ids)  # Optimistic — the refresh will show the real state
+        except Exception as e:
+            self.log(f"PM delete error: {e}")
+            return 0
+
 
 class ToolTip:
     def __init__(self, widget):
@@ -1827,7 +1869,7 @@ class QBitAdderApp:
 
         cols = ("msg_id", "subject", "sender", "date", "status")
         self._pm_tree = ttk.Treeview(list_frame, columns=cols, show="headings",
-                                      selectmode="browse", height=8)
+                                      selectmode="extended", height=8)
 
         self._pm_tree.heading("msg_id", text="ID")
         self._pm_tree.heading("subject", text="Subject")
@@ -1860,6 +1902,7 @@ class QBitAdderApp:
 
         self._pm_tree.bind("<<TreeviewSelect>>", self._pm_on_message_select)
         self._pm_tree.bind("<Double-1>", self._pm_on_message_select)
+        self._pm_tree.bind("<Delete>", lambda e: self._pm_delete_selected())
 
         # Message preview pane
         preview_frame = tk.LabelFrame(win, text="Message", padx=5, pady=5)
@@ -1882,6 +1925,8 @@ class QBitAdderApp:
         tk.Button(btn_frame, text="Reply", command=self._pm_open_reply_dialog).pack(side="left")
         tk.Button(btn_frame, text="Open in Browser",
                   command=self._pm_open_in_browser).pack(side="left", padx=10)
+        tk.Button(btn_frame, text="Delete", fg="#d20903",
+                  command=self._pm_delete_selected).pack(side="right")
 
         self._pm_refresh_inbox()
 
@@ -2075,6 +2120,64 @@ class QBitAdderApp:
         if self._pm_current_message:
             msg_id = self._pm_current_message["msg_id"]
             webbrowser.open(f"https://rutracker.org/forum/privmsg.php?folder=inbox&mode=read&p={msg_id}")
+
+    def _pm_delete_selected(self):
+        """Delete selected message(s) from inbox."""
+        sel = self._pm_tree.selection()
+        if not sel:
+            messagebox.showinfo("Delete", "Select one or more messages first.")
+            return
+
+        count = len(sel)
+        msg_ids = [str(self._pm_tree.item(item)["values"][0]) for item in sel]
+        subjects = [str(self._pm_tree.item(item)["values"][1]) for item in sel]
+
+        # Build confirmation text
+        if count == 1:
+            confirm_text = f"Delete message \"{subjects[0]}\"?"
+        else:
+            preview = "\n".join(f"  - {s}" for s in subjects[:5])
+            if count > 5:
+                preview += f"\n  ... and {count - 5} more"
+            confirm_text = f"Delete {count} messages?\n\n{preview}"
+
+        if not messagebox.askyesno("Confirm Delete", confirm_text):
+            return
+
+        self._pm_status_label.config(text="Deleting...", fg="blue")
+
+        def _do_delete():
+            try:
+                deleted = self.pm_scraper.delete_messages(msg_ids)
+                if deleted:
+                    def _after():
+                        # Remove deleted rows from tree
+                        for item in sel:
+                            try:
+                                self._pm_tree.delete(item)
+                            except tk.TclError:
+                                pass
+                        self._pm_status_label.config(
+                            text=f"Deleted {deleted} message(s). Refreshing...", fg="green")
+                        # Clear preview if deleted message was being viewed
+                        if self._pm_current_message and self._pm_current_message["msg_id"] in msg_ids:
+                            self._pm_current_message = None
+                            self._pm_preview_subject.config(text="")
+                            self._pm_preview_meta.config(text="")
+                            self._pm_preview_body.config(state="normal")
+                            self._pm_preview_body.delete("1.0", tk.END)
+                            self._pm_preview_body.config(state="disabled")
+                        # Refresh to get accurate state
+                        self._pm_refresh_inbox()
+                    self.root.after(0, _after)
+                else:
+                    self.root.after(0, lambda: self._pm_status_label.config(
+                        text="Delete failed", fg="red"))
+            except Exception as e:
+                self.root.after(0, lambda: self._pm_status_label.config(
+                    text=f"Delete error: {e}", fg="red"))
+
+        threading.Thread(target=_do_delete, daemon=True).start()
 
     def _pm_on_toast_toggle(self):
         """Called when the Windows notifications checkbox is toggled."""

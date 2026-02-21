@@ -86,7 +86,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.4-beta3"
+APP_VERSION = "0.16.4-beta4"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1289,57 +1289,84 @@ class RutrackerPMScraper:
 
     def delete_messages(self, msg_ids):
         """Delete private messages one by one via the read page 'Удалить сообщение' button.
+        Saves debug HTML to pm_debug/ folder for troubleshooting.
         Returns number of successfully deleted."""
         session = self.get_session()
         deleted = 0
+        debug_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pm_debug")
+        os.makedirs(debug_dir, exist_ok=True)
+
         for mid in msg_ids:
             try:
                 # Step 1: GET the message read page
+                self.log(f"Delete [{mid}]: GET read page...")
                 resp = session.get(
                     f"https://rutracker.org/forum/privmsg.php?folder=inbox&mode=read&p={mid}",
                     timeout=15
                 )
                 self._fix_encoding(resp)
+
+                with open(os.path.join(debug_dir, f"{mid}_step1_read.html"), "w", encoding="utf-8") as f:
+                    f.write(resp.text)
+
                 if self._is_login_page(resp.text):
-                    self.log("Delete failed: session expired")
+                    self.log(f"Delete [{mid}]: session expired on read page")
                     return deleted
 
                 # Step 2: Find the form with "Удалить сообщение" submit button
                 forms = self._extract_forms(resp.text)
+                self.log(f"Delete [{mid}]: found {len(forms)} form(s) on read page")
+                for i, fm in enumerate(forms):
+                    self.log(f"  Form[{i}]: action='{fm['action']}' method='{fm['method']}' "
+                             f"fields={[(k, v[:40]) for k, v in fm['fields']]} "
+                             f"submits={fm['submits']}")
+
                 delete_submitted = False
                 for form in forms:
                     for s_name, s_val in form["submits"]:
                         if "далить" in s_val or "delete" in s_name.lower():
-                            # Found the delete button — submit this form
                             post_data = list(form["fields"])
                             post_data.append((s_name, s_val))
                             url = self._resolve_url(form["action"])
+                            self.log(f"Delete [{mid}]: POST {url} data={post_data}")
+
                             resp2 = session.post(url, data=post_data, timeout=30)
                             self._fix_encoding(resp2)
 
+                            with open(os.path.join(debug_dir, f"{mid}_step2_after_delete.html"), "w", encoding="utf-8") as f:
+                                f.write(resp2.text)
+
                             if self._is_login_page(resp2.text):
-                                self.log("Delete failed: session expired on delete submit")
+                                self.log(f"Delete [{mid}]: session expired on delete POST")
                                 return deleted
 
-                            # Step 3: Handle confirmation page ("Да" button)
-                            if "ПОДТВЕРДИТЕ" in resp2.text or "confirm" in resp2.text.lower():
-                                resp3 = self._submit_confirm_page(resp2.text)
-                                if resp3 and not self._is_login_page(resp3.text):
+                            # Step 3: Handle confirmation page
+                            confirm_forms = self._extract_forms(resp2.text)
+                            self.log(f"Delete [{mid}]: found {len(confirm_forms)} form(s) on step2 page")
+                            for ci, cf in enumerate(confirm_forms):
+                                self.log(f"  ConfirmForm[{ci}]: action='{cf['action']}' "
+                                         f"fields={[(k, v[:40]) for k, v in cf['fields']]} "
+                                         f"submits={cf['submits']}")
+
+                            resp3 = self._submit_confirm_page(resp2.text)
+                            if resp3:
+                                with open(os.path.join(debug_dir, f"{mid}_step3_after_confirm.html"), "w", encoding="utf-8") as f:
+                                    f.write(resp3.text)
+                                if not self._is_login_page(resp3.text):
                                     deleted += 1
-                                    self.log(f"Deleted message {mid}.")
+                                    self.log(f"Delete [{mid}]: confirmed OK.")
                                 else:
-                                    self.log(f"Delete confirm failed for message {mid}.")
+                                    self.log(f"Delete [{mid}]: session expired on confirm")
                             else:
-                                # No confirmation page — assume success
-                                deleted += 1
-                                self.log(f"Deleted message {mid}.")
+                                self.log(f"Delete [{mid}]: no confirm form found — check pm_debug/ HTML files")
+
                             delete_submitted = True
                             break
                     if delete_submitted:
                         break
 
                 if not delete_submitted:
-                    self.log(f"Could not find delete form for message {mid}.")
+                    self.log(f"Delete [{mid}]: no delete button found in any form — check pm_debug/ HTML files")
 
             except Exception as e:
                 self.log(f"PM delete error for {mid}: {e}")

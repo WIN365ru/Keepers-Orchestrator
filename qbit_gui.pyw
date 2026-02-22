@@ -86,7 +86,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.5"
+APP_VERSION = "0.16.6"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1013,8 +1013,16 @@ class CategoryManager:
             self.log(f"API refresh failed: {e}")
 
 
+PM_FOLDERS = {
+    "inbox":   "Входящие",
+    "sentbox": "Отправленные",
+    "outbox":  "Исходящие",
+    "savebox": "Сохранённые",
+}
+
+
 class RutrackerPMScraper:
-    """Scrapes Rutracker private message inbox, reads messages, and sends replies."""
+    """Scrapes Rutracker private message folders, reads messages, and sends replies."""
 
     def __init__(self, session_provider, log_func):
         self.get_session = session_provider
@@ -1027,12 +1035,12 @@ class RutrackerPMScraper:
     def _is_login_page(self, html_text):
         return 'login_username' in html_text
 
-    def fetch_inbox(self):
-        """Fetch inbox message list. Returns list of dicts or None if login needed."""
+    def fetch_inbox(self, folder="inbox"):
+        """Fetch message list for a PM folder. Returns list of dicts or None if login needed."""
         session = self.get_session()
         try:
             resp = session.get(
-                "https://rutracker.org/forum/privmsg.php?folder=inbox",
+                f"https://rutracker.org/forum/privmsg.php?folder={folder}",
                 timeout=15
             )
             self._fix_encoding(resp)
@@ -1042,10 +1050,11 @@ class RutrackerPMScraper:
 
             messages = []
             rows = re.split(r'<tr\b[^>]*>', resp.text)
+            folder_esc = re.escape(folder)
 
             for row in rows:
                 link_match = re.search(
-                    r'privmsg\.php\?folder=inbox&(?:amp;)?mode=read&(?:amp;)?p=(\d+)',
+                    rf'privmsg\.php\?folder={folder_esc}&(?:amp;)?mode=read&(?:amp;)?p=(\d+)',
                     row
                 )
                 if not link_match:
@@ -1055,7 +1064,7 @@ class RutrackerPMScraper:
 
                 # Subject: capture everything inside <a> including nested tags like <b>, then strip HTML
                 subj_match = re.search(
-                    r'<a[^>]*privmsg\.php\?folder=inbox[^>]*mode=read[^>]*>(.*?)</a>',
+                    rf'<a[^>]*privmsg\.php\?folder={folder_esc}[^>]*mode=read[^>]*>(.*?)</a>',
                     row, re.DOTALL
                 )
                 if not subj_match:
@@ -1105,15 +1114,15 @@ class RutrackerPMScraper:
 
             return messages
         except Exception as e:
-            self.log(f"PM fetch_inbox error: {e}")
+            self.log(f"PM fetch error ({folder}): {e}")
             return None
 
-    def fetch_message(self, msg_id):
+    def fetch_message(self, msg_id, folder="inbox"):
         """Fetch a single message content. Returns dict or None if login needed."""
         session = self.get_session()
         try:
             resp = session.get(
-                f"https://rutracker.org/forum/privmsg.php?folder=inbox&mode=read&p={msg_id}",
+                f"https://rutracker.org/forum/privmsg.php?folder={folder}&mode=read&p={msg_id}",
                 timeout=15
             )
             self._fix_encoding(resp)
@@ -1187,24 +1196,15 @@ class RutrackerPMScraper:
             self.log(f"PM fetch_message error for {msg_id}: {e}")
             return None
 
-    def send_reply(self, msg_id, subject, body, form_token=""):
-        """Send a reply to a private message. Returns True on success."""
+    def send_reply(self, msg_id, subject, body):
+        """Send a reply to a private message using two-step form flow.
+        Returns True on success."""
         session = self.get_session()
         try:
-            data = {
-                "mode": "reply",
-                "p": msg_id,
-                "subject": subject.encode("windows-1251", errors="replace"),
-                "message": body.encode("windows-1251", errors="replace"),
-                "post": "Отправить",
-            }
-            if form_token:
-                data["form_token"] = form_token
-
-            resp = session.post(
-                "https://rutracker.org/forum/privmsg.php",
-                data=data,
-                timeout=30
+            # Step 1: GET the reply compose page
+            resp = session.get(
+                f"https://rutracker.org/forum/privmsg.php?mode=reply&p={msg_id}",
+                timeout=15
             )
             self._fix_encoding(resp)
 
@@ -1212,12 +1212,69 @@ class RutrackerPMScraper:
                 self.log("Reply failed: session expired")
                 return False
 
-            if re.search(r'(?:message.*sent|сообщение.*отправлено|privmsg\.php\?folder=sentbox)', resp.text, re.IGNORECASE):
+            # Step 2: Extract JS form_token and find the compose form
+            js_token = self._extract_js_form_token(resp.text)
+            forms = self._extract_forms(resp.text)
+
+            compose_form = None
+            for form in forms:
+                if re.search(r'<textarea[^>]*name="message"', form["raw"], re.IGNORECASE):
+                    compose_form = form
+                    break
+            if not compose_form:
+                for form in forms:
+                    if "privmsg" in form["action"]:
+                        compose_form = form
+                        break
+            if not compose_form:
+                self.log(f"Reply failed: compose form not found for msg {msg_id}")
+                return False
+
+            # Step 3: Build POST data from hidden fields + user input
+            post_data = [(k, v) for k, v in compose_form["fields"]
+                         if k not in ("subject", "message")]
+            post_data.append(("subject", subject.encode("windows-1251", errors="replace")))
+            post_data.append(("message", body.encode("windows-1251", errors="replace")))
+
+            # Add submit button
+            submit_added = False
+            for s_name, s_val in compose_form["submits"]:
+                if s_name == "post" or "тправить" in s_val or "send" in s_name.lower():
+                    post_data.append((s_name, s_val))
+                    submit_added = True
+                    break
+            if not submit_added:
+                post_data.append(("post", "Отправить"))
+
+            # Inject JS form_token
+            field_names = {k for k, v in post_data}
+            if js_token and "form_token" not in field_names:
+                post_data.append(("form_token", js_token))
+
+            # Step 4: POST the form
+            url = self._resolve_url(compose_form["action"])
+            resp2 = session.post(url, data=post_data, timeout=30)
+            self._fix_encoding(resp2)
+
+            if self._is_login_page(resp2.text):
+                self.log("Reply failed: session expired on submit")
+                return False
+
+            # Check for success
+            if re.search(r'(?:message.*sent|сообщение.*отправлено|privmsg\.php\?folder=sentbox)', resp2.text, re.IGNORECASE):
                 return True
 
-            error_match = re.search(r'class="[^"]*gen[^"]*"[^>]*>(.*?error.*?)</td>', resp.text, re.IGNORECASE | re.DOTALL)
+            # Try confirmation page if needed
+            resp3 = self._submit_confirm_page(resp2.text)
+            if resp3 and not self._is_login_page(resp3.text):
+                if re.search(r'(?:message.*sent|сообщение.*отправлено|privmsg\.php\?folder=sentbox)', resp3.text, re.IGNORECASE):
+                    return True
+
+            error_match = re.search(r'class="[^"]*gen[^"]*"[^>]*>(.*?error.*?)</td>', resp2.text, re.IGNORECASE | re.DOTALL)
             if error_match:
                 self.log(f"Reply error: {html.unescape(re.sub(r'<[^>]+>', '', error_match.group(1))).strip()}")
+            else:
+                self.log(f"Reply may have failed for msg {msg_id}")
 
             return False
         except Exception as e:
@@ -1369,7 +1426,7 @@ class RutrackerPMScraper:
             return resp
         return None
 
-    def delete_messages(self, msg_ids):
+    def delete_messages(self, msg_ids, folder="inbox"):
         """Delete private messages one by one via the read page 'Удалить сообщение' button.
         Returns number of successfully deleted."""
         session = self.get_session()
@@ -1379,7 +1436,7 @@ class RutrackerPMScraper:
             try:
                 # Step 1: GET the message read page
                 resp = session.get(
-                    f"https://rutracker.org/forum/privmsg.php?folder=inbox&mode=read&p={mid}",
+                    f"https://rutracker.org/forum/privmsg.php?folder={folder}&mode=read&p={mid}",
                     timeout=15
                 )
                 self._fix_encoding(resp)
@@ -1602,6 +1659,7 @@ class QBitAdderApp:
         self.pm_scraper = None
         self._pm_toast_available = True
         self._pm_current_message = None
+        self._pm_current_folder = "inbox"
         self._pm_window = None
 
         self.create_keepers_ui()
@@ -2019,18 +2077,32 @@ class QBitAdderApp:
             )
 
         win = tk.Toplevel(self.root)
-        win.title("Private Messages - Inbox")
+        win.title(f"Private Messages - {PM_FOLDERS.get(self._pm_current_folder, 'Inbox')}")
         win.geometry("850x600")
         win.transient(self.root)
         self._pm_window = win
+
+        # Folder button bar
+        folder_bar = tk.Frame(win)
+        folder_bar.pack(fill="x", padx=10, pady=(5, 0))
+
+        self._pm_folder_buttons = {}
+        for folder_key, folder_label in PM_FOLDERS.items():
+            btn = tk.Button(
+                folder_bar, text=folder_label,
+                command=lambda f=folder_key: self._pm_switch_folder(f),
+                relief="sunken" if folder_key == self._pm_current_folder else "raised",
+                width=14
+            )
+            btn.pack(side="left", padx=2)
+            self._pm_folder_buttons[folder_key] = btn
 
         # Top bar
         top_bar = tk.Frame(win)
         top_bar.pack(fill="x", padx=10, pady=5)
 
-        tk.Label(top_bar, text="Inbox", font=("Segoe UI", 12, "bold")).pack(side="left")
         self._pm_status_label = tk.Label(top_bar, text="", fg="gray")
-        self._pm_status_label.pack(side="left", padx=15)
+        self._pm_status_label.pack(side="left", padx=(0, 15))
         tk.Button(top_bar, text="Refresh", command=self._pm_refresh_inbox).pack(side="right")
 
         # Message list
@@ -2092,12 +2164,47 @@ class QBitAdderApp:
 
         btn_frame = tk.Frame(preview_frame)
         btn_frame.pack(fill="x")
-        tk.Button(btn_frame, text="Reply", command=self._pm_open_reply_dialog).pack(side="left")
+        self._pm_reply_btn = tk.Button(btn_frame, text="Reply", command=self._pm_open_reply_dialog)
+        self._pm_reply_btn.pack(side="left")
         tk.Button(btn_frame, text="Open in Browser",
                   command=self._pm_open_in_browser).pack(side="left", padx=10)
         tk.Button(btn_frame, text="Delete", fg="#d20903",
                   command=self._pm_delete_selected).pack(side="right")
 
+        self._pm_refresh_inbox()
+
+    def _pm_switch_folder(self, folder):
+        """Switch to a different PM folder and refresh."""
+        self._pm_current_folder = folder
+
+        # Update button visual state
+        for key, btn in self._pm_folder_buttons.items():
+            btn.config(relief="sunken" if key == folder else "raised")
+
+        # Update window title
+        self._pm_window.title(f"Private Messages - {PM_FOLDERS.get(folder, folder)}")
+
+        # Update column header: "From" for inbox/savebox, "To" for sentbox/outbox
+        if folder in ("sentbox", "outbox"):
+            self._pm_tree.heading("sender", text="To")
+        else:
+            self._pm_tree.heading("sender", text="From")
+
+        # Enable/disable Reply button based on folder
+        if folder in ("sentbox", "outbox"):
+            self._pm_reply_btn.config(state="disabled")
+        else:
+            self._pm_reply_btn.config(state="normal")
+
+        # Clear preview pane
+        self._pm_current_message = None
+        self._pm_preview_subject.config(text="")
+        self._pm_preview_meta.config(text="")
+        self._pm_preview_body.config(state="normal")
+        self._pm_preview_body.delete("1.0", tk.END)
+        self._pm_preview_body.config(state="disabled")
+
+        # Refresh message list for this folder
         self._pm_refresh_inbox()
 
     def _pm_on_message_select(self, event=None):
@@ -2114,8 +2221,9 @@ class QBitAdderApp:
             "date": str(vals[3]),
         }
 
+        label_prefix = "To" if self._pm_current_folder in ("sentbox", "outbox") else "From"
         self._pm_preview_subject.config(text="Loading...")
-        self._pm_preview_meta.config(text=f"From: {inbox_meta['sender']}  |  Date: {inbox_meta['date']}")
+        self._pm_preview_meta.config(text=f"{label_prefix}: {inbox_meta['sender']}  |  Date: {inbox_meta['date']}")
         self._pm_preview_body.config(state="normal")
         self._pm_preview_body.delete("1.0", tk.END)
         self._pm_preview_body.config(state="disabled")
@@ -2123,12 +2231,13 @@ class QBitAdderApp:
 
     def _pm_load_message(self, msg_id, inbox_meta):
         """Background: fetch single message body. Uses inbox_meta for subject/sender/date."""
+        folder = self._pm_current_folder
         try:
-            msg = self.pm_scraper.fetch_message(msg_id)
+            msg = self.pm_scraper.fetch_message(msg_id, folder=folder)
             if msg is None:
                 user, pwd = self._get_rutracker_creds()
                 if user and pwd and self.cat_manager.login(user, pwd):
-                    msg = self.pm_scraper.fetch_message(msg_id)
+                    msg = self.pm_scraper.fetch_message(msg_id, folder=folder)
 
             if msg:
                 # Use reliable metadata from inbox list, only body + form_token from the read page
@@ -2136,11 +2245,12 @@ class QBitAdderApp:
                 msg["sender"] = inbox_meta["sender"]
                 msg["date"] = inbox_meta["date"]
                 self._pm_current_message = msg
+                label_prefix = "To" if folder in ("sentbox", "outbox") else "From"
                 def _update():
                     try:
                         self._pm_preview_subject.config(text=msg["subject"])
                         self._pm_preview_meta.config(
-                            text=f"From: {msg['sender']}  |  Date: {msg['date']}")
+                            text=f"{label_prefix}: {msg['sender']}  |  Date: {msg['date']}")
                         self._pm_preview_body.config(state="normal")
                         self._pm_preview_body.delete("1.0", tk.END)
                         self._pm_preview_body.insert("1.0", msg["body_text"])
@@ -2154,23 +2264,24 @@ class QBitAdderApp:
             self.root.after(0, lambda: self._pm_preview_subject.config(text=f"Error: {e}"))
 
     def _pm_refresh_inbox(self):
-        """Refresh inbox message list."""
+        """Refresh message list for the current folder."""
         self._pm_status_label.config(text="Loading...", fg="blue")
-        threading.Thread(target=self._pm_refresh_inbox_thread, daemon=True).start()
+        folder = self._pm_current_folder
+        threading.Thread(target=self._pm_refresh_inbox_thread, args=(folder,), daemon=True).start()
 
-    def _pm_refresh_inbox_thread(self):
-        """Background: refresh inbox list."""
+    def _pm_refresh_inbox_thread(self, folder="inbox"):
+        """Background: refresh message list for the given folder."""
         try:
             if 'bb_session' not in self.cat_manager.session.cookies.get_dict():
                 user, pwd = self._get_rutracker_creds()
                 if user and pwd:
                     self.cat_manager.login(user, pwd)
 
-            messages = self.pm_scraper.fetch_inbox()
+            messages = self.pm_scraper.fetch_inbox(folder=folder)
             if messages is None:
                 user, pwd = self._get_rutracker_creds()
                 if user and pwd and self.cat_manager.login(user, pwd):
-                    messages = self.pm_scraper.fetch_inbox()
+                    messages = self.pm_scraper.fetch_inbox(folder=folder)
 
             if messages is None:
                 self.root.after(0, lambda: self._pm_status_label.config(
@@ -2181,6 +2292,9 @@ class QBitAdderApp:
             keeper_names = self.db_manager.get_all_keeper_usernames()
 
             def _update():
+                # Discard stale data if user switched folders while loading
+                if self._pm_current_folder != folder:
+                    return
                 try:
                     for item in self._pm_tree.get_children():
                         self._pm_tree.delete(item)
@@ -2264,7 +2378,7 @@ class QBitAdderApp:
             def _do_send():
                 try:
                     success = self.pm_scraper.send_reply(
-                        msg["msg_id"], subject, body, msg.get("form_token", ""))
+                        msg["msg_id"], subject, body)
                     if success:
                         def _on_success():
                             reply_status.config(text="Sent!", fg="green")
@@ -2288,8 +2402,9 @@ class QBitAdderApp:
     def _pm_open_in_browser(self):
         """Open current message in browser."""
         if self._pm_current_message:
+            folder = self._pm_current_folder
             msg_id = self._pm_current_message["msg_id"]
-            webbrowser.open(f"https://rutracker.org/forum/privmsg.php?folder=inbox&mode=read&p={msg_id}")
+            webbrowser.open(f"https://rutracker.org/forum/privmsg.php?folder={folder}&mode=read&p={msg_id}")
 
     def _pm_delete_selected(self):
         """Delete selected message(s) from inbox."""
@@ -2318,7 +2433,7 @@ class QBitAdderApp:
 
         def _do_delete():
             try:
-                deleted = self.pm_scraper.delete_messages(msg_ids)
+                deleted = self.pm_scraper.delete_messages(msg_ids, folder=self._pm_current_folder)
                 if deleted:
                     def _after():
                         # Remove deleted rows from tree

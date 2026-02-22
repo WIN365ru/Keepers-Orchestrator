@@ -92,7 +92,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.17.2"
+APP_VERSION = "0.17.3-beta1"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Simple Bencode Decoder ---
@@ -5456,8 +5456,10 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.updater_tree.tag_configure("deleted", foreground="red")
         self.updater_tree.tag_configure("unknown", foreground="gray")
 
-        # Double-click to open topic on Rutracker
+        # Double-click to open original topic; right-click menu for new topic
         self.updater_tree.bind("<Double-1>", self._updater_open_topic)
+        self._updater_tree_menu = tk.Menu(self.updater_tree, tearoff=0)
+        self.updater_tree.bind("<Button-3>", self._updater_tree_right_click)
 
         self.updater_summary_label = tk.Label(results_frame, text="Switch to this tab to scan.", fg="gray")
         self.updater_summary_label.pack(anchor="w", pady=(5, 0))
@@ -5467,7 +5469,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         action_frame.pack(fill="x", padx=10, pady=5)
 
         self.updater_readd_keep_btn = tk.Button(
-            action_frame, text="Re-add (Keep Files)",
+            action_frame, text="Update (Keep Files)",
             command=lambda: self.updater_perform_action("readd_keep"), state="disabled")
         self.updater_readd_keep_btn.pack(side="left", padx=3, fill="x", expand=True)
 
@@ -5477,7 +5479,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.updater_consumed_btn.pack(side="left", padx=3, fill="x", expand=True)
 
         self.updater_readd_redown_btn = tk.Button(
-            action_frame, text="Re-add (Re-download)",
+            action_frame, text="Update (Re-download)",
             command=lambda: self.updater_perform_action("readd_redownload"), state="disabled")
         self.updater_readd_redown_btn.pack(side="left", padx=3, fill="x", expand=True)
 
@@ -5517,7 +5519,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.root.after(0, _write)
 
     def _updater_open_topic(self, event):
-        """Open Rutracker topic page on double-click. Opens new topic for consumed entries."""
+        """Open original Rutracker topic page on double-click."""
         sel = self.updater_tree.selection()
         if not sel:
             return
@@ -5526,12 +5528,38 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         if not vals:
             return
         # vals: (name, status, reason, topic_id, new_topic)
-        new_topic = vals[4] if len(vals) > 4 else ""
         topic_id = vals[3] if len(vals) > 3 else ""
-        # Prefer new topic for consumed/updated entries
-        open_tid = new_topic if new_topic else topic_id
-        if open_tid and str(open_tid) != "N/A":
-            webbrowser.open(f"https://rutracker.org/forum/viewtopic.php?t={open_tid}")
+        if topic_id and str(topic_id) != "N/A":
+            webbrowser.open(f"https://rutracker.org/forum/viewtopic.php?t={topic_id}")
+
+    def _updater_tree_right_click(self, event):
+        """Right-click context menu on treeview row."""
+        row_id = self.updater_tree.identify_row(event.y)
+        if not row_id:
+            return
+        self.updater_tree.selection_set(row_id)
+        item = self.updater_tree.item(row_id)
+        vals = item.get("values", [])
+        if not vals:
+            return
+
+        menu = self._updater_tree_menu
+        menu.delete(0, "end")
+
+        topic_id = vals[3] if len(vals) > 3 else ""
+        new_topic = vals[4] if len(vals) > 4 else ""
+
+        if topic_id and str(topic_id) != "N/A":
+            menu.add_command(label=f"Open original topic (t/{topic_id})",
+                command=lambda t=topic_id: webbrowser.open(
+                    f"https://rutracker.org/forum/viewtopic.php?t={t}"))
+        if new_topic and str(new_topic).strip():
+            menu.add_command(label=f"Open new topic (t/{new_topic})",
+                command=lambda t=new_topic: webbrowser.open(
+                    f"https://rutracker.org/forum/viewtopic.php?t={t}"))
+
+        if menu.index("end") is not None:
+            menu.tk_popup(event.x_root, event.y_root)
 
     def _on_tab_changed(self, event):
         if self.is_initializing:
@@ -6588,14 +6616,21 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                                 f"https://rutracker.org/forum/viewtopic.php?t={tid}",
                                 timeout=15)
                             if page_resp.status_code == 200:
+                                if page_resp.encoding and page_resp.encoding.lower() == 'iso-8859-1':
+                                    page_resp.encoding = 'cp1251'
                                 text = page_resp.text
                                 if "поглощено" in text.lower():
-                                    # Extract new topic link from the page
+                                    # Find the post body that contains "поглощено"
+                                    # HTML: <a href="viewtopic.php?t=XXX" class="postLink">...</a>...поглощено
                                     new_tid = None
-                                    links = re.findall(r'viewtopic\.php\?t=(\d+)', text)
-                                    for link_tid in links:
-                                        if link_tid != str(tid):
-                                            new_tid = link_tid
+                                    posts = re.findall(
+                                        r'<div[^>]*class="[^"]*post_body[^"]*"[^>]*>(.*?)</div>',
+                                        text, re.DOTALL)
+                                    for post in posts:
+                                        if "поглощено" in post.lower():
+                                            m = re.search(r'viewtopic\.php\?t=(\d+)', post)
+                                            if m and m.group(1) != str(tid):
+                                                new_tid = m.group(1)
                                             break
                                     entry["topic_status"] = "Consumed"
                                     entry["reason"] = "∑ поглощено"

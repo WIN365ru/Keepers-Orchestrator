@@ -86,7 +86,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.6"
+APP_VERSION = "0.16.7-beta1"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1281,6 +1281,92 @@ class RutrackerPMScraper:
             self.log(f"PM send_reply error: {e}")
             return False
 
+    def send_new_message(self, recipient, subject, body):
+        """Send a new private message using two-step form flow.
+        Returns True on success."""
+        session = self.get_session()
+        try:
+            # Step 1: GET the compose page
+            resp = session.get(
+                "https://rutracker.org/forum/privmsg.php?mode=post",
+                timeout=15
+            )
+            self._fix_encoding(resp)
+
+            if self._is_login_page(resp.text):
+                self.log("New PM failed: session expired")
+                return False
+
+            # Step 2: Extract JS form_token and find the compose form
+            js_token = self._extract_js_form_token(resp.text)
+            forms = self._extract_forms(resp.text)
+
+            compose_form = None
+            for form in forms:
+                if re.search(r'<textarea[^>]*name="message"', form["raw"], re.IGNORECASE):
+                    compose_form = form
+                    break
+            if not compose_form:
+                for form in forms:
+                    if "privmsg" in form["action"]:
+                        compose_form = form
+                        break
+            if not compose_form:
+                self.log("New PM failed: compose form not found")
+                return False
+
+            # Step 3: Build POST data from hidden fields + user input
+            post_data = [(k, v) for k, v in compose_form["fields"]
+                         if k not in ("subject", "message", "username")]
+            post_data.append(("username", recipient.encode("windows-1251", errors="replace")))
+            post_data.append(("subject", subject.encode("windows-1251", errors="replace")))
+            post_data.append(("message", body.encode("windows-1251", errors="replace")))
+
+            # Add submit button
+            submit_added = False
+            for s_name, s_val in compose_form["submits"]:
+                if s_name == "post" or "тправить" in s_val or "send" in s_name.lower():
+                    post_data.append((s_name, s_val))
+                    submit_added = True
+                    break
+            if not submit_added:
+                post_data.append(("post", "Отправить"))
+
+            # Inject JS form_token
+            field_names = {k for k, v in post_data}
+            if js_token and "form_token" not in field_names:
+                post_data.append(("form_token", js_token))
+
+            # Step 4: POST the form
+            url = self._resolve_url(compose_form["action"])
+            resp2 = session.post(url, data=post_data, timeout=30)
+            self._fix_encoding(resp2)
+
+            if self._is_login_page(resp2.text):
+                self.log("New PM failed: session expired on submit")
+                return False
+
+            # Check for success
+            if re.search(r'(?:message.*sent|сообщение.*отправлено|privmsg\.php\?folder=sentbox)', resp2.text, re.IGNORECASE):
+                return True
+
+            # Try confirmation page if needed
+            resp3 = self._submit_confirm_page(resp2.text)
+            if resp3 and not self._is_login_page(resp3.text):
+                if re.search(r'(?:message.*sent|сообщение.*отправлено|privmsg\.php\?folder=sentbox)', resp3.text, re.IGNORECASE):
+                    return True
+
+            error_match = re.search(r'class="[^"]*gen[^"]*"[^>]*>(.*?error.*?)</td>', resp2.text, re.IGNORECASE | re.DOTALL)
+            if error_match:
+                self.log(f"New PM error: {html.unescape(re.sub(r'<[^>]+>', '', error_match.group(1))).strip()}")
+            else:
+                self.log("New PM may have failed (no success marker found)")
+
+            return False
+        except Exception as e:
+            self.log(f"PM send_new_message error: {e}")
+            return False
+
     def _extract_js_form_token(self, html_text):
         """Extract form_token from Rutracker's JavaScript (window.BB.form_token).
         Returns the token string or empty string if not found."""
@@ -2104,6 +2190,7 @@ class QBitAdderApp:
         self._pm_status_label = tk.Label(top_bar, text="", fg="gray")
         self._pm_status_label.pack(side="left", padx=(0, 15))
         tk.Button(top_bar, text="Refresh", command=self._pm_refresh_inbox).pack(side="right")
+        tk.Button(top_bar, text="New Message", command=self._pm_open_compose_dialog).pack(side="right", padx=(0, 5))
 
         # Message list
         list_frame = tk.Frame(win)
@@ -2392,6 +2479,85 @@ class QBitAdderApp:
                 except Exception as e:
                     def _on_error():
                         reply_status.config(text=f"Error: {e}", fg="red")
+                        send_btn.config(state="normal")
+                    self.root.after(0, _on_error)
+
+            threading.Thread(target=_do_send, daemon=True).start()
+
+        send_btn.config(command=_send)
+
+    def _pm_open_compose_dialog(self):
+        """Open new message composition dialog."""
+        compose_win = tk.Toplevel(self._pm_window)
+        compose_win.title("New Message")
+        compose_win.geometry("600x430")
+        compose_win.transient(self._pm_window)
+
+        # Recipient
+        to_frame = tk.Frame(compose_win)
+        to_frame.pack(fill="x", padx=10, pady=5)
+        tk.Label(to_frame, text="To:").pack(side="left")
+        to_entry = tk.Entry(to_frame, width=50)
+        to_entry.pack(side="left", padx=5, fill="x", expand=True)
+
+        # Subject
+        subj_frame = tk.Frame(compose_win)
+        subj_frame.pack(fill="x", padx=10)
+        tk.Label(subj_frame, text="Subject:").pack(side="left")
+        subj_entry = tk.Entry(subj_frame, width=50)
+        subj_entry.pack(side="left", padx=5, fill="x", expand=True)
+
+        # Message body
+        tk.Label(compose_win, text="Message:", anchor="w").pack(fill="x", padx=10, pady=(10, 0))
+        body_text = original_scrolled_text(compose_win, wrap="word", height=15, font=("Segoe UI", 10))
+        body_text.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # Buttons
+        btn_frame = tk.Frame(compose_win)
+        btn_frame.pack(fill="x", padx=10, pady=5)
+
+        send_btn = tk.Button(btn_frame, text="Send")
+        send_btn.pack(side="left")
+        tk.Button(btn_frame, text="Cancel", command=compose_win.destroy).pack(side="right")
+
+        compose_status = tk.Label(btn_frame, text="", fg="gray")
+        compose_status.pack(side="left", padx=15)
+
+        to_entry.focus_set()
+
+        def _send():
+            recipient = to_entry.get().strip()
+            subject = subj_entry.get().strip()
+            body = body_text.get("1.0", tk.END).strip()
+            if not recipient:
+                messagebox.showwarning("New Message", "Recipient username cannot be empty.")
+                return
+            if not subject:
+                messagebox.showwarning("New Message", "Subject cannot be empty.")
+                return
+            if not body:
+                messagebox.showwarning("New Message", "Message body cannot be empty.")
+                return
+
+            send_btn.config(state="disabled")
+            compose_status.config(text="Sending...", fg="blue")
+
+            def _do_send():
+                try:
+                    success = self.pm_scraper.send_new_message(recipient, subject, body)
+                    if success:
+                        def _on_success():
+                            compose_status.config(text="Sent!", fg="green")
+                            compose_win.after(1500, compose_win.destroy)
+                        self.root.after(0, _on_success)
+                    else:
+                        def _on_fail():
+                            compose_status.config(text="Send failed", fg="red")
+                            send_btn.config(state="normal")
+                        self.root.after(0, _on_fail)
+                except Exception as e:
+                    def _on_error():
+                        compose_status.config(text=f"Error: {e}", fg="red")
                         send_btn.config(state="normal")
                     self.root.after(0, _on_error)
 

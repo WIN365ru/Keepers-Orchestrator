@@ -89,7 +89,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.10"
+APP_VERSION = "0.16.11"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1778,7 +1778,7 @@ class QBitAdderApp:
         self.updater_qbit_session = None
         self.updater_selected_client = None
         self.updater_stop_event = threading.Event()
-        self.updater_only_errored = tk.BooleanVar(value=False)
+        self.updater_only_errored = tk.BooleanVar(value=True)
         self.create_updater_ui()
 
         # Remover tab state (New)
@@ -5321,6 +5321,9 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.updater_tree.tag_configure("deleted", foreground="red")
         self.updater_tree.tag_configure("unknown", foreground="gray")
 
+        # Double-click to open topic on Rutracker
+        self.updater_tree.bind("<Double-1>", self._updater_open_topic)
+
         self.updater_summary_label = tk.Label(results_frame, text="Switch to this tab to scan.", fg="gray")
         self.updater_summary_label.pack(anchor="w", pady=(5, 0))
 
@@ -5350,6 +5353,15 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.updater_log_area = scrolledtext.ScrolledText(log_frame, height=6, state="disabled")
         self.updater_log_area.pack(fill="both", expand=True)
 
+        # Right-click context menu for copy
+        updater_log_menu = tk.Menu(self.updater_log_area, tearoff=0)
+        updater_log_menu.add_command(label="Copy", accelerator="Ctrl+C",
+            command=lambda: self.updater_log_area.event_generate("<<Copy>>"))
+        updater_log_menu.add_command(label="Select All", accelerator="Ctrl+A",
+            command=lambda: (self.updater_log_area.tag_add("sel", "1.0", "end"),))
+        self.updater_log_area.bind("<Button-3>",
+            lambda e: updater_log_menu.tk_popup(e.x_root, e.y_root))
+
         self.update_updater_client_dropdown()
         self.update_repair_client_dropdown()
         self.update_mover_client_dropdown()
@@ -5363,6 +5375,16 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             self.updater_log_area.see(tk.END)
             self.updater_log_area.config(state="disabled")
         self.root.after(0, _write)
+
+    def _updater_open_topic(self, event):
+        """Open Rutracker topic page on double-click."""
+        sel = self.updater_tree.selection()
+        if not sel:
+            return
+        item = self.updater_tree.item(sel[0])
+        topic_id = item["values"][2] if item["values"] else None
+        if topic_id:
+            webbrowser.open(f"https://rutracker.org/forum/viewtopic.php?t={topic_id}")
 
     def _on_tab_changed(self, event):
         if self.is_initializing:
@@ -5418,7 +5440,8 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
 
     def _updater_set_action_buttons(self, state):
         self.updater_readd_keep_btn.config(state=state)
-        # Add other buttons if needed
+        self.updater_readd_redown_btn.config(state=state)
+        self.updater_skip_btn.config(state=state)
 
     # ===================================================================
     # SEARCH TAB

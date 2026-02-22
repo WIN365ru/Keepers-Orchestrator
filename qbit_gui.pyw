@@ -86,7 +86,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.4-beta4"
+APP_VERSION = "0.16.4-beta5"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1221,7 +1221,8 @@ class RutrackerPMScraper:
             return False
 
     def _extract_forms(self, html_text):
-        """Extract all <form> blocks with their action URLs and fields."""
+        """Extract all <form> blocks with their action URLs and fields.
+        fields = only hidden inputs. submits = submit buttons + <button> elements."""
         forms = []
         for form_match in re.finditer(r'<form\b([^>]*)>(.*?)</form>', html_text, re.DOTALL | re.IGNORECASE):
             attrs = form_match.group(1)
@@ -1237,23 +1238,50 @@ class RutrackerPMScraper:
             if m_match:
                 method = m_match.group(1).lower()
 
-            fields = []
-            # Hidden inputs
-            for inp in re.finditer(r'<input\b([^>]*)>', body, re.IGNORECASE):
-                tag = inp.group(1)
-                name_m = re.search(r'name="([^"]+)"', tag)
-                value_m = re.search(r'value="([^"]*)"', tag)
-                if name_m:
-                    fields.append((name_m.group(1), value_m.group(1) if value_m else ""))
-
-            # Submit buttons (include their name=value)
+            # Collect submit button names so we can exclude them from fields
+            submit_names = set()
             submits = []
+
+            # <input type="submit"> buttons
             for inp in re.finditer(r'<input\b([^>]*type="submit"[^>]*)>', body, re.IGNORECASE):
                 tag = inp.group(1)
                 name_m = re.search(r'name="([^"]+)"', tag)
                 value_m = re.search(r'value="([^"]*)"', tag)
                 if name_m:
                     submits.append((name_m.group(1), value_m.group(1) if value_m else ""))
+                    submit_names.add(name_m.group(1))
+
+            # <button> elements (type="submit" or no type)
+            for btn in re.finditer(r'<button\b([^>]*)>(.*?)</button>', body, re.DOTALL | re.IGNORECASE):
+                btn_attrs = btn.group(1)
+                btn_text = re.sub(r'<[^>]+>', '', btn.group(2)).strip()
+                btn_type = ""
+                type_m = re.search(r'type="([^"]*)"', btn_attrs, re.IGNORECASE)
+                if type_m:
+                    btn_type = type_m.group(1).lower()
+                # Buttons with no type or type="submit" are submit buttons
+                if btn_type in ("", "submit"):
+                    name_m = re.search(r'name="([^"]+)"', btn_attrs)
+                    value_m = re.search(r'value="([^"]*)"', btn_attrs)
+                    s_name = name_m.group(1) if name_m else btn_text
+                    s_val = value_m.group(1) if value_m else btn_text
+                    submits.append((s_name, s_val))
+                    if name_m:
+                        submit_names.add(name_m.group(1))
+
+            # Fields: only hidden inputs (exclude submit button names)
+            fields = []
+            for inp in re.finditer(r'<input\b([^>]*)>', body, re.IGNORECASE):
+                tag = inp.group(1)
+                # Skip submit/button type inputs
+                type_m = re.search(r'type="([^"]*)"', tag, re.IGNORECASE)
+                input_type = type_m.group(1).lower() if type_m else "text"
+                if input_type in ("submit", "button", "reset", "image"):
+                    continue
+                name_m = re.search(r'name="([^"]+)"', tag)
+                value_m = re.search(r'value="([^"]*)"', tag)
+                if name_m and name_m.group(1) not in submit_names:
+                    fields.append((name_m.group(1), value_m.group(1) if value_m else ""))
 
             forms.append({
                 "action": action,
@@ -1272,19 +1300,55 @@ class RutrackerPMScraper:
 
     def _submit_confirm_page(self, resp_text):
         """Find and submit the confirmation form ('Да' button) on a Rutracker confirm page.
+        Also handles bare <button> and <a> link confirmations.
         Returns the response or None."""
         session = self.get_session()
+
+        # Try 1: form-based confirmation
         forms = self._extract_forms(resp_text)
         for form in forms:
-            # The confirmation form has a submit with text "Да" or name "confirm"
             for s_name, s_val in form["submits"]:
-                if s_name == "confirm" or "Да" in s_val:
+                if s_name == "confirm" or "Да" in s_val or "Yes" in s_val:
                     post_data = list(form["fields"])
                     post_data.append((s_name, s_val))
                     url = self._resolve_url(form["action"])
+                    self.log(f"  Confirm: POST {url} data={post_data}")
                     resp = session.post(url, data=post_data, timeout=30)
                     self._fix_encoding(resp)
                     return resp
+
+        # Try 2: standalone <button> outside of detected forms (malformed HTML)
+        for btn in re.finditer(r'<button\b([^>]*)>(.*?)</button>', resp_text, re.DOTALL | re.IGNORECASE):
+            btn_text = re.sub(r'<[^>]+>', '', btn.group(2)).strip()
+            if btn_text in ("Да", "Yes", "Confirm"):
+                self.log(f"  Confirm: found standalone <button>{btn_text}</button>")
+                # Look for nearest form action or use default
+                # Extract hidden fields from surrounding HTML
+                post_data = []
+                for hidden in re.finditer(r'<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"', resp_text):
+                    post_data.append((hidden.group(1), hidden.group(2)))
+                name_m = re.search(r'name="([^"]+)"', btn.group(1))
+                if name_m:
+                    post_data.append((name_m.group(1), btn_text))
+                else:
+                    post_data.append(("confirm", btn_text))
+                self.log(f"  Confirm: POST with data={post_data}")
+                resp = session.post("https://rutracker.org/forum/privmsg.php", data=post_data, timeout=30)
+                self._fix_encoding(resp)
+                return resp
+
+        # Try 3: confirmation link <a href="...">Да</a>
+        link_match = re.search(r'<a\b[^>]*href="([^"]*)"[^>]*>\s*(?:Да|Yes|Confirm)\s*</a>', resp_text, re.IGNORECASE)
+        if link_match:
+            url = html.unescape(link_match.group(1))
+            if not url.startswith("http"):
+                url = "https://rutracker.org/forum/" + url.lstrip("./")
+            self.log(f"  Confirm: GET link {url}")
+            resp = session.get(url, timeout=15)
+            self._fix_encoding(resp)
+            return resp
+
+        self.log("  Confirm: no confirmation mechanism found")
         return None
 
     def delete_messages(self, msg_ids):

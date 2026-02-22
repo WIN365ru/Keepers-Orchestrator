@@ -5484,9 +5484,14 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.updater_readd_redown_btn.pack(side="left", padx=3, fill="x", expand=True)
 
         self.updater_skip_btn = tk.Button(
-            action_frame, text="Skip / Delete Entry",
-            command=lambda: self.updater_perform_action("skip_delete"), state="disabled", fg="red")
+            action_frame, text="Remove from qBit",
+            command=lambda: self.updater_perform_action("skip_delete"), state="disabled")
         self.updater_skip_btn.pack(side="left", padx=3, fill="x", expand=True)
+
+        self.updater_delete_btn = tk.Button(
+            action_frame, text="Delete with Files",
+            command=lambda: self.updater_perform_action("delete_files"), state="disabled", fg="red")
+        self.updater_delete_btn.pack(side="left", padx=3, fill="x", expand=True)
 
         # --- Updater Log ---
         log_frame = tk.LabelFrame(self.updater_tab, text="Update Log", padx=1, pady=1)
@@ -5618,6 +5623,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.updater_consumed_btn.config(state=state)
         self.updater_readd_redown_btn.config(state=state)
         self.updater_skip_btn.config(state=state)
+        self.updater_delete_btn.config(state=state)
 
     # ===================================================================
     # SEARCH TAB
@@ -6688,11 +6694,19 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                     "None of the selected entries have a new topic ID.\n"
                     "Only consumed (∑ поглощено) entries with a detected replacement can be updated.")
                 return
-            msg = (f"Update {len(with_new)} consumed torrent(s) with new topic?\n\n"
-                   "Old entries will be removed (files KEPT).\n"
-                   "New torrents from replacement topics will be added and rechecked.")
             selected_entries = with_new
             count = len(with_new)
+            keep_files = messagebox.askyesno("Keep old files?",
+                f"Update {count} consumed torrent(s) with new topic.\n\n"
+                "Keep old downloaded files?\n\n"
+                "Yes — keep files, recheck against new torrent\n"
+                "No — delete old files, re-download from new topic")
+            # Store choice for the action thread
+            for e in selected_entries:
+                e["_keep_files"] = keep_files
+            msg = (f"Confirm: update {count} consumed torrent(s).\n\n"
+                   f"Old files will be {'KEPT and rechecked' if keep_files else 'DELETED (re-download)'}.\n"
+                   "New torrents from replacement topics will be added.")
         elif action_type == "readd_keep":
             msg = (f"Re-add {count} torrent(s) from Rutracker?\n\n"
                    "Old entries will be removed.\n"
@@ -6702,8 +6716,13 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                    "Old entries AND files will be DELETED.\n"
                    "Torrents will re-download from scratch.")
         elif action_type == "skip_delete":
-            msg = (f"Delete {count} torrent entry/entries from qBittorrent?\n\n"
-                   "Downloaded files will be KEPT on disk.")
+            msg = (f"Remove {count} torrent(s) from qBittorrent?\n\n"
+                   "Downloaded files will be KEPT on disk.\n"
+                   "Only the torrent entry is removed.")
+        elif action_type == "delete_files":
+            msg = (f"DELETE {count} torrent(s) with all files?\n\n"
+                   "⚠ Downloaded files will be PERMANENTLY DELETED!\n"
+                   "This cannot be undone.")
         else:
             return
 
@@ -6751,10 +6770,12 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             category = entry.get("category", "")
 
             try:
-                if action_type == "skip_delete":
-                    self.updater_log(f"Deleting entry: {t_name[:60]}")
+                if action_type in ("skip_delete", "delete_files"):
+                    delete_files_flag = "true" if action_type == "delete_files" else "false"
+                    label = "Deleting with files" if action_type == "delete_files" else "Removing entry"
+                    self.updater_log(f"{label}: {t_name[:60]}")
                     resp = session.post(f"{url}/api/v2/torrents/delete",
-                        data={"hashes": t_hash, "deleteFiles": "false"}, timeout=15)
+                        data={"hashes": t_hash, "deleteFiles": delete_files_flag}, timeout=15)
                     if resp.status_code == 200:
                         success += 1
                         self.root.after(0, lambda h=t_hash: self._updater_remove_tree_row(h))
@@ -6789,20 +6810,22 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                         fail += 1
                         continue
 
-                    # Delete old torrent entry (keep files)
-                    self.updater_log(f"Removing old entry: {t_name[:60]} (keep files)")
+                    # Delete old torrent entry
+                    keep_files = entry.get("_keep_files", True)
+                    del_flag = "false" if keep_files else "true"
+                    self.updater_log(f"Removing old entry: {t_name[:60]} ({'keep files' if keep_files else 'delete files'})")
                     session.post(f"{url}/api/v2/torrents/delete",
-                        data={"hashes": t_hash, "deleteFiles": "false"}, timeout=15)
+                        data={"hashes": t_hash, "deleteFiles": del_flag}, timeout=15)
 
                     time.sleep(1)
 
-                    # Add new torrent from new topic (paused for recheck)
+                    # Add new torrent from new topic
                     self.updater_log(f"Adding torrent from new topic {new_tid}...")
                     files = {'torrents': (f'{new_tid}.torrent', torrent_content)}
                     add_data = {
                         'savepath': save_path,
                         'root_folder': 'true',
-                        'paused': 'true',
+                        'paused': 'true' if keep_files else 'false',
                     }
                     if category:
                         add_data['category'] = category
@@ -6813,25 +6836,26 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                     if resp.status_code == 200 and resp.text == "Ok.":
                         self.updater_log(f"  Added successfully -> {save_path}")
 
-                        # Trigger recheck + resume
-                        time.sleep(2)
-                        try:
-                            new_info = parse_torrent_info(torrent_content)
-                            new_name = new_info.get("name", "")
-                            list_resp = session.get(f"{url}/api/v2/torrents/info", timeout=15)
-                            if list_resp.status_code == 200:
-                                for t in list_resp.json():
-                                    if t.get("name") == new_name:
-                                        new_hash = t["hash"]
-                                        session.post(f"{url}/api/v2/torrents/recheck",
-                                            data={"hashes": new_hash}, timeout=15)
-                                        self.updater_log(f"  Recheck triggered.")
-                                        time.sleep(1)
-                                        session.post(f"{url}/api/v2/torrents/resume",
-                                            data={"hashes": new_hash}, timeout=15)
-                                        break
-                        except Exception as e:
-                            self.updater_log(f"  Recheck/resume skipped: {e}")
+                        # Trigger recheck + resume (only when keeping files)
+                        if keep_files:
+                            time.sleep(2)
+                            try:
+                                new_info = parse_torrent_info(torrent_content)
+                                new_name = new_info.get("name", "")
+                                list_resp = session.get(f"{url}/api/v2/torrents/info", timeout=15)
+                                if list_resp.status_code == 200:
+                                    for t in list_resp.json():
+                                        if t.get("name") == new_name:
+                                            new_hash = t["hash"]
+                                            session.post(f"{url}/api/v2/torrents/recheck",
+                                                data={"hashes": new_hash}, timeout=15)
+                                            self.updater_log(f"  Recheck triggered.")
+                                            time.sleep(1)
+                                            session.post(f"{url}/api/v2/torrents/resume",
+                                                data={"hashes": new_hash}, timeout=15)
+                                            break
+                            except Exception as e:
+                                self.updater_log(f"  Recheck/resume skipped: {e}")
 
                         success += 1
                         self.root.after(0, lambda h=t_hash: self._updater_remove_tree_row(h))

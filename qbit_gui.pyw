@@ -94,7 +94,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.18.0"
+APP_VERSION = "0.18.1"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -122,6 +122,18 @@ THEMES = {
         "tab_sel_bg": "#f0f0f0",
         "cb_select": "#ffffff",
         "insert": "#000000",
+        # Restore Night Mode remap outputs back to originals
+        "fg_remap": {
+            "#9898b0": "gray",
+            "#a8a8c0": "#333333",
+            "#a0a0b8": "#444444",
+            "#9090a8": "#666666",
+            "#8888a0": "#888888",
+            "#8585a0": "#999999",
+            "#6cacff": "blue",
+            "#60d060": "green",
+            "#50c878": "#006633",
+        },
     },
     "Steel Blue": {
         "bg": "#cfd8e3",
@@ -146,6 +158,18 @@ THEMES = {
         "tab_sel_bg": "#cfd8e3",
         "cb_select": "#dce3ed",
         "insert": "#1a2633",
+        # Restore Night Mode remap outputs back to originals
+        "fg_remap": {
+            "#9898b0": "gray",
+            "#a8a8c0": "#333333",
+            "#a0a0b8": "#444444",
+            "#9090a8": "#666666",
+            "#8888a0": "#888888",
+            "#8585a0": "#999999",
+            "#6cacff": "blue",
+            "#60d060": "green",
+            "#50c878": "#006633",
+        },
     },
     "Night Mode": {
         "bg": "#2b2b3d",
@@ -170,10 +194,31 @@ THEMES = {
         "tab_sel_bg": "#45456a",
         "cb_select": "#363649",
         "insert": "#d4d4e8",
+        # Remap dark fg colors that become invisible on dark bg
+        "fg_remap": {
+            "gray":    "#9898b0",
+            "#808080": "#9898b0",
+            "#333333": "#a8a8c0",
+            "#444444": "#a0a0b8",
+            "#555555": "#9898b0",
+            "#666666": "#9090a8",
+            "#888888": "#8888a0",
+            "#999999": "#8585a0",
+            "blue":    "#6cacff",
+            "#0000ff": "#6cacff",
+            "green":   "#60d060",
+            "#008000": "#60d060",
+            "#006633": "#50c878",
+            "#00b300": "#60d060",
+        },
     },
 }
-# fg values considered "default" and safe to override with theme fg
-_DEFAULT_FG = {"black", "systemwindowtext", "systembuttontext", "#000000", "#000"}
+# fg values considered "default" and safe to override with theme fg.
+# Includes each theme's main fg so switching between themes re-colors labels properly.
+_DEFAULT_FG = {
+    "black", "systemwindowtext", "systembuttontext", "#000000", "#000",
+    "#d4d4e8", "#1a2633",   # Night Mode fg, Steel Blue fg
+}
 
 # --- Simple Bencode Decoder ---
 def bdecode(data, idx=0):
@@ -3346,6 +3391,17 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 except (tk.TclError, ValueError):
                     pass
 
+    def _resolve_fg(self, current_fg, t):
+        """Decide what fg a widget should get.
+        Returns new fg string, or None to leave unchanged."""
+        fg = current_fg.lower()
+        if fg in _DEFAULT_FG:
+            return t["fg"]
+        remap = t.get("fg_remap")
+        if remap and fg in remap:
+            return remap[fg]
+        return None
+
     def _apply_theme_to_widget(self, widget, t):
         """Recursively apply theme colors to a widget tree."""
         cls = widget.winfo_class()
@@ -3356,16 +3412,16 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 widget.configure(bg=t["bg"], fg=t["lf_fg"])
             elif cls == "Label":
                 widget.configure(bg=t["bg"])
-                fg = str(widget.cget("fg")).lower()
-                if fg in _DEFAULT_FG:
-                    widget.configure(fg=t["fg"])
+                new_fg = self._resolve_fg(str(widget.cget("fg")), t)
+                if new_fg:
+                    widget.configure(fg=new_fg)
             elif cls == "Button":
-                fg = str(widget.cget("fg")).lower()
                 widget.configure(bg=t["btn_bg"],
                                 activebackground=t["select_bg"],
                                 activeforeground=t["select_fg"])
-                if fg in _DEFAULT_FG:
-                    widget.configure(fg=t["btn_fg"])
+                new_fg = self._resolve_fg(str(widget.cget("fg")), t)
+                if new_fg:
+                    widget.configure(fg=new_fg)
             elif cls == "Entry":
                 state = str(widget.cget("state"))
                 if state == "readonly":
@@ -3385,9 +3441,9 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             elif cls == "Checkbutton":
                 widget.configure(bg=t["bg"], activebackground=t["bg"],
                                 selectcolor=t["cb_select"])
-                fg = str(widget.cget("fg")).lower()
-                if fg in _DEFAULT_FG:
-                    widget.configure(fg=t["fg"])
+                new_fg = self._resolve_fg(str(widget.cget("fg")), t)
+                if new_fg:
+                    widget.configure(fg=new_fg)
             elif cls == "Scrollbar":
                 widget.configure(bg=t["btn_bg"], troughcolor=t["trough"])
         except tk.TclError:

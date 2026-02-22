@@ -2256,6 +2256,8 @@ class QBitAdderApp:
         self._pm_status_label = tk.Label(top_bar, text="", fg="gray")
         self._pm_status_label.pack(side="left", padx=(0, 15))
         tk.Button(top_bar, text="Refresh", command=self._pm_refresh_inbox).pack(side="right")
+        tk.Button(top_bar, text="Delete Read", fg="#d20903",
+                  command=self._pm_delete_all_read).pack(side="right", padx=(0, 5))
         tk.Button(top_bar, text="New Message", command=self._pm_open_compose_dialog).pack(side="right", padx=(0, 5))
 
         # Message list
@@ -2646,6 +2648,53 @@ class QBitAdderApp:
             folder = self._pm_current_folder
             msg_id = self._pm_current_message["msg_id"]
             webbrowser.open(f"https://rutracker.org/forum/privmsg.php?folder={folder}&mode=read&p={msg_id}")
+
+    def _pm_delete_all_read(self):
+        """Delete all read (non-unread) messages in the current folder."""
+        # Collect tree items with read tags
+        read_items = []
+        for item in self._pm_tree.get_children():
+            tags = self._pm_tree.item(item)["tags"]
+            if tags and tags[0] in ("read", "keeper_read"):
+                read_items.append(item)
+
+        if not read_items:
+            messagebox.showinfo("Delete Read", "No read messages to delete.")
+            return
+
+        msg_ids = [str(self._pm_tree.item(item)["values"][0]) for item in read_items]
+        count = len(read_items)
+
+        if not messagebox.askyesno("Confirm Delete",
+                f"Delete all {count} read message(s) in this folder?"):
+            return
+
+        self._pm_status_label.config(text=f"Deleting {count} read messages...", fg="blue")
+
+        def _do_delete():
+            try:
+                deleted = self.pm_scraper.delete_messages(msg_ids, folder=self._pm_current_folder)
+                def _after():
+                    if deleted:
+                        self._pm_status_label.config(
+                            text=f"Deleted {deleted}/{count} read message(s). Refreshing...", fg="green")
+                        # Clear preview if deleted message was being viewed
+                        if self._pm_current_message and self._pm_current_message["msg_id"] in msg_ids:
+                            self._pm_current_message = None
+                            self._pm_preview_subject.config(text="")
+                            self._pm_preview_meta.config(text="")
+                            self._pm_preview_body.config(state="normal")
+                            self._pm_preview_body.delete("1.0", tk.END)
+                            self._pm_preview_body.config(state="disabled")
+                        self._pm_refresh_inbox()
+                    else:
+                        self._pm_status_label.config(text="Delete failed", fg="red")
+                self.root.after(0, _after)
+            except Exception as e:
+                self.root.after(0, lambda: self._pm_status_label.config(
+                    text=f"Delete error: {e}", fg="red"))
+
+        threading.Thread(target=_do_delete, daemon=True).start()
 
     def _pm_save_selected(self):
         """Save selected message(s) to savebox."""

@@ -92,8 +92,8 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.17.0"
-GITHUB_REPO = "WIN365ru/qbit-adder-python"
+APP_VERSION = "0.17.1"
+GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Simple Bencode Decoder ---
 def bdecode(data, idx=0):

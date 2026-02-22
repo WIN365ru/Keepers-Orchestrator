@@ -86,7 +86,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.4"
+APP_VERSION = "0.16.5"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1321,8 +1321,6 @@ class RutrackerPMScraper:
 
         # Extract JS form_token from the confirmation page
         js_token = self._extract_js_form_token(resp_text)
-        if js_token:
-            self.log(f"  Confirm page: JS form_token = '{js_token[:16]}...'")
 
         # Try 1: form-based confirmation
         forms = self._extract_forms(resp_text)
@@ -1336,7 +1334,6 @@ class RutrackerPMScraper:
                     if js_token and "form_token" not in field_names:
                         post_data.append(("form_token", js_token))
                     url = self._resolve_url(form["action"])
-                    self.log(f"  Confirm: POST {url} data={post_data}")
                     resp = session.post(url, data=post_data, timeout=30)
                     self._fix_encoding(resp)
                     return resp
@@ -1345,9 +1342,6 @@ class RutrackerPMScraper:
         for btn in re.finditer(r'<button\b([^>]*)>(.*?)</button>', resp_text, re.DOTALL | re.IGNORECASE):
             btn_text = re.sub(r'<[^>]+>', '', btn.group(2)).strip()
             if btn_text in ("Да", "Yes", "Confirm"):
-                self.log(f"  Confirm: found standalone <button>{btn_text}</button>")
-                # Look for nearest form action or use default
-                # Extract hidden fields from surrounding HTML
                 post_data = []
                 for hidden in re.finditer(r'<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"', resp_text):
                     post_data.append((hidden.group(1), hidden.group(2)))
@@ -1360,7 +1354,6 @@ class RutrackerPMScraper:
                 field_names = {k for k, v in post_data}
                 if js_token and "form_token" not in field_names:
                     post_data.append(("form_token", js_token))
-                self.log(f"  Confirm: POST with data={post_data}")
                 resp = session.post("https://rutracker.org/forum/privmsg.php", data=post_data, timeout=30)
                 self._fix_encoding(resp)
                 return resp
@@ -1371,52 +1364,35 @@ class RutrackerPMScraper:
             url = html.unescape(link_match.group(1))
             if not url.startswith("http"):
                 url = "https://rutracker.org/forum/" + url.lstrip("./")
-            self.log(f"  Confirm: GET link {url}")
             resp = session.get(url, timeout=15)
             self._fix_encoding(resp)
             return resp
-
-        self.log("  Confirm: no confirmation mechanism found")
         return None
 
     def delete_messages(self, msg_ids):
         """Delete private messages one by one via the read page 'Удалить сообщение' button.
-        Saves debug HTML to pm_debug/ folder for troubleshooting.
         Returns number of successfully deleted."""
         session = self.get_session()
         deleted = 0
-        debug_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pm_debug")
-        os.makedirs(debug_dir, exist_ok=True)
 
         for mid in msg_ids:
             try:
                 # Step 1: GET the message read page
-                self.log(f"Delete [{mid}]: GET read page...")
                 resp = session.get(
                     f"https://rutracker.org/forum/privmsg.php?folder=inbox&mode=read&p={mid}",
                     timeout=15
                 )
                 self._fix_encoding(resp)
 
-                with open(os.path.join(debug_dir, f"{mid}_step1_read.html"), "w", encoding="utf-8") as f:
-                    f.write(resp.text)
-
                 if self._is_login_page(resp.text):
-                    self.log(f"Delete [{mid}]: session expired on read page")
+                    self.log(f"PM delete [{mid}]: session expired")
                     return deleted
 
                 # Extract JS form_token (CSRF) from page JavaScript
                 js_token = self._extract_js_form_token(resp.text)
-                self.log(f"Delete [{mid}]: JS form_token = '{js_token[:16]}...' " if js_token else f"Delete [{mid}]: no JS form_token found")
 
                 # Step 2: Find the form with "Удалить сообщение" submit button
                 forms = self._extract_forms(resp.text)
-                self.log(f"Delete [{mid}]: found {len(forms)} form(s) on read page")
-                for i, fm in enumerate(forms):
-                    self.log(f"  Form[{i}]: action='{fm['action']}' method='{fm['method']}' "
-                             f"fields={[(k, v[:40]) for k, v in fm['fields']]} "
-                             f"submits={fm['submits']}")
-
                 delete_submitted = False
                 for form in forms:
                     for s_name, s_val in form["submits"]:
@@ -1428,37 +1404,21 @@ class RutrackerPMScraper:
                             if js_token and "form_token" not in field_names:
                                 post_data.append(("form_token", js_token))
                             url = self._resolve_url(form["action"])
-                            self.log(f"Delete [{mid}]: POST {url} data={post_data}")
 
                             resp2 = session.post(url, data=post_data, timeout=30)
                             self._fix_encoding(resp2)
 
-                            with open(os.path.join(debug_dir, f"{mid}_step2_after_delete.html"), "w", encoding="utf-8") as f:
-                                f.write(resp2.text)
-
                             if self._is_login_page(resp2.text):
-                                self.log(f"Delete [{mid}]: session expired on delete POST")
+                                self.log(f"PM delete [{mid}]: session expired on confirm step")
                                 return deleted
 
                             # Step 3: Handle confirmation page
-                            confirm_forms = self._extract_forms(resp2.text)
-                            self.log(f"Delete [{mid}]: found {len(confirm_forms)} form(s) on step2 page")
-                            for ci, cf in enumerate(confirm_forms):
-                                self.log(f"  ConfirmForm[{ci}]: action='{cf['action']}' "
-                                         f"fields={[(k, v[:40]) for k, v in cf['fields']]} "
-                                         f"submits={cf['submits']}")
-
                             resp3 = self._submit_confirm_page(resp2.text)
-                            if resp3:
-                                with open(os.path.join(debug_dir, f"{mid}_step3_after_confirm.html"), "w", encoding="utf-8") as f:
-                                    f.write(resp3.text)
-                                if not self._is_login_page(resp3.text):
-                                    deleted += 1
-                                    self.log(f"Delete [{mid}]: confirmed OK.")
-                                else:
-                                    self.log(f"Delete [{mid}]: session expired on confirm")
+                            if resp3 and not self._is_login_page(resp3.text):
+                                deleted += 1
+                                self.log(f"PM deleted [{mid}] OK")
                             else:
-                                self.log(f"Delete [{mid}]: no confirm form found — check pm_debug/ HTML files")
+                                self.log(f"PM delete [{mid}]: confirmation failed")
 
                             delete_submitted = True
                             break
@@ -1466,7 +1426,7 @@ class RutrackerPMScraper:
                         break
 
                 if not delete_submitted:
-                    self.log(f"Delete [{mid}]: no delete button found in any form — check pm_debug/ HTML files")
+                    self.log(f"PM delete [{mid}]: no delete button found")
 
             except Exception as e:
                 self.log(f"PM delete error for {mid}: {e}")

@@ -93,7 +93,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.17.7"
+APP_VERSION = "0.17.8"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Simple Bencode Decoder ---
@@ -5478,18 +5478,20 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
 
         self.updater_tree = ttk.Treeview(
             tree_container,
-            columns=("name", "status", "reason", "topic_id", "new_topic"),
+            columns=("name", "path", "status", "reason", "topic_id", "new_topic"),
             show="headings",
             selectmode="extended"
         )
         self.updater_tree.heading("name", text="Torrent Name")
+        self.updater_tree.heading("path", text="Path")
         self.updater_tree.heading("status", text="Status")
         self.updater_tree.heading("reason", text="Reason")
         self.updater_tree.heading("topic_id", text="Topic ID")
         self.updater_tree.heading("new_topic", text="New Topic")
-        self.updater_tree.column("name", width=300, minwidth=150)
+        self.updater_tree.column("name", width=250, minwidth=150)
+        self.updater_tree.column("path", width=200, minwidth=80)
         self.updater_tree.column("status", width=80, anchor="center")
-        self.updater_tree.column("reason", width=130, anchor="center")
+        self.updater_tree.column("reason", width=120, anchor="center")
         self.updater_tree.column("topic_id", width=75, anchor="center")
         self.updater_tree.column("new_topic", width=75, anchor="center")
 
@@ -5583,8 +5585,8 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         vals = item.get("values", [])
         if not vals:
             return
-        # vals: (name, status, reason, topic_id, new_topic)
-        topic_id = vals[3] if len(vals) > 3 else ""
+        # vals: (name, path, status, reason, topic_id, new_topic)
+        topic_id = vals[4] if len(vals) > 4 else ""
         if topic_id and str(topic_id) != "N/A":
             webbrowser.open(f"https://rutracker.org/forum/viewtopic.php?t={topic_id}")
 
@@ -5602,8 +5604,9 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         menu = self._updater_tree_menu
         menu.delete(0, "end")
 
-        topic_id = vals[3] if len(vals) > 3 else ""
-        new_topic = vals[4] if len(vals) > 4 else ""
+        # vals: (name, path, status, reason, topic_id, new_topic)
+        topic_id = vals[4] if len(vals) > 4 else ""
+        new_topic = vals[5] if len(vals) > 5 else ""
 
         if topic_id and str(topic_id) != "N/A":
             menu.add_command(label=f"Open original topic (t/{topic_id})",
@@ -6355,9 +6358,10 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         reason = entry.get("reason", "")
         topic_id = entry.get("topic_id") or "N/A"
         new_topic = entry.get("new_topic_id") or ""
+        path = entry.get("save_path", "")
         iid = entry["hash"]
         self.updater_tree.insert("", "end", iid=iid,
-            values=(entry["name"], status, reason, topic_id, new_topic))
+            values=(entry["name"], path, status, reason, topic_id, new_topic))
         tag = {"Updated": "updated", "Consumed": "consumed",
                "Deleted": "deleted"}.get(status, "unknown")
         self.updater_tree.item(iid, tags=(tag,))

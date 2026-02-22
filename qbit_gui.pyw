@@ -17,6 +17,8 @@ import shutil
 import configparser
 import tempfile
 import concurrent.futures
+import subprocess
+import sys
 from requests.adapters import HTTPAdapter
 
 # --- Copyable ScrolledText Monkey-Patch ---
@@ -80,7 +82,8 @@ DEFAULT_CONFIG = {
     "torrent_cache_ttl_hours": 6,
     "pm_polling_enabled": True,
     "pm_poll_interval_sec": 300,
-    "pm_toast_enabled": False
+    "pm_toast_enabled": False,
+    "github_app_auto_update_enabled": False
 }
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
@@ -89,7 +92,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.11"
+APP_VERSION = "0.17.0"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1719,6 +1722,7 @@ class QBitAdderApp:
         self.stop_event = threading.Event()
         self.running_event = threading.Event()
         self.running_event.set()
+        self.github_update_lock = threading.Lock()
 
         # Bind Universal Copy behavior
         self.root.bind_class("Treeview", "<Control-c>", self._copy_treeview_selection)
@@ -3110,6 +3114,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 if "pm_polling_enabled" not in data: data["pm_polling_enabled"] = True
                 if "pm_poll_interval_sec" not in data: data["pm_poll_interval_sec"] = 300
                 if "pm_toast_enabled" not in data: data["pm_toast_enabled"] = False
+                if "github_app_auto_update_enabled" not in data: data["github_app_auto_update_enabled"] = False
 
                 return data
             except Exception as e:
@@ -3853,6 +3858,24 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.cats_progress = ttk.Progressbar(data_frame, mode='determinate', length=300, style="green.Horizontal.TProgressbar")
         self.cats_progress_label = tk.Label(data_frame, text="", fg="#333333", font=("Segoe UI", 9))
 
+        # App update preferences (separate from torrent updater tab settings)
+        app_update_frame = tk.LabelFrame(self.settings_scrollable_frame, text="App Updates (GitHub)", padx=10, pady=5)
+        app_update_frame.pack(fill="x", padx=10, pady=5)
+
+        self.github_app_auto_update_var = tk.BooleanVar(
+            value=self.config.get("github_app_auto_update_enabled", False)
+        )
+        tk.Checkbutton(
+            app_update_frame,
+            text="Enable app auto-update from GitHub releases",
+            variable=self.github_app_auto_update_var
+        ).pack(side="left")
+        tk.Button(
+            app_update_frame,
+            text="Save App Update Settings",
+            command=self.save_github_update_settings
+        ).pack(side="left", padx=10)
+
         # Version & Update
         v_frame = tk.Frame(self.settings_scrollable_frame)
         v_frame.pack(side="bottom", anchor="se", padx=10, pady=5)
@@ -3911,8 +3934,103 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         # Refresh stats on load
         self.root.after(1000, self.refresh_statistics)
 
+    @staticmethod
+    def _parse_version(v_str):
+        return [int(x) for x in re.findall(r"\d+", str(v_str))]
+
+    def _set_update_available_label(self, tag, html_url):
+        self.version_label.config(text=f"Update available: {tag}", fg="red", cursor="hand2")
+        if html_url:
+            self.version_label.bind("<Button-1>", lambda e: webbrowser.open(html_url))
+
+    def _download_latest_app_script(self, session, release_data):
+        assets = release_data.get("assets", []) or []
+        for asset in assets:
+            name = str(asset.get("name", "")).lower()
+            dl_url = asset.get("browser_download_url", "")
+            if not dl_url:
+                continue
+            if "qbit_gui" in name and (name.endswith(".pyw") or name.endswith(".py")):
+                resp = session.get(dl_url, timeout=30)
+                if resp.status_code == 200 and b"class QBitAdderApp" in resp.content:
+                    return resp.content, f"asset:{asset.get('name', '')}"
+
+        zip_url = release_data.get("zipball_url", "")
+        if zip_url:
+            try:
+                resp = session.get(zip_url, timeout=45)
+                if resp.status_code == 200:
+                    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                        for member in zf.namelist():
+                            low_member = member.lower()
+                            if low_member.endswith("/qbit_gui.pyw") or low_member.endswith("/qbit_gui.py"):
+                                payload = zf.read(member)
+                                if b"class QBitAdderApp" in payload:
+                                    return payload, f"zipball:{member}"
+            except Exception:
+                pass
+
+        tag = str(release_data.get("tag_name", "")).strip()
+        raw_candidates = []
+        if tag:
+            raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag}/qbit_gui.pyw")
+            raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag}/qbit_gui.py")
+        raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/qbit_gui.pyw")
+        raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/master/qbit_gui.pyw")
+
+        for raw_url in raw_candidates:
+            try:
+                resp = session.get(raw_url, timeout=20)
+                if resp.status_code == 200 and b"class QBitAdderApp" in resp.content:
+                    return resp.content, f"raw:{raw_url}"
+            except Exception:
+                continue
+
+        raise RuntimeError("Could not download qbit_gui.pyw from release assets, zipball, or raw source.")
+
+    def _apply_script_update(self, script_bytes):
+        if not script_bytes:
+            raise RuntimeError("Downloaded script is empty.")
+        script_path = os.path.abspath(__file__)
+        backup_path = script_path + ".bak"
+        tmp_path = script_path + ".new"
+
+        with open(script_path, "rb") as f:
+            current_bytes = f.read()
+        if current_bytes == script_bytes:
+            return False
+
+        try:
+            with open(tmp_path, "wb") as f:
+                f.write(script_bytes)
+            shutil.copy2(script_path, backup_path)
+            os.replace(tmp_path, script_path)
+            return True
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+
+    def _restart_application(self):
+        script_path = os.path.abspath(__file__)
+        try:
+            subprocess.Popen([sys.executable, script_path], cwd=os.path.dirname(script_path))
+            self.root.after(100, self.root.destroy)
+        except Exception as e:
+            messagebox.showerror("Restart Failed", f"Update was installed, but restart failed:\n{e}")
+
+    def _on_update_installed(self, tag):
+        self.version_label.config(text=f"Updated to {tag} (restart required)", fg="green", cursor="")
+        self.version_label.unbind("<Button-1>")
+        if messagebox.askyesno("Update Installed", f"Version {tag} was installed from GitHub.\n\nRestart now?"):
+            self._restart_application()
+
     def check_github_updates(self, silent=True):
         """Check GitHub for new releases. silent=False for manual check feedback."""
+        if not self.github_update_lock.acquire(blocking=False):
+            return
         try:
             session = requests.Session()
             proxies = self.get_requests_proxies()
@@ -3920,48 +4038,55 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 session.proxies.update(proxies)
 
             url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-            resp = session.get(url, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                tag = data.get("tag_name", "").strip().lower()
-                html_url = data.get("html_url", "")
-                
-                def parse_v(v_str):
-                    return [int(x) for x in re.sub(r'[^0-9.]', '', v_str).split('.') if x.isdigit()]
-
-                curr_v = parse_v(APP_VERSION)
-                new_v = parse_v(tag)
-                
-                if new_v > curr_v:
-                    # found update
-                    def _update_ui():
-                        self.version_label.pack_forget()
-                        # specific ID or just pack?
-                        # If we repack, we mess order. 
-                        # Better to just config the label or replace it IN PLACE?
-                        # Or just popup if manual?
-                        
-                        # If manual, popup
-                        if not silent:
-                            if messagebox.askyesno("Update Available", f"New version {tag} is available!\n\nOpen GitHub release page?"):
-                                webbrowser.open(html_url)
-                        
-                        # Always show button in UI if update found
-                        # We can change the version label text/color
-                        self.version_label.config(text=f"Update available: {tag}", fg="red", cursor="hand2")
-                        self.version_label.bind("<Button-1>", lambda e: webbrowser.open(html_url))
-                        
-                    self.root.after(0, _update_ui)
-                else:
-                    if not silent:
-                        self.root.after(0, lambda: messagebox.showinfo("No Updates", f"You are using the latest version ({APP_VERSION})."))
-            else:
+            resp = session.get(url, timeout=8)
+            if resp.status_code != 200:
                 if not silent:
-                    self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to check updates: HTTP {resp.status_code}"))
+                    self.root.after(0, lambda code=resp.status_code: messagebox.showerror("Error", f"Failed to check updates: HTTP {code}"))
+                return
+
+            data = resp.json()
+            tag = str(data.get("tag_name", "")).strip()
+            html_url = data.get("html_url", "")
+            if not tag:
+                return
+
+            curr_v = self._parse_version(APP_VERSION)
+            new_v = self._parse_version(tag)
+
+            if new_v > curr_v:
+                self.root.after(0, lambda t=tag, h=html_url: self._set_update_available_label(t, h))
+                auto_install = bool(self.config.get("github_app_auto_update_enabled", False))
+
+                if auto_install:
+                    try:
+                        script_bytes, source = self._download_latest_app_script(session, data)
+                        changed = self._apply_script_update(script_bytes)
+                        if changed:
+                            self.log(f"GitHub app auto-update installed: {tag} ({source})")
+                            self.root.after(0, lambda t=tag: self._on_update_installed(t))
+                        else:
+                            self.log(f"GitHub app auto-update skipped: local file already matches {tag}.")
+                    except Exception as install_err:
+                        self.log(f"GitHub app auto-update failed: {install_err}")
+                        if not silent:
+                            self.root.after(0, lambda e=install_err: messagebox.showerror("Update Error", f"Could not auto-install update:\n{e}"))
+                elif not silent:
+                    def _prompt_open():
+                        if messagebox.askyesno("Update Available", f"New version {tag} is available!\n\nOpen GitHub release page?"):
+                            if html_url:
+                                webbrowser.open(html_url)
+                    self.root.after(0, _prompt_open)
+            else:
+                self.root.after(0, lambda: self.version_label.config(text=f"version {APP_VERSION}", fg="gray", cursor=""))
+                self.root.after(0, lambda: self.version_label.unbind("<Button-1>"))
+                if not silent:
+                    self.root.after(0, lambda: messagebox.showinfo("No Updates", f"You are using the latest version ({APP_VERSION})."))
 
         except Exception as e:
             if not silent:
-                 self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to check updates: {e}"))
+                self.root.after(0, lambda err=e: messagebox.showerror("Error", f"Failed to check updates: {err}"))
+        finally:
+            self.github_update_lock.release()
             
     def update_client_dropdown(self):
         if hasattr(self, 'client_selector'):
@@ -4101,6 +4226,11 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             proxies = self.get_requests_proxies()
             if proxies:
                 self.cat_manager.session.proxies.update(proxies)
+
+    def save_github_update_settings(self):
+        self.config["github_app_auto_update_enabled"] = self.github_app_auto_update_var.get()
+        self.save_config()
+        messagebox.showinfo("Success", "GitHub app update settings saved.")
 
     def save_rt_settings(self):
         enabled = self.auto_update_var.get()

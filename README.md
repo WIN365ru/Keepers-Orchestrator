@@ -71,7 +71,7 @@ A powerful GUI tool to manage and automate torrent operations with qBittorrent a
 - **Category Cache**: Full forum tree cached locally with 3-month TTL, single API call refresh (<1 second).
 - **SQLite Database Caches**: Uses robust SQLite databases (`q_adder_data.db` and `q_adder_hashes.db`) for caching torrent metadata, file lists, and piece hashes for maximum performance during Deep Scans.
 - **Auto-Updates**:
-    - **App Updates**: Checks GitHub for new releases on startup.
+    - **App Updates**: Checks GitHub for new releases on startup and can auto-install updates directly from GitHub releases.
     - **List Updates**: Auto-refresh torrent lists.
 
 ## Requirements

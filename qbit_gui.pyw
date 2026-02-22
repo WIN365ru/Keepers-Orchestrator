@@ -86,7 +86,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.7-beta1"
+APP_VERSION = "0.16.7"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1231,20 +1231,17 @@ class RutrackerPMScraper:
                 return False
 
             # Step 3: Build POST data from hidden fields + user input
-            post_data = [(k, v) for k, v in compose_form["fields"]
-                         if k not in ("subject", "message")]
+            # Override submit_mode (JS sets it to 'submit' before form.submit())
+            post_data = []
+            for k, v in compose_form["fields"]:
+                if k in ("subject", "message"):
+                    continue
+                if k == "submit_mode":
+                    post_data.append(("submit_mode", "submit"))
+                else:
+                    post_data.append((k, v))
             post_data.append(("subject", subject.encode("windows-1251", errors="replace")))
             post_data.append(("message", body.encode("windows-1251", errors="replace")))
-
-            # Add submit button
-            submit_added = False
-            for s_name, s_val in compose_form["submits"]:
-                if s_name == "post" or "тправить" in s_val or "send" in s_name.lower():
-                    post_data.append((s_name, s_val))
-                    submit_added = True
-                    break
-            if not submit_added:
-                post_data.append(("post", "Отправить"))
 
             # Inject JS form_token
             field_names = {k for k, v in post_data}
@@ -1316,21 +1313,18 @@ class RutrackerPMScraper:
                 return False
 
             # Step 3: Build POST data from hidden fields + user input
-            post_data = [(k, v) for k, v in compose_form["fields"]
-                         if k not in ("subject", "message", "username")]
+            # Override submit_mode (JS sets it to 'submit' before form.submit())
+            post_data = []
+            for k, v in compose_form["fields"]:
+                if k in ("subject", "message", "username"):
+                    continue
+                if k == "submit_mode":
+                    post_data.append(("submit_mode", "submit"))
+                else:
+                    post_data.append((k, v))
             post_data.append(("username", recipient.encode("windows-1251", errors="replace")))
             post_data.append(("subject", subject.encode("windows-1251", errors="replace")))
             post_data.append(("message", body.encode("windows-1251", errors="replace")))
-
-            # Add submit button
-            submit_added = False
-            for s_name, s_val in compose_form["submits"]:
-                if s_name == "post" or "тправить" in s_val or "send" in s_name.lower():
-                    post_data.append((s_name, s_val))
-                    submit_added = True
-                    break
-            if not submit_added:
-                post_data.append(("post", "Отправить"))
 
             # Inject JS form_token
             field_names = {k for k, v in post_data}
@@ -1348,12 +1342,14 @@ class RutrackerPMScraper:
 
             # Check for success
             if re.search(r'(?:message.*sent|сообщение.*отправлено|privmsg\.php\?folder=sentbox)', resp2.text, re.IGNORECASE):
+                self.log(f"New PM to '{recipient}' sent OK")
                 return True
 
             # Try confirmation page if needed
             resp3 = self._submit_confirm_page(resp2.text)
             if resp3 and not self._is_login_page(resp3.text):
                 if re.search(r'(?:message.*sent|сообщение.*отправлено|privmsg\.php\?folder=sentbox)', resp3.text, re.IGNORECASE):
+                    self.log(f"New PM to '{recipient}' sent OK")
                     return True
 
             error_match = re.search(r'class="[^"]*gen[^"]*"[^>]*>(.*?error.*?)</td>', resp2.text, re.IGNORECASE | re.DOTALL)

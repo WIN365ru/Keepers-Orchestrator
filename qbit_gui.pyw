@@ -2238,7 +2238,7 @@ class QBitAdderApp:
         subj_entry.insert(0, subj_text)
 
         tk.Label(reply_win, text="Message:", anchor="w").pack(fill="x", padx=10, pady=(10, 0))
-        body_text = scrolledtext.ScrolledText(reply_win, wrap="word", height=15, font=("Segoe UI", 10))
+        body_text = original_scrolled_text(reply_win, wrap="word", height=15, font=("Segoe UI", 10))
         body_text.pack(fill="both", expand=True, padx=10, pady=5)
 
         btn_frame = tk.Frame(reply_win)

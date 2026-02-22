@@ -93,7 +93,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.17.6"
+APP_VERSION = "0.17.7"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Simple Bencode Decoder ---
@@ -8821,6 +8821,12 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.keepers_custom_cat_entry.pack(side="left", padx=5)
         self.keepers_custom_cat_entry.insert(0, "Keepers")
 
+        self.keepers_skip_zero_topics = tk.BooleanVar(value=True)
+        tk.Checkbutton(cat_frame, text="Skip 0 B topics", variable=self.keepers_skip_zero_topics).pack(side="left", padx=(15, 0))
+
+        self.keepers_skip_zero_cats = tk.BooleanVar(value=True)
+        tk.Checkbutton(cat_frame, text="Skip 0 B categories", variable=self.keepers_skip_zero_cats).pack(side="left", padx=(8, 0))
+
         tk.Label(top_frame, text="Max Seeds:").pack(side="left", padx=5)
         self.keepers_max_seeds = tk.IntVar(value=5)
         seeds_spin = tk.Spinbox(top_frame, from_=0, to=100, textvariable=self.keepers_max_seeds, width=5)
@@ -8859,6 +8865,15 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             command=self._keepers_add_preferred).pack(pady=1)
         tk.Button(pref_btn_frame, text="- Remove", width=10,
             command=self._keepers_remove_preferred).pack(pady=1)
+
+        id_row = tk.Frame(pref_btn_frame)
+        id_row.pack(pady=1, fill="x")
+        self.keepers_pref_id_entry = tk.Entry(id_row, width=7, font=("Segoe UI", 9))
+        self.keepers_pref_id_entry.pack(side="left")
+        self.keepers_pref_id_entry.bind('<Return>', self._keepers_add_preferred_by_id)
+        tk.Button(id_row, text="+", width=2,
+            command=self._keepers_add_preferred_by_id).pack(side="left", padx=(2, 0))
+
         self.keepers_scan_all_btn = tk.Button(pref_btn_frame, text="Scan All", width=10,
             command=self._keepers_start_scan_all, bg="#dddddd")
         self.keepers_scan_all_btn.pack(pady=(4, 1))
@@ -9085,6 +9100,34 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             self.save_config()
             self._keepers_refresh_preferred_list()
 
+    def _keepers_add_preferred_by_id(self, event=None):
+        """Add category to preferred list by typing its numeric ID."""
+        raw = self.keepers_pref_id_entry.get().strip()
+        if not raw:
+            return
+        try:
+            cat_id = int(raw)
+        except ValueError:
+            self.keepers_pref_id_entry.delete(0, tk.END)
+            return
+
+        # Look up name from category cache
+        cats = self.cat_manager.cache.get("categories", {})
+        cat_name = cats.get(str(cat_id), cats.get(cat_id, ""))
+        if not cat_name:
+            cat_name = f"Unknown ({cat_id})"
+
+        prefs = self.config.get("keepers_preferred_categories", [])
+        if any(c['id'] == cat_id for c in prefs):
+            self.keepers_pref_id_entry.delete(0, tk.END)
+            return  # Already in list
+
+        prefs.append({"id": cat_id, "name": cat_name})
+        self.config["keepers_preferred_categories"] = prefs
+        self.save_config()
+        self._keepers_refresh_preferred_list()
+        self.keepers_pref_id_entry.delete(0, tk.END)
+
     def _keepers_cat_right_click(self, event):
         """Right-click on category combobox to add to preferred."""
         cat_str = self.keepers_cat_combo.get()
@@ -9143,6 +9186,8 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         """Iterate through preferred categories and scan each one."""
         total = len(prefs)
         grand_total = 0
+        skipped = 0
+        skip_zero_cats = self.keepers_skip_zero_cats.get()
 
         for i, cat in enumerate(prefs):
             if self.keepers_stop_event.is_set():
@@ -9151,6 +9196,24 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
 
             cat_id = cat['id']
             cat_name = cat['name']
+
+            # Pre-check: skip 0 B categories using cached PVC data
+            if skip_zero_cats:
+                pvc_cache = self.db_manager.get_pvc_data(cat_id)
+                if pvc_cache:
+                    try:
+                        pvc_json = json.loads(pvc_cache[0])
+                        cat_total_size = 0
+                        for vals in pvc_json.values():
+                            if isinstance(vals, list) and len(vals) >= 10:
+                                cat_total_size += vals[3] if vals[3] else 0
+                        if cat_total_size <= 0:
+                            self.keepers_log(f"=== Skipping category {i+1}/{total}: {cat_name} ({cat_id}) — 0 B total size ===")
+                            skipped += 1
+                            continue
+                    except:
+                        pass  # Can't pre-check, scan normally
+
             self.keepers_log(f"=== Scanning category {i+1}/{total}: {cat_name} ({cat_id}) ===")
             self.root.after(0, lambda n=cat_name, idx=i+1, tot=total:
                 self.keepers_progress_label.config(
@@ -9159,13 +9222,21 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             # Run the existing scan thread logic (synchronously within this thread)
             self._keepers_scan_thread(cat_id, max_seeds, max_keepers, client_conf)
 
+            # After scan, check if PVC showed 0 B and skip was enabled
+            # (for categories with no prior cache, check after first fetch)
+            if skip_zero_cats and hasattr(self, 'keepers_pvc_data') and self.keepers_pvc_data:
+                cat_total = sum(d.get('size_bytes', 0) for d in self.keepers_pvc_data.values())
+                if cat_total <= 0:
+                    self.keepers_log(f"  Category has 0 B total size — no results to show.")
+
             # Count items in tree so far
             grand_total = len(self.keepers_tree.get_children())
 
             if i < total - 1 and not self.keepers_stop_event.is_set():
                 time.sleep(2)  # Pause between categories
 
-        self.keepers_log(f"=== Batch scan complete. {grand_total} total candidates across {total} categories. ===")
+        skip_msg = f" ({skipped} skipped as 0 B)" if skipped > 0 else ""
+        self.keepers_log(f"=== Batch scan complete. {grand_total} total candidates across {total} categories{skip_msg}. ===")
 
         self._keepers_batch_mode = False
         self.keepers_scan_active = False
@@ -9383,8 +9454,11 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             total_leechers = sum(d.get('leechers', 0) for d in self.keepers_pvc_data.values())
             avg_seeds = total_seeds / total_topics if total_topics > 0 else 0.0
 
-            # Filtered stats (seeds <= max_seeds, keepers <= max_keepers)
+            # Filtered stats (seeds <= max_seeds, keepers <= max_keepers, skip 0 B)
+            skip_zero = self.keepers_skip_zero_topics.get()
             def _pvc_matches(d):
+                if skip_zero and d.get('size_bytes', 0) <= 0:
+                    return False
                 if d.get('seeds', 0) > max_seeds:
                     return False
                 if max_keepers >= 0 and d.get('keepers_count', 0) > max_keepers:
@@ -9530,8 +9604,11 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                                 c['raw_size'] = pvc_size
                                 c['size_str'] = format_size(pvc_size)
 
-                    # Filter by seeds and keepers count AFTER enrichment
+                    # Filter by seeds, keepers count, and zero-size AFTER enrichment
+                    skip_zero = self.keepers_skip_zero_topics.get()
                     def _matches_filter(c):
+                        if skip_zero and c.get('raw_size', 0) <= 0:
+                            return False
                         if c['seeds'] > max_seeds:
                             return False
                         if max_keepers >= 0:
@@ -9547,6 +9624,8 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                     filter_desc = f"seeds <= {max_seeds}"
                     if max_keepers >= 0:
                         filter_desc += f", keepers <= {max_keepers}"
+                    if skip_zero:
+                        filter_desc += ", size > 0"
                     self.keepers_log(f"  {len(filtered)} match criteria ({filter_desc}).")
 
                     # 3. Add to Tree

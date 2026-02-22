@@ -84,7 +84,8 @@ DEFAULT_CONFIG = {
     "pm_poll_interval_sec": 300,
     "pm_toast_enabled": False,
     "github_app_auto_update_enabled": False,
-    "keepers_preferred_categories": []
+    "keepers_preferred_categories": [],
+    "theme": "Default"
 }
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
@@ -93,8 +94,86 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.17.8"
+APP_VERSION = "0.18.0"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
+
+# --- Theme Definitions ---
+THEMES = {
+    "Default": {
+        "bg": "#f0f0f0",
+        "fg": "#000000",
+        "entry_bg": "#ffffff",
+        "entry_fg": "#000000",
+        "select_bg": "#0078d7",
+        "select_fg": "#ffffff",
+        "tree_bg": "#ffffff",
+        "tree_fg": "#000000",
+        "tree_field_bg": "#ffffff",
+        "log_bg": "#ffffff",
+        "log_fg": "#000000",
+        "btn_bg": "#e1e1e1",
+        "btn_fg": "#000000",
+        "lf_fg": "#000000",
+        "trough": "#e0e0e0",
+        "menu_bg": "#f0f0f0",
+        "menu_fg": "#000000",
+        "tab_bg": "#e8e8e8",
+        "tab_fg": "#000000",
+        "tab_sel_bg": "#f0f0f0",
+        "cb_select": "#ffffff",
+        "insert": "#000000",
+    },
+    "Steel Blue": {
+        "bg": "#cfd8e3",
+        "fg": "#1a2633",
+        "entry_bg": "#e4eaf2",
+        "entry_fg": "#1a2633",
+        "select_bg": "#5a7fa3",
+        "select_fg": "#ffffff",
+        "tree_bg": "#dce3ed",
+        "tree_fg": "#1a2633",
+        "tree_field_bg": "#dce3ed",
+        "log_bg": "#d4dce8",
+        "log_fg": "#1a2633",
+        "btn_bg": "#adbfd2",
+        "btn_fg": "#1a2633",
+        "lf_fg": "#2c3e50",
+        "trough": "#9fb3c8",
+        "menu_bg": "#bfcbda",
+        "menu_fg": "#1a2633",
+        "tab_bg": "#b8c7d6",
+        "tab_fg": "#1a2633",
+        "tab_sel_bg": "#cfd8e3",
+        "cb_select": "#dce3ed",
+        "insert": "#1a2633",
+    },
+    "Night Mode": {
+        "bg": "#2b2b3d",
+        "fg": "#d4d4e8",
+        "entry_bg": "#363649",
+        "entry_fg": "#d4d4e8",
+        "select_bg": "#525270",
+        "select_fg": "#e8e8f0",
+        "tree_bg": "#32324a",
+        "tree_fg": "#d4d4e8",
+        "tree_field_bg": "#32324a",
+        "log_bg": "#252538",
+        "log_fg": "#b8b8d0",
+        "btn_bg": "#404058",
+        "btn_fg": "#d4d4e8",
+        "lf_fg": "#b0b0d0",
+        "trough": "#404058",
+        "menu_bg": "#363649",
+        "menu_fg": "#d4d4e8",
+        "tab_bg": "#363649",
+        "tab_fg": "#b0b0d0",
+        "tab_sel_bg": "#45456a",
+        "cb_select": "#363649",
+        "insert": "#d4d4e8",
+    },
+}
+# fg values considered "default" and safe to override with theme fg
+_DEFAULT_FG = {"black", "systemwindowtext", "systembuttontext", "#000000", "#000"}
 
 # --- Simple Bencode Decoder ---
 def bdecode(data, idx=0):
@@ -1940,6 +2019,9 @@ class QBitAdderApp:
         self.pm_indicator.pack(side="right", padx=2)
         self.pm_indicator.bind("<Button-1>", lambda e: self._pm_open_inbox_dialog())
 
+        # Apply saved theme (after all UI is built)
+        self.apply_theme()
+
         # Start Category Manager (Auto-fetch if needed)
         threading.Thread(target=self._initial_category_fetch, daemon=True).start()
 
@@ -3166,6 +3248,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 if "pm_toast_enabled" not in data: data["pm_toast_enabled"] = False
                 if "github_app_auto_update_enabled" not in data: data["github_app_auto_update_enabled"] = False
                 if "keepers_preferred_categories" not in data: data["keepers_preferred_categories"] = []
+                if "theme" not in data: data["theme"] = "Default"
 
                 return data
             except Exception as e:
@@ -3182,6 +3265,136 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         except Exception as e:
             self.log(f"Error saving config: {e}")
             messagebox.showerror("Error", f"Could not save config: {e}")
+
+    # --- Theme Engine ---
+    def apply_theme(self, theme_name=None):
+        """Apply a color theme to the entire application."""
+        if theme_name is None:
+            theme_name = self.config.get("theme", "Default")
+        if theme_name not in THEMES:
+            theme_name = "Default"
+        t = THEMES[theme_name]
+        self.config["theme"] = theme_name
+
+        # --- Configure ttk styles ---
+        style = ttk.Style()
+
+        style.configure("TNotebook", background=t["bg"])
+        style.configure("TNotebook.Tab", background=t["tab_bg"], foreground=t["tab_fg"], padding=[8, 4])
+        style.map("TNotebook.Tab",
+                  background=[("selected", t["tab_sel_bg"])],
+                  foreground=[("selected", t["fg"])])
+
+        style.configure("Treeview",
+                        background=t["tree_bg"], foreground=t["tree_fg"],
+                        fieldbackground=t["tree_field_bg"])
+        style.map("Treeview",
+                  background=[("selected", t["select_bg"])],
+                  foreground=[("selected", t["select_fg"])])
+        style.configure("Treeview.Heading",
+                        background=t["btn_bg"], foreground=t["fg"])
+
+        style.configure("PM.Treeview",
+                        background=t["tree_bg"], foreground=t["tree_fg"],
+                        fieldbackground=t["tree_field_bg"])
+        style.map("PM.Treeview",
+                  background=[("selected", "#fdae62")],
+                  foreground=[("selected", "black")])
+
+        style.configure("TScrollbar", background=t["btn_bg"], troughcolor=t["trough"])
+        style.configure("TCombobox",
+                        fieldbackground=t["entry_bg"],
+                        background=t["btn_bg"], foreground=t["entry_fg"])
+        style.configure("TCheckbutton", background=t["bg"], foreground=t["fg"])
+        style.configure("TLabel", background=t["bg"], foreground=t["fg"])
+        style.configure("TFrame", background=t["bg"])
+        style.configure("TLabelframe", background=t["bg"])
+        style.configure("TLabelframe.Label", background=t["bg"], foreground=t["lf_fg"])
+
+        # Progress bars - keep accent colors, update trough only
+        style.configure("green.Horizontal.TProgressbar", troughcolor=t["trough"])
+        style.configure("blue.Horizontal.TProgressbar", troughcolor=t["trough"])
+        style.configure("Horizontal.TProgressbar", troughcolor=t["trough"])
+
+        # --- Walk all tk widgets ---
+        self.root.configure(bg=t["bg"])
+        self._apply_theme_to_widget(self.root, t)
+
+        # --- Menu bar ---
+        try:
+            menu_name = self.root.cget("menu")
+            if menu_name:
+                menubar = self.root.nametowidget(menu_name)
+                self._apply_theme_to_menu(menubar, t)
+        except Exception:
+            pass
+
+    def _apply_theme_to_menu(self, menu, t):
+        """Recursively theme a Menu and its sub-menus."""
+        try:
+            menu.configure(bg=t["menu_bg"], fg=t["menu_fg"],
+                          activebackground=t["select_bg"], activeforeground=t["select_fg"])
+        except tk.TclError:
+            pass
+        # Theme sub-menus
+        last = menu.index("end")
+        if last is not None:
+            for i in range(last + 1):
+                try:
+                    submenu = menu.nametowidget(menu.entrycget(i, "menu"))
+                    self._apply_theme_to_menu(submenu, t)
+                except (tk.TclError, ValueError):
+                    pass
+
+    def _apply_theme_to_widget(self, widget, t):
+        """Recursively apply theme colors to a widget tree."""
+        cls = widget.winfo_class()
+        try:
+            if cls == "Frame":
+                widget.configure(bg=t["bg"])
+            elif cls == "Labelframe":
+                widget.configure(bg=t["bg"], fg=t["lf_fg"])
+            elif cls == "Label":
+                widget.configure(bg=t["bg"])
+                fg = str(widget.cget("fg")).lower()
+                if fg in _DEFAULT_FG:
+                    widget.configure(fg=t["fg"])
+            elif cls == "Button":
+                fg = str(widget.cget("fg")).lower()
+                widget.configure(bg=t["btn_bg"],
+                                activebackground=t["select_bg"],
+                                activeforeground=t["select_fg"])
+                if fg in _DEFAULT_FG:
+                    widget.configure(fg=t["btn_fg"])
+            elif cls == "Entry":
+                state = str(widget.cget("state"))
+                if state == "readonly":
+                    widget.configure(readonlybackground=t["entry_bg"], fg=t["entry_fg"])
+                else:
+                    widget.configure(bg=t["entry_bg"], fg=t["entry_fg"],
+                                    insertbackground=t["insert"])
+            elif cls == "Listbox":
+                widget.configure(bg=t["entry_bg"], fg=t["entry_fg"],
+                                selectbackground=t["select_bg"],
+                                selectforeground=t["select_fg"])
+            elif cls == "Text":
+                widget.configure(bg=t["log_bg"], fg=t["log_fg"],
+                                insertbackground=t["insert"])
+            elif cls == "Canvas":
+                widget.configure(bg=t["bg"])
+            elif cls == "Checkbutton":
+                widget.configure(bg=t["bg"], activebackground=t["bg"],
+                                selectcolor=t["cb_select"])
+                fg = str(widget.cget("fg")).lower()
+                if fg in _DEFAULT_FG:
+                    widget.configure(fg=t["fg"])
+            elif cls == "Scrollbar":
+                widget.configure(bg=t["btn_bg"], troughcolor=t["trough"])
+        except tk.TclError:
+            pass
+
+        for child in widget.winfo_children():
+            self._apply_theme_to_widget(child, t)
 
     # --- Remover Tab UI (New) ---
     def create_remover_ui(self):
@@ -3909,6 +4122,18 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.cats_progress = ttk.Progressbar(data_frame, mode='determinate', length=300, style="green.Horizontal.TProgressbar")
         self.cats_progress_label = tk.Label(data_frame, text="", fg="#333333", font=("Segoe UI", 9))
 
+        # Appearance / Theme
+        appear_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Appearance", padx=10, pady=5)
+        appear_frame.pack(fill="x", padx=10, pady=5)
+
+        tk.Label(appear_frame, text="Theme:").pack(side="left")
+        self.theme_var = tk.StringVar(value=self.config.get("theme", "Default"))
+        theme_combo = ttk.Combobox(appear_frame, textvariable=self.theme_var,
+                                   values=list(THEMES.keys()), state="readonly", width=15)
+        theme_combo.pack(side="left", padx=5)
+        theme_combo.bind("<<ComboboxSelected>>", self._on_theme_change)
+        tk.Label(appear_frame, text="(applied instantly)", fg="gray").pack(side="left", padx=5)
+
         # App update preferences (separate from torrent updater tab settings)
         app_update_frame = tk.LabelFrame(self.settings_scrollable_frame, text="App Updates (GitHub)", padx=10, pady=5)
         app_update_frame.pack(fill="x", padx=10, pady=5)
@@ -4277,6 +4502,12 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             proxies = self.get_requests_proxies()
             if proxies:
                 self.cat_manager.session.proxies.update(proxies)
+
+    def _on_theme_change(self, event=None):
+        """Handle theme combobox change — apply and save immediately."""
+        name = self.theme_var.get()
+        self.apply_theme(name)
+        self.save_config()
 
     def save_github_update_settings(self):
         self.config["github_app_auto_update_enabled"] = self.github_app_auto_update_var.get()

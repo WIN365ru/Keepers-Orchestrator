@@ -15,6 +15,7 @@ import webbrowser
 import hashlib
 import shutil
 import configparser
+import tempfile
 
 # --- Copyable ScrolledText Monkey-Patch ---
 # Tkinter prevents text selection when state="disabled".
@@ -86,7 +87,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.7"
+APP_VERSION = "0.16.8"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---

@@ -1573,6 +1573,75 @@ class RutrackerPMScraper:
         return deleted
 
 
+    def save_messages(self, msg_ids, folder="inbox"):
+        """Save private messages one by one via the read page 'Сохранить сообщение' button.
+        Moves messages to the savebox folder. Returns number of successfully saved."""
+        session = self.get_session()
+        saved = 0
+
+        for mid in msg_ids:
+            try:
+                # Step 1: GET the message read page
+                resp = session.get(
+                    f"https://rutracker.org/forum/privmsg.php?folder={folder}&mode=read&p={mid}",
+                    timeout=15
+                )
+                self._fix_encoding(resp)
+
+                if self._is_login_page(resp.text):
+                    self.log(f"PM save [{mid}]: session expired")
+                    return saved
+
+                # Extract JS form_token (CSRF) from page JavaScript
+                js_token = self._extract_js_form_token(resp.text)
+
+                # Step 2: Find the form with "Сохранить сообщение" submit button
+                forms = self._extract_forms(resp.text)
+                save_submitted = False
+                for form in forms:
+                    for s_name, s_val in form["submits"]:
+                        if "охранить" in s_val or "save" in s_name.lower():
+                            post_data = list(form["fields"])
+                            post_data.append((s_name, s_val))
+                            # Inject JS form_token
+                            field_names = {k for k, v in post_data}
+                            if js_token and "form_token" not in field_names:
+                                post_data.append(("form_token", js_token))
+                            url = self._resolve_url(form["action"])
+
+                            resp2 = session.post(url, data=post_data, timeout=30)
+                            self._fix_encoding(resp2)
+
+                            if self._is_login_page(resp2.text):
+                                self.log(f"PM save [{mid}]: session expired on confirm step")
+                                return saved
+
+                            # Step 3: Handle confirmation page
+                            resp3 = self._submit_confirm_page(resp2.text)
+                            if resp3 and not self._is_login_page(resp3.text):
+                                saved += 1
+                                self.log(f"PM saved [{mid}] OK")
+                            else:
+                                # Some save actions succeed without confirmation
+                                if re.search(r'(?:сохранен|saved|savebox)', resp2.text, re.IGNORECASE):
+                                    saved += 1
+                                    self.log(f"PM saved [{mid}] OK")
+                                else:
+                                    self.log(f"PM save [{mid}]: confirmation failed")
+
+                            save_submitted = True
+                            break
+                    if save_submitted:
+                        break
+
+                if not save_submitted:
+                    self.log(f"PM save [{mid}]: no save button found")
+
+            except Exception as e:
+                self.log(f"PM save error for {mid}: {e}")
+        return saved
+
+
 class ToolTip:
     def __init__(self, widget):
         self.widget = widget
@@ -2252,6 +2321,9 @@ class QBitAdderApp:
         self._pm_reply_btn.pack(side="left")
         tk.Button(btn_frame, text="Open in Browser",
                   command=self._pm_open_in_browser).pack(side="left", padx=10)
+        self._pm_save_btn = tk.Button(btn_frame, text="Save", fg="#006633",
+                  command=self._pm_save_selected)
+        self._pm_save_btn.pack(side="left", padx=10)
         tk.Button(btn_frame, text="Delete", fg="#d20903",
                   command=self._pm_delete_selected).pack(side="right")
 
@@ -2274,11 +2346,17 @@ class QBitAdderApp:
         else:
             self._pm_tree.heading("sender", text="From")
 
-        # Enable/disable Reply button based on folder
+        # Enable/disable buttons based on folder
         if folder in ("sentbox", "outbox"):
             self._pm_reply_btn.config(state="disabled")
         else:
             self._pm_reply_btn.config(state="normal")
+
+        # Save button: disabled when already in savebox
+        if folder == "savebox":
+            self._pm_save_btn.config(state="disabled")
+        else:
+            self._pm_save_btn.config(state="normal")
 
         # Clear preview pane
         self._pm_current_message = None
@@ -2568,6 +2646,48 @@ class QBitAdderApp:
             folder = self._pm_current_folder
             msg_id = self._pm_current_message["msg_id"]
             webbrowser.open(f"https://rutracker.org/forum/privmsg.php?folder={folder}&mode=read&p={msg_id}")
+
+    def _pm_save_selected(self):
+        """Save selected message(s) to savebox."""
+        sel = self._pm_tree.selection()
+        if not sel:
+            messagebox.showinfo("Save", "Select one or more messages first.")
+            return
+
+        count = len(sel)
+        msg_ids = [str(self._pm_tree.item(item)["values"][0]) for item in sel]
+        subjects = [str(self._pm_tree.item(item)["values"][1]) for item in sel]
+
+        if count == 1:
+            confirm_text = f"Save message \"{subjects[0]}\" to Saved folder?"
+        else:
+            preview = "\n".join(f"  - {s}" for s in subjects[:5])
+            if count > 5:
+                preview += f"\n  ... and {count - 5} more"
+            confirm_text = f"Save {count} messages to Saved folder?\n\n{preview}"
+
+        if not messagebox.askyesno("Confirm Save", confirm_text):
+            return
+
+        self._pm_status_label.config(text="Saving...", fg="blue")
+
+        def _do_save():
+            try:
+                saved = self.pm_scraper.save_messages(msg_ids, folder=self._pm_current_folder)
+                if saved:
+                    def _after():
+                        self._pm_status_label.config(
+                            text=f"Saved {saved} message(s). Refreshing...", fg="green")
+                        self._pm_refresh_inbox()
+                    self.root.after(0, _after)
+                else:
+                    self.root.after(0, lambda: self._pm_status_label.config(
+                        text="Save failed", fg="red"))
+            except Exception as e:
+                self.root.after(0, lambda: self._pm_status_label.config(
+                    text=f"Save error: {e}", fg="red"))
+
+        threading.Thread(target=_do_save, daemon=True).start()
 
     def _pm_delete_selected(self):
         """Delete selected message(s) from inbox."""

@@ -92,7 +92,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.17.1"
+APP_VERSION = "0.17.2"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Simple Bencode Decoder ---
@@ -5427,16 +5427,20 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
 
         self.updater_tree = ttk.Treeview(
             tree_container,
-            columns=("name", "status", "topic_id"),
+            columns=("name", "status", "reason", "topic_id", "new_topic"),
             show="headings",
             selectmode="extended"
         )
         self.updater_tree.heading("name", text="Torrent Name")
         self.updater_tree.heading("status", text="Status")
+        self.updater_tree.heading("reason", text="Reason")
         self.updater_tree.heading("topic_id", text="Topic ID")
-        self.updater_tree.column("name", width=350, minwidth=150)
+        self.updater_tree.heading("new_topic", text="New Topic")
+        self.updater_tree.column("name", width=300, minwidth=150)
         self.updater_tree.column("status", width=80, anchor="center")
-        self.updater_tree.column("topic_id", width=80, anchor="center")
+        self.updater_tree.column("reason", width=130, anchor="center")
+        self.updater_tree.column("topic_id", width=75, anchor="center")
+        self.updater_tree.column("new_topic", width=75, anchor="center")
 
         tree_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.updater_tree.yview)
         tree_scroll_x = ttk.Scrollbar(tree_container, orient="horizontal", command=self.updater_tree.xview)
@@ -5448,6 +5452,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
 
         # Tag colors
         self.updater_tree.tag_configure("updated", foreground="dark green")
+        self.updater_tree.tag_configure("consumed", foreground="dark orange")
         self.updater_tree.tag_configure("deleted", foreground="red")
         self.updater_tree.tag_configure("unknown", foreground="gray")
 
@@ -5465,6 +5470,11 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             action_frame, text="Re-add (Keep Files)",
             command=lambda: self.updater_perform_action("readd_keep"), state="disabled")
         self.updater_readd_keep_btn.pack(side="left", padx=3, fill="x", expand=True)
+
+        self.updater_consumed_btn = tk.Button(
+            action_frame, text="Update Consumed",
+            command=lambda: self.updater_perform_action("update_consumed"), state="disabled", fg="dark orange")
+        self.updater_consumed_btn.pack(side="left", padx=3, fill="x", expand=True)
 
         self.updater_readd_redown_btn = tk.Button(
             action_frame, text="Re-add (Re-download)",
@@ -5507,14 +5517,21 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.root.after(0, _write)
 
     def _updater_open_topic(self, event):
-        """Open Rutracker topic page on double-click."""
+        """Open Rutracker topic page on double-click. Opens new topic for consumed entries."""
         sel = self.updater_tree.selection()
         if not sel:
             return
         item = self.updater_tree.item(sel[0])
-        topic_id = item["values"][2] if item["values"] else None
-        if topic_id:
-            webbrowser.open(f"https://rutracker.org/forum/viewtopic.php?t={topic_id}")
+        vals = item.get("values", [])
+        if not vals:
+            return
+        # vals: (name, status, reason, topic_id, new_topic)
+        new_topic = vals[4] if len(vals) > 4 else ""
+        topic_id = vals[3] if len(vals) > 3 else ""
+        # Prefer new topic for consumed/updated entries
+        open_tid = new_topic if new_topic else topic_id
+        if open_tid and str(open_tid) != "N/A":
+            webbrowser.open(f"https://rutracker.org/forum/viewtopic.php?t={open_tid}")
 
     def _on_tab_changed(self, event):
         if self.is_initializing:
@@ -5570,6 +5587,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
 
     def _updater_set_action_buttons(self, state):
         self.updater_readd_keep_btn.config(state=state)
+        self.updater_consumed_btn.config(state=state)
         self.updater_readd_redown_btn.config(state=state)
         self.updater_skip_btn.config(state=state)
 
@@ -6249,11 +6267,14 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
 
     def _updater_add_tree_row(self, entry):
         status = entry.get("topic_status", "Unknown")
+        reason = entry.get("reason", "")
         topic_id = entry.get("topic_id") or "N/A"
+        new_topic = entry.get("new_topic_id") or ""
         iid = entry["hash"]
         self.updater_tree.insert("", "end", iid=iid,
-            values=(entry["name"], status, topic_id))
-        tag = {"Updated": "updated", "Deleted": "deleted"}.get(status, "unknown")
+            values=(entry["name"], status, reason, topic_id, new_topic))
+        tag = {"Updated": "updated", "Consumed": "consumed",
+               "Deleted": "deleted"}.get(status, "unknown")
         self.updater_tree.item(iid, tags=(tag,))
 
     def _updater_remove_tree_row(self, t_hash):
@@ -6513,6 +6534,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
 
             # Determine status for each entry
             updated_count = 0
+            consumed_count = 0
             deleted_count = 0
             unknown_count = 0
 
@@ -6520,25 +6542,76 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 tid = entry.get("topic_id")
                 if not tid:
                     entry["topic_status"] = "No Topic ID"
+                    entry["reason"] = "No topic ID found"
                     unknown_count += 1
                 elif str(tid) in topic_data:
                     data = topic_data[str(tid)]
                     if data is None:
                         entry["topic_status"] = "Deleted"
+                        entry["reason"] = "Topic removed"
                         deleted_count += 1
                         continue
                     current_hash = data.get("info_hash", "").upper()
                     qbit_hash = entry["hash"].upper()
                     if current_hash != qbit_hash:
                         entry["topic_status"] = "Updated"
+                        entry["reason"] = "Hash changed"
                         entry["new_hash"] = current_hash
+                        entry["new_topic_id"] = str(tid)
                         updated_count += 1
                     else:
                         entry["topic_status"] = "Unknown"
+                        entry["reason"] = "Same hash"
                         unknown_count += 1
                 else:
                     entry["topic_status"] = "Deleted"
+                    entry["reason"] = "Topic removed"
                     deleted_count += 1
+
+            # Phase 3.5: Check "Deleted" topics for ∑ поглощено (consumed)
+            deleted_with_tid = [e for e in unregistered
+                                if e.get("topic_status") == "Deleted" and e.get("topic_id")]
+            if deleted_with_tid:
+                self.updater_log(f"Checking {len(deleted_with_tid)} deleted topics for ∑ поглощено...")
+                self._updater_update_progress(0, len(deleted_with_tid), "Checking consumed")
+
+                if not self._updater_ensure_rutracker_login():
+                    self.updater_log("  Skipping consumed check (not logged in).")
+                else:
+                    for ci, entry in enumerate(deleted_with_tid):
+                        if self.updater_stop_event.is_set():
+                            break
+                        self._updater_update_progress(ci + 1, len(deleted_with_tid), "Checking consumed")
+                        tid = entry["topic_id"]
+                        try:
+                            page_resp = self.cat_manager.session.get(
+                                f"https://rutracker.org/forum/viewtopic.php?t={tid}",
+                                timeout=15)
+                            if page_resp.status_code == 200:
+                                text = page_resp.text
+                                if "поглощено" in text.lower():
+                                    # Extract new topic link from the page
+                                    new_tid = None
+                                    links = re.findall(r'viewtopic\.php\?t=(\d+)', text)
+                                    for link_tid in links:
+                                        if link_tid != str(tid):
+                                            new_tid = link_tid
+                                            break
+                                    entry["topic_status"] = "Consumed"
+                                    entry["reason"] = "∑ поглощено"
+                                    if new_tid:
+                                        entry["new_topic_id"] = new_tid
+                                    deleted_count -= 1
+                                    consumed_count += 1
+                                    self.updater_log(f"  {entry['name'][:50]} → consumed"
+                                                     f"{' → t/' + new_tid if new_tid else ''}")
+                        except Exception as e:
+                            self.updater_log(f"  Error checking t/{tid}: {e}")
+
+            if self.updater_stop_event.is_set():
+                self.updater_log("Scan stopped by user.")
+                self._updater_scan_finished()
+                return
 
             # Phase 4: Populate treeview
             self.updater_scan_results = unregistered
@@ -6546,8 +6619,8 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 self.root.after(0, lambda e=entry: self._updater_add_tree_row(e))
 
             summary = (f"Found {len(unregistered)} unregistered: "
-                       f"{updated_count} updated, {deleted_count} deleted, "
-                       f"{unknown_count} unknown")
+                       f"{updated_count} updated, {consumed_count} consumed, "
+                       f"{deleted_count} deleted, {unknown_count} unknown")
             self.root.after(0, lambda s=summary: self.updater_summary_label.config(text=s, fg="black"))
             self.updater_log(summary)
 
@@ -6573,7 +6646,19 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
 
         count = len(selected_entries)
 
-        if action_type == "readd_keep":
+        if action_type == "update_consumed":
+            with_new = [e for e in selected_entries if e.get("new_topic_id")]
+            if not with_new:
+                messagebox.showwarning("No New Topic",
+                    "None of the selected entries have a new topic ID.\n"
+                    "Only consumed (∑ поглощено) entries with a detected replacement can be updated.")
+                return
+            msg = (f"Update {len(with_new)} consumed torrent(s) with new topic?\n\n"
+                   "Old entries will be removed (files KEPT).\n"
+                   "New torrents from replacement topics will be added and rechecked.")
+            selected_entries = with_new
+            count = len(with_new)
+        elif action_type == "readd_keep":
             msg = (f"Re-add {count} torrent(s) from Rutracker?\n\n"
                    "Old entries will be removed.\n"
                    "Downloaded files will be KEPT and rechecked.")
@@ -6641,6 +6726,83 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                     else:
                         fail += 1
                         self.updater_log(f"  Delete failed: HTTP {resp.status_code}")
+
+                elif action_type == "update_consumed":
+                    new_tid = entry.get("new_topic_id")
+                    if not new_tid:
+                        self.updater_log(f"Skipping {t_name[:60]}: no new topic ID")
+                        fail += 1
+                        continue
+
+                    # Download .torrent from the NEW topic
+                    self.updater_log(f"Downloading .torrent from new topic {new_tid}...")
+                    if not self._updater_ensure_rutracker_login():
+                        fail += 1
+                        continue
+
+                    dl_resp = self.cat_manager.session.get(
+                        f"https://rutracker.org/forum/dl.php?t={new_tid}", timeout=30)
+
+                    if dl_resp.status_code != 200 or len(dl_resp.content) < 100:
+                        self.updater_log(f"  Download failed: HTTP {dl_resp.status_code}")
+                        fail += 1
+                        continue
+
+                    torrent_content = dl_resp.content
+                    if not torrent_content.startswith(b'd'):
+                        self.updater_log(f"  Downloaded content is not a valid torrent")
+                        fail += 1
+                        continue
+
+                    # Delete old torrent entry (keep files)
+                    self.updater_log(f"Removing old entry: {t_name[:60]} (keep files)")
+                    session.post(f"{url}/api/v2/torrents/delete",
+                        data={"hashes": t_hash, "deleteFiles": "false"}, timeout=15)
+
+                    time.sleep(1)
+
+                    # Add new torrent from new topic (paused for recheck)
+                    self.updater_log(f"Adding torrent from new topic {new_tid}...")
+                    files = {'torrents': (f'{new_tid}.torrent', torrent_content)}
+                    add_data = {
+                        'savepath': save_path,
+                        'root_folder': 'true',
+                        'paused': 'true',
+                    }
+                    if category:
+                        add_data['category'] = category
+
+                    resp = session.post(f"{url}/api/v2/torrents/add",
+                        files=files, data=add_data, timeout=30)
+
+                    if resp.status_code == 200 and resp.text == "Ok.":
+                        self.updater_log(f"  Added successfully -> {save_path}")
+
+                        # Trigger recheck + resume
+                        time.sleep(2)
+                        try:
+                            new_info = parse_torrent_info(torrent_content)
+                            new_name = new_info.get("name", "")
+                            list_resp = session.get(f"{url}/api/v2/torrents/info", timeout=15)
+                            if list_resp.status_code == 200:
+                                for t in list_resp.json():
+                                    if t.get("name") == new_name:
+                                        new_hash = t["hash"]
+                                        session.post(f"{url}/api/v2/torrents/recheck",
+                                            data={"hashes": new_hash}, timeout=15)
+                                        self.updater_log(f"  Recheck triggered.")
+                                        time.sleep(1)
+                                        session.post(f"{url}/api/v2/torrents/resume",
+                                            data={"hashes": new_hash}, timeout=15)
+                                        break
+                        except Exception as e:
+                            self.updater_log(f"  Recheck/resume skipped: {e}")
+
+                        success += 1
+                        self.root.after(0, lambda h=t_hash: self._updater_remove_tree_row(h))
+                    else:
+                        fail += 1
+                        self.updater_log(f"  Add failed: {resp.text}")
 
                 elif action_type in ("readd_keep", "readd_redownload"):
                     if not topic_id:

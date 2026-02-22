@@ -86,7 +86,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.4-beta5"
+APP_VERSION = "0.16.4"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1172,11 +1172,15 @@ class RutrackerPMScraper:
             body_text = re.sub(r'<[^>]+>', '', body_text)
             result["body_text"] = html.unescape(body_text).strip() if body_text else "(Could not parse message body)"
 
-            # Form token for reply
+            # Form token for reply — try HTML hidden field first, then JS
             token_match = re.search(r'name="form_token"\s+value="([^"]+)"', resp.text)
             if not token_match:
                 token_match = re.search(r'name="sid"\s+value="([^"]+)"', resp.text)
-            result["form_token"] = token_match.group(1) if token_match else ""
+            if token_match:
+                result["form_token"] = token_match.group(1)
+            else:
+                # Fallback: extract from JavaScript (window.BB.form_token)
+                result["form_token"] = self._extract_js_form_token(resp.text)
 
             return result
         except Exception as e:
@@ -1195,7 +1199,7 @@ class RutrackerPMScraper:
                 "post": "Отправить",
             }
             if form_token:
-                data["sid"] = form_token
+                data["form_token"] = form_token
 
             resp = session.post(
                 "https://rutracker.org/forum/privmsg.php",
@@ -1219,6 +1223,16 @@ class RutrackerPMScraper:
         except Exception as e:
             self.log(f"PM send_reply error: {e}")
             return False
+
+    def _extract_js_form_token(self, html_text):
+        """Extract form_token from Rutracker's JavaScript (window.BB.form_token).
+        Returns the token string or empty string if not found."""
+        m = re.search(r"""form_token:\s*['"]([a-f0-9]+)['"]""", html_text)
+        if m:
+            return m.group(1)
+        # Fallback: try other patterns
+        m2 = re.search(r"""form_token\s*=\s*['"]([a-f0-9]+)['"]""", html_text)
+        return m2.group(1) if m2 else ""
 
     def _extract_forms(self, html_text):
         """Extract all <form> blocks with their action URLs and fields.
@@ -1301,8 +1315,14 @@ class RutrackerPMScraper:
     def _submit_confirm_page(self, resp_text):
         """Find and submit the confirmation form ('Да' button) on a Rutracker confirm page.
         Also handles bare <button> and <a> link confirmations.
+        Injects JS form_token (CSRF) if present on the page.
         Returns the response or None."""
         session = self.get_session()
+
+        # Extract JS form_token from the confirmation page
+        js_token = self._extract_js_form_token(resp_text)
+        if js_token:
+            self.log(f"  Confirm page: JS form_token = '{js_token[:16]}...'")
 
         # Try 1: form-based confirmation
         forms = self._extract_forms(resp_text)
@@ -1311,6 +1331,10 @@ class RutrackerPMScraper:
                 if s_name == "confirm" or "Да" in s_val or "Yes" in s_val:
                     post_data = list(form["fields"])
                     post_data.append((s_name, s_val))
+                    # Inject JS form_token if not already in form fields
+                    field_names = {k for k, v in post_data}
+                    if js_token and "form_token" not in field_names:
+                        post_data.append(("form_token", js_token))
                     url = self._resolve_url(form["action"])
                     self.log(f"  Confirm: POST {url} data={post_data}")
                     resp = session.post(url, data=post_data, timeout=30)
@@ -1332,6 +1356,10 @@ class RutrackerPMScraper:
                     post_data.append((name_m.group(1), btn_text))
                 else:
                     post_data.append(("confirm", btn_text))
+                # Inject JS form_token
+                field_names = {k for k, v in post_data}
+                if js_token and "form_token" not in field_names:
+                    post_data.append(("form_token", js_token))
                 self.log(f"  Confirm: POST with data={post_data}")
                 resp = session.post("https://rutracker.org/forum/privmsg.php", data=post_data, timeout=30)
                 self._fix_encoding(resp)
@@ -1377,6 +1405,10 @@ class RutrackerPMScraper:
                     self.log(f"Delete [{mid}]: session expired on read page")
                     return deleted
 
+                # Extract JS form_token (CSRF) from page JavaScript
+                js_token = self._extract_js_form_token(resp.text)
+                self.log(f"Delete [{mid}]: JS form_token = '{js_token[:16]}...' " if js_token else f"Delete [{mid}]: no JS form_token found")
+
                 # Step 2: Find the form with "Удалить сообщение" submit button
                 forms = self._extract_forms(resp.text)
                 self.log(f"Delete [{mid}]: found {len(forms)} form(s) on read page")
@@ -1391,6 +1423,10 @@ class RutrackerPMScraper:
                         if "далить" in s_val or "delete" in s_name.lower():
                             post_data = list(form["fields"])
                             post_data.append((s_name, s_val))
+                            # Inject JS form_token if not already present in form fields
+                            field_names = {k for k, v in post_data}
+                            if js_token and "form_token" not in field_names:
+                                post_data.append(("form_token", js_token))
                             url = self._resolve_url(form["action"])
                             self.log(f"Delete [{mid}]: POST {url} data={post_data}")
 

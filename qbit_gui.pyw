@@ -92,7 +92,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.17.3-beta1"
+APP_VERSION = "0.17.5"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Simple Bencode Decoder ---
@@ -331,6 +331,20 @@ class DatabaseManager:
                         username TEXT
                     )
                 """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS category_stats_cache (
+                        forum_id INTEGER PRIMARY KEY,
+                        timestamp REAL,
+                        total_topics INTEGER,
+                        total_size INTEGER,
+                        total_seeds INTEGER,
+                        total_leechers INTEGER,
+                        avg_seeds REAL,
+                        filtered_topics INTEGER,
+                        filtered_size INTEGER,
+                        filtered_seeds INTEGER
+                    )
+                """)
         except Exception as e:
             print(f"DB Init Error: {e}")
 
@@ -411,6 +425,41 @@ class DatabaseManager:
         except Exception as e:
             pass
         return f"Unknown ({user_id})"
+
+    def save_category_stats(self, forum_id, stats):
+        try:
+            with self._get_conn() as conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO category_stats_cache
+                    (forum_id, timestamp, total_topics, total_size, total_seeds, total_leechers, avg_seeds,
+                     filtered_topics, filtered_size, filtered_seeds)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (forum_id, time.time(),
+                      stats.get('total_topics', 0), stats.get('total_size', 0),
+                      stats.get('total_seeds', 0), stats.get('total_leechers', 0),
+                      stats.get('avg_seeds', 0.0),
+                      stats.get('filtered_topics', 0), stats.get('filtered_size', 0),
+                      stats.get('filtered_seeds', 0)))
+        except Exception as e:
+            print(f"Error saving category stats: {e}")
+
+    def get_category_stats(self, forum_id, max_age=21600):
+        try:
+            with self._get_conn() as conn:
+                row = conn.execute("""
+                    SELECT timestamp, total_topics, total_size, total_seeds, total_leechers, avg_seeds,
+                           filtered_topics, filtered_size, filtered_seeds
+                    FROM category_stats_cache WHERE forum_id = ?
+                """, (forum_id,)).fetchone()
+                if row and (time.time() - row[0]) < max_age:
+                    return {
+                        'timestamp': row[0], 'total_topics': row[1], 'total_size': row[2],
+                        'total_seeds': row[3], 'total_leechers': row[4], 'avg_seeds': row[5],
+                        'filtered_topics': row[6], 'filtered_size': row[7], 'filtered_seeds': row[8]
+                    }
+        except Exception as e:
+            print(f"Error loading category stats: {e}")
+        return None
 
     def get_all_keeper_usernames(self):
         """Return a set of all known keeper usernames (lowercase for case-insensitive matching)."""
@@ -8741,6 +8790,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             
         # Bind key release for filtering
         self.keepers_cat_combo.bind('<KeyRelease>', self._keepers_filter_cats)
+        self.keepers_cat_combo.bind('<<ComboboxSelected>>', self._keepers_on_cat_selected)
 
         # Client Selector
         tk.Label(top_frame, text="Client:").pack(side="left", padx=5)
@@ -8773,6 +8823,11 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         seeds_spin = tk.Spinbox(top_frame, from_=0, to=100, textvariable=self.keepers_max_seeds, width=5)
         seeds_spin.pack(side="left")
 
+        tk.Label(top_frame, text="Max Keepers:").pack(side="left", padx=5)
+        self.keepers_max_keepers = tk.IntVar(value=-1)
+        keepers_spin = tk.Spinbox(top_frame, from_=-1, to=100, textvariable=self.keepers_max_keepers, width=5)
+        keepers_spin.pack(side="left")
+
         self.keepers_scan_btn = tk.Button(top_frame, text="Scan", command=self.keepers_start_scan, bg="#dddddd")
         self.keepers_scan_btn.pack(side="left", padx=5)
 
@@ -8787,6 +8842,45 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.keepers_progress_label = tk.Label(self.keepers_prog_frame, text="",
             fg="#333333", font=("Segoe UI", 9))
         self.keepers_progress_label.pack(fill="x", padx=5, pady=(0, 2))
+
+        # --- Category Statistics Bar ---
+        self.keepers_stats_frame = tk.Frame(self.keepers_tab, relief="groove", bd=1)
+        self.keepers_stats_frame.pack(fill="x", padx=5, pady=(2, 0))
+
+        stats_inner = tk.Frame(self.keepers_stats_frame)
+        stats_inner.pack(fill="x", padx=8, pady=4)
+
+        self.keepers_stats_lbl_title = tk.Label(stats_inner, text="Category Stats:",
+            font=("Segoe UI", 9, "bold"), fg="#444444")
+        self.keepers_stats_lbl_title.pack(side="left")
+
+        self.keepers_stats_lbl_topics = tk.Label(stats_inner, text="Topics: --",
+            font=("Segoe UI", 9), fg="#555555")
+        self.keepers_stats_lbl_topics.pack(side="left", padx=(12, 0))
+
+        self.keepers_stats_lbl_size = tk.Label(stats_inner, text="Total Size: --",
+            font=("Segoe UI", 9), fg="#555555")
+        self.keepers_stats_lbl_size.pack(side="left", padx=(12, 0))
+
+        self.keepers_stats_lbl_seeds = tk.Label(stats_inner, text="Seeds: --",
+            font=("Segoe UI", 9), fg="#555555")
+        self.keepers_stats_lbl_seeds.pack(side="left", padx=(12, 0))
+
+        self.keepers_stats_lbl_avg = tk.Label(stats_inner, text="Avg Seeds: --",
+            font=("Segoe UI", 9), fg="#555555")
+        self.keepers_stats_lbl_avg.pack(side="left", padx=(12, 0))
+
+        self.keepers_stats_lbl_leechers = tk.Label(stats_inner, text="Leechers: --",
+            font=("Segoe UI", 9), fg="#555555")
+        self.keepers_stats_lbl_leechers.pack(side="left", padx=(12, 0))
+
+        self.keepers_stats_lbl_filtered = tk.Label(stats_inner, text="",
+            font=("Segoe UI", 9, "italic"), fg="#888888")
+        self.keepers_stats_lbl_filtered.pack(side="right")
+
+        self.keepers_stats_lbl_cached = tk.Label(stats_inner, text="",
+            font=("Segoe UI", 8), fg="#999999")
+        self.keepers_stats_lbl_cached.pack(side="right", padx=(0, 8))
 
         # Results Treeview
         tree_frame = tk.Frame(self.keepers_tab)
@@ -8863,6 +8957,63 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             filtered = [c for c in self.keepers_all_cats if typed in c.lower()]
             self.keepers_cat_combo['values'] = filtered
 
+    def _keepers_on_cat_selected(self, event=None):
+        """Load cached stats when a category is selected from dropdown."""
+        cat_str = self.keepers_cat_combo.get()
+        if not cat_str:
+            return
+        try:
+            cat_id = int(re.search(r'\((\d+)\)$', cat_str).group(1))
+        except:
+            return
+        cached = self.db_manager.get_category_stats(cat_id)
+        if cached:
+            self._keepers_update_stats_ui(cached, from_cache=True)
+        else:
+            self._keepers_reset_stats_ui()
+
+    def _keepers_update_stats_ui(self, stats, from_cache=False):
+        """Update stats bar labels from stats dict."""
+        def _update():
+            self.keepers_stats_lbl_topics.config(text=f"Topics: {stats.get('total_topics', 0):,}")
+            self.keepers_stats_lbl_size.config(text=f"Total Size: {format_size(stats.get('total_size', 0))}")
+            self.keepers_stats_lbl_seeds.config(text=f"Seeds: {stats.get('total_seeds', 0):,}")
+            avg = stats.get('avg_seeds', 0)
+            self.keepers_stats_lbl_avg.config(text=f"Avg Seeds: {avg:.1f}")
+            self.keepers_stats_lbl_leechers.config(text=f"Leechers: {stats.get('total_leechers', 0):,}")
+
+            ft = stats.get('filtered_topics', 0)
+            fs = stats.get('filtered_size', 0)
+            fseeds = stats.get('filtered_seeds', 0)
+            if ft > 0:
+                self.keepers_stats_lbl_filtered.config(
+                    text=f"Filtered: {ft:,} topics / {format_size(fs)} / {fseeds:,} seeds")
+            else:
+                self.keepers_stats_lbl_filtered.config(text="")
+
+            if from_cache:
+                ts = stats.get('timestamp', 0)
+                if ts > 0:
+                    age_min = int((time.time() - ts) / 60)
+                    self.keepers_stats_lbl_cached.config(text=f"(cached {age_min}m ago)")
+                else:
+                    self.keepers_stats_lbl_cached.config(text="(cached)")
+            else:
+                self.keepers_stats_lbl_cached.config(text="(live)")
+        self.root.after(0, _update)
+
+    def _keepers_reset_stats_ui(self):
+        """Reset stats bar to default state."""
+        def _reset():
+            self.keepers_stats_lbl_topics.config(text="Topics: --")
+            self.keepers_stats_lbl_size.config(text="Total Size: --")
+            self.keepers_stats_lbl_seeds.config(text="Seeds: --")
+            self.keepers_stats_lbl_avg.config(text="Avg Seeds: --")
+            self.keepers_stats_lbl_leechers.config(text="Leechers: --")
+            self.keepers_stats_lbl_filtered.config(text="")
+            self.keepers_stats_lbl_cached.config(text="")
+        self.root.after(0, _reset)
+
     def keepers_log(self, msg):
         def _log():
             try:
@@ -8889,7 +9040,12 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             max_seeds = self.keepers_max_seeds.get()
         except:
             max_seeds = 5
-            
+
+        try:
+            max_keepers = self.keepers_max_keepers.get()
+        except:
+            max_keepers = 0
+
         # Get selected client
         client_idx = self.keepers_client_combo.current()
         if client_idx < 0: client_idx = 0
@@ -8912,7 +9068,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.keepers_progress.start(15)
         self.keepers_progress_label.config(text="Scanning...")
 
-        t = threading.Thread(target=self._keepers_scan_thread, args=(cat_id, max_seeds, client_conf))
+        t = threading.Thread(target=self._keepers_scan_thread, args=(cat_id, max_seeds, max_keepers, client_conf))
         t.daemon = True
         t.start()
 
@@ -8980,7 +9136,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         return topics
 
 
-    def _keepers_scan_thread(self, cat_id, max_seeds, client_conf):
+    def _keepers_scan_thread(self, cat_id, max_seeds, max_keepers, client_conf):
         # 0. Fetch Client Data (in thread)
         client_data = {}
         try:
@@ -9053,7 +9209,41 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                         }
                 except:
                     pass
-                    
+
+        # 0.55 Compute & cache category statistics from PVC data
+        if self.keepers_pvc_data:
+            total_topics = len(self.keepers_pvc_data)
+            total_size = sum(d.get('size_bytes', 0) for d in self.keepers_pvc_data.values())
+            total_seeds = sum(d.get('seeds', 0) for d in self.keepers_pvc_data.values())
+            total_leechers = sum(d.get('leechers', 0) for d in self.keepers_pvc_data.values())
+            avg_seeds = total_seeds / total_topics if total_topics > 0 else 0.0
+
+            # Filtered stats (seeds <= max_seeds, keepers <= max_keepers)
+            def _pvc_matches(d):
+                if d.get('seeds', 0) > max_seeds:
+                    return False
+                if max_keepers >= 0 and d.get('keepers_count', 0) > max_keepers:
+                    return False
+                return True
+
+            filtered_items = [d for d in self.keepers_pvc_data.values() if _pvc_matches(d)]
+            filtered_topics = len(filtered_items)
+            filtered_size = sum(d.get('size_bytes', 0) for d in filtered_items)
+            filtered_seeds = sum(d.get('seeds', 0) for d in filtered_items)
+
+            cat_stats = {
+                'total_topics': total_topics, 'total_size': total_size,
+                'total_seeds': total_seeds, 'total_leechers': total_leechers,
+                'avg_seeds': avg_seeds,
+                'filtered_topics': filtered_topics, 'filtered_size': filtered_size,
+                'filtered_seeds': filtered_seeds
+            }
+            self.db_manager.save_category_stats(cat_id, cat_stats)
+            self._keepers_update_stats_ui(cat_stats, from_cache=False)
+            self.keepers_log(f"Category stats: {total_topics:,} topics, {format_size(total_size)}, "
+                             f"{total_seeds:,} seeds (avg {avg_seeds:.1f}), "
+                             f"filtered: {filtered_topics:,} topics ({format_size(filtered_size)})")
+
         # 0.6 Fetch Nickname Data (Cached in DB)
         self.keepers_log("Fetching Keeper User metadata...")
         try:
@@ -9175,9 +9365,24 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                                 c['raw_size'] = pvc_size
                                 c['size_str'] = format_size(pvc_size)
 
-                    # Filter by seeds AFTER enrichment
-                    filtered = [c for c in candidates if c['seeds'] <= max_seeds]
-                    self.keepers_log(f"  {len(filtered)} match criteria (seeds <= {max_seeds}).")
+                    # Filter by seeds and keepers count AFTER enrichment
+                    def _matches_filter(c):
+                        if c['seeds'] > max_seeds:
+                            return False
+                        if max_keepers >= 0:
+                            tid_int = int(c['id'])
+                            k_count = 0
+                            if hasattr(self, 'keepers_pvc_data') and tid_int in self.keepers_pvc_data:
+                                k_count = self.keepers_pvc_data[tid_int].get('keepers_count', 0)
+                            if k_count > max_keepers:
+                                return False
+                        return True
+
+                    filtered = [c for c in candidates if _matches_filter(c)]
+                    filter_desc = f"seeds <= {max_seeds}"
+                    if max_keepers >= 0:
+                        filter_desc += f", keepers <= {max_keepers}"
+                    self.keepers_log(f"  {len(filtered)} match criteria ({filter_desc}).")
 
                     # 3. Add to Tree
                     for t in filtered:
@@ -9245,6 +9450,8 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                         priority = "0 (Low)"
                     elif p_num == 1:
                         priority = "1 (Normal)"
+                    elif p_num == 2:
+                        priority = "2 (High)"
                     else:
                         priority = str(p_num)
                     

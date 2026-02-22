@@ -83,7 +83,8 @@ DEFAULT_CONFIG = {
     "pm_polling_enabled": True,
     "pm_poll_interval_sec": 300,
     "pm_toast_enabled": False,
-    "github_app_auto_update_enabled": False
+    "github_app_auto_update_enabled": False,
+    "keepers_preferred_categories": []
 }
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
@@ -92,7 +93,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.17.5"
+APP_VERSION = "0.17.6"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Simple Bencode Decoder ---
@@ -3164,6 +3165,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 if "pm_poll_interval_sec" not in data: data["pm_poll_interval_sec"] = 300
                 if "pm_toast_enabled" not in data: data["pm_toast_enabled"] = False
                 if "github_app_auto_update_enabled" not in data: data["github_app_auto_update_enabled"] = False
+                if "keepers_preferred_categories" not in data: data["keepers_preferred_categories"] = []
 
                 return data
             except Exception as e:
@@ -8791,6 +8793,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         # Bind key release for filtering
         self.keepers_cat_combo.bind('<KeyRelease>', self._keepers_filter_cats)
         self.keepers_cat_combo.bind('<<ComboboxSelected>>', self._keepers_on_cat_selected)
+        self.keepers_cat_combo.bind('<Button-3>', self._keepers_cat_right_click)
 
         # Client Selector
         tk.Label(top_frame, text="Client:").pack(side="left", padx=5)
@@ -8833,6 +8836,34 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
 
         self.keepers_stop_btn = tk.Button(top_frame, text="Stop", command=self.keepers_stop_scan, state="disabled")
         self.keepers_stop_btn.pack(side="left")
+
+        # --- Preferred Categories ---
+        pref_frame = tk.LabelFrame(self.keepers_tab, text="Preferred Categories", padx=5, pady=3)
+        pref_frame.pack(fill="x", padx=5, pady=(3, 0))
+
+        pref_inner = tk.Frame(pref_frame)
+        pref_inner.pack(fill="x")
+
+        self.keepers_pref_listbox = tk.Listbox(pref_inner, height=4, selectmode="single",
+            font=("Segoe UI", 9))
+        self.keepers_pref_listbox.pack(side="left", fill="x", expand=True)
+
+        pref_scroll = ttk.Scrollbar(pref_inner, orient="vertical", command=self.keepers_pref_listbox.yview)
+        self.keepers_pref_listbox.configure(yscrollcommand=pref_scroll.set)
+        pref_scroll.pack(side="left", fill="y")
+
+        pref_btn_frame = tk.Frame(pref_inner)
+        pref_btn_frame.pack(side="left", padx=(5, 0))
+
+        tk.Button(pref_btn_frame, text="+ Add", width=10,
+            command=self._keepers_add_preferred).pack(pady=1)
+        tk.Button(pref_btn_frame, text="- Remove", width=10,
+            command=self._keepers_remove_preferred).pack(pady=1)
+        self.keepers_scan_all_btn = tk.Button(pref_btn_frame, text="Scan All", width=10,
+            command=self._keepers_start_scan_all, bg="#dddddd")
+        self.keepers_scan_all_btn.pack(pady=(4, 1))
+
+        self._keepers_refresh_preferred_list()
 
         # --- Keepers Progress (hidden until scanning) ---
         self.keepers_prog_frame = tk.Frame(self.keepers_tab)
@@ -9014,6 +9045,138 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             self.keepers_stats_lbl_cached.config(text="")
         self.root.after(0, _reset)
 
+    # --- Preferred Categories Management ---
+
+    def _keepers_refresh_preferred_list(self):
+        """Repopulate the preferred categories listbox from config."""
+        self.keepers_pref_listbox.delete(0, tk.END)
+        for cat in self.config.get("keepers_preferred_categories", []):
+            self.keepers_pref_listbox.insert(tk.END, f"{cat['name']} ({cat['id']})")
+
+    def _keepers_add_preferred(self):
+        """Add currently selected combobox category to preferred list."""
+        cat_str = self.keepers_cat_combo.get()
+        if not cat_str:
+            return
+        try:
+            cat_id = int(re.search(r'\((\d+)\)$', cat_str).group(1))
+            cat_name = cat_str[:cat_str.rfind('(')].strip()
+        except:
+            return
+
+        prefs = self.config.get("keepers_preferred_categories", [])
+        if any(c['id'] == cat_id for c in prefs):
+            return  # Already in list
+        prefs.append({"id": cat_id, "name": cat_name})
+        self.config["keepers_preferred_categories"] = prefs
+        self.save_config()
+        self._keepers_refresh_preferred_list()
+
+    def _keepers_remove_preferred(self):
+        """Remove selected item from preferred list."""
+        sel = self.keepers_pref_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        prefs = self.config.get("keepers_preferred_categories", [])
+        if 0 <= idx < len(prefs):
+            del prefs[idx]
+            self.config["keepers_preferred_categories"] = prefs
+            self.save_config()
+            self._keepers_refresh_preferred_list()
+
+    def _keepers_cat_right_click(self, event):
+        """Right-click on category combobox to add to preferred."""
+        cat_str = self.keepers_cat_combo.get()
+        if not cat_str:
+            return
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Add to Preferred", command=self._keepers_add_preferred)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    # --- Scan All Preferred Categories ---
+
+    def _keepers_start_scan_all(self):
+        """Launch batch scan of all preferred categories."""
+        prefs = self.config.get("keepers_preferred_categories", [])
+        if not prefs:
+            messagebox.showwarning("Scan All", "No preferred categories. Add some first using '+ Add'.")
+            return
+
+        try:
+            max_seeds = self.keepers_max_seeds.get()
+        except:
+            max_seeds = 5
+        try:
+            max_keepers = self.keepers_max_keepers.get()
+        except:
+            max_keepers = -1
+
+        client_idx = self.keepers_client_combo.current()
+        if client_idx < 0: client_idx = 0
+        client_conf = self.config["clients"][client_idx]
+
+        # Clear tree and log
+        for item in self.keepers_tree.get_children():
+            self.keepers_tree.delete(item)
+
+        self.keepers_stop_event.clear()
+        self._keepers_batch_mode = True
+        self.keepers_scan_active = True
+        self.keepers_scan_btn.config(state="disabled")
+        self.keepers_scan_all_btn.config(state="disabled")
+        self.keepers_stop_btn.config(state="normal")
+        self.keepers_log_area.config(state='normal')
+        self.keepers_log_area.delete(1.0, tk.END)
+        self.keepers_log_area.config(state='disabled')
+
+        self.keepers_prog_frame.pack(fill="x", padx=5, after=self.keepers_tab.winfo_children()[0])
+        self.keepers_progress.start(15)
+        self.keepers_progress_label.config(text="Scanning all preferred categories...")
+
+        t = threading.Thread(target=self._keepers_scan_all_thread,
+                             args=(prefs, max_seeds, max_keepers, client_conf))
+        t.daemon = True
+        t.start()
+
+    def _keepers_scan_all_thread(self, prefs, max_seeds, max_keepers, client_conf):
+        """Iterate through preferred categories and scan each one."""
+        total = len(prefs)
+        grand_total = 0
+
+        for i, cat in enumerate(prefs):
+            if self.keepers_stop_event.is_set():
+                self.keepers_log("Batch scan stopped by user.")
+                break
+
+            cat_id = cat['id']
+            cat_name = cat['name']
+            self.keepers_log(f"=== Scanning category {i+1}/{total}: {cat_name} ({cat_id}) ===")
+            self.root.after(0, lambda n=cat_name, idx=i+1, tot=total:
+                self.keepers_progress_label.config(
+                    text=f"Scanning category {idx}/{tot}: {n}..."))
+
+            # Run the existing scan thread logic (synchronously within this thread)
+            self._keepers_scan_thread(cat_id, max_seeds, max_keepers, client_conf)
+
+            # Count items in tree so far
+            grand_total = len(self.keepers_tree.get_children())
+
+            if i < total - 1 and not self.keepers_stop_event.is_set():
+                time.sleep(2)  # Pause between categories
+
+        self.keepers_log(f"=== Batch scan complete. {grand_total} total candidates across {total} categories. ===")
+
+        self._keepers_batch_mode = False
+        self.keepers_scan_active = False
+        def _batch_finish():
+            self.keepers_progress.stop()
+            self.keepers_prog_frame.pack_forget()
+            self.keepers_scan_btn.config(state="normal")
+            self.keepers_scan_all_btn.config(state="normal")
+            self.keepers_stop_btn.config(state="disabled")
+        self.root.after(0, _batch_finish)
+
     def keepers_log(self, msg):
         def _log():
             try:
@@ -9056,8 +9219,10 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             self.keepers_tree.delete(item)
 
         self.keepers_stop_event.clear()
+        self._keepers_batch_mode = False
         self.keepers_scan_active = True
         self.keepers_scan_btn.config(state="disabled")
+        self.keepers_scan_all_btn.config(state="disabled")
         self.keepers_stop_btn.config(state="normal")
         self.keepers_log_area.config(state='normal')
         self.keepers_log_area.delete(1.0, tk.END)
@@ -9424,14 +9589,17 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         
         self.keepers_log(f"Scan finished. Found {found_count} candidates.")
         self.db_manager.log_scan(cat_id, page*50, 0, found_count)
-        
-        self.keepers_scan_active = False
-        def _keepers_finish():
-            self.keepers_progress.stop()
-            self.keepers_prog_frame.pack_forget()
-            self.keepers_scan_btn.config(state="normal")
-            self.keepers_stop_btn.config(state="disabled")
-        self.root.after(0, _keepers_finish)
+
+        # In batch mode, let the batch thread handle UI cleanup
+        if not getattr(self, '_keepers_batch_mode', False):
+            self.keepers_scan_active = False
+            def _keepers_finish():
+                self.keepers_progress.stop()
+                self.keepers_prog_frame.pack_forget()
+                self.keepers_scan_btn.config(state="normal")
+                self.keepers_scan_all_btn.config(state="normal")
+                self.keepers_stop_btn.config(state="disabled")
+            self.root.after(0, _keepers_finish)
 
     def _keepers_insert_tree(self, t, status):
         link = f"https://rutracker.org/forum/viewtopic.php?t={t['id']}"

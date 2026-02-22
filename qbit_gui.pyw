@@ -16,6 +16,8 @@ import hashlib
 import shutil
 import configparser
 import tempfile
+import concurrent.futures
+from requests.adapters import HTTPAdapter
 
 # --- Copyable ScrolledText Monkey-Patch ---
 # Tkinter prevents text selection when state="disabled".
@@ -87,7 +89,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.16.8"
+APP_VERSION = "0.16.10"
 GITHUB_REPO = "WIN365ru/qbit-adder-python"
 
 # --- Simple Bencode Decoder ---
@@ -1776,6 +1778,7 @@ class QBitAdderApp:
         self.updater_qbit_session = None
         self.updater_selected_client = None
         self.updater_stop_event = threading.Event()
+        self.updater_only_errored = tk.BooleanVar(value=False)
         self.create_updater_ui()
 
         # Remover tab state (New)
@@ -5274,6 +5277,10 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.updater_stop_btn = tk.Button(ctrl_frame, text="Stop", command=self.updater_stop_scan, state="disabled")
         self.updater_stop_btn.pack(side="left", padx=5)
 
+        self.updater_only_errored_cb = tk.Checkbutton(
+            ctrl_frame, text="Only Unregistered", variable=self.updater_only_errored)
+        self.updater_only_errored_cb.pack(side="left", padx=(15, 5))
+
         # --- Progress (hidden until scan) ---
         self.updater_prog_frame = tk.Frame(self.updater_tab)
         self.updater_progress = ttk.Progressbar(self.updater_prog_frame, mode='determinate', style="green.Horizontal.TProgressbar")
@@ -6200,6 +6207,7 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 return
 
             self.updater_log("Connected. Fetching torrent list...")
+            only_unregistered = self.updater_only_errored.get()
             resp = session.get(f"{url}/api/v2/torrents/info", timeout=30)
             if resp.status_code != 200:
                 self.updater_log(f"Failed to get torrent list: HTTP {resp.status_code}")
@@ -6210,33 +6218,68 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
             total = len(all_torrents)
             self.updater_log(f"Found {total} torrents. Checking trackers...")
 
-            # Check trackers for each torrent
-            unregistered = []
-            for i, torrent in enumerate(all_torrents):
+            # Messages indicating a torrent is unregistered at the tracker
+            UNREG_PATTERNS = [
+                "unregistered", "not found", "not registered", "not exist",
+                "unknown torrent", "trump", "retitled", "truncated",
+            ]
+
+            # Increase connection pool for concurrent requests
+            adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20)
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+
+            def _check_torrent(torrent):
+                """Check a single torrent's trackers. Returns dict if unregistered, else None."""
                 if self.updater_stop_event.is_set():
-                    break
-
-                self._updater_update_progress(i + 1, total, "Checking trackers")
-
+                    return None
                 t_hash = torrent["hash"]
                 try:
                     tr_resp = session.get(f"{url}/api/v2/torrents/trackers",
                         params={"hash": t_hash}, timeout=10)
                     if tr_resp.status_code != 200:
-                        continue
-
+                        return None
                     for tracker in tr_resp.json():
-                        msg = tracker.get("msg", "") or tracker.get("message", "")
-                        if "not registered" in msg.lower():
-                            unregistered.append({
+                        # Skip DHT, PeX, LSD pseudo-trackers
+                        t_url = tracker.get("url", "")
+                        if t_url.startswith("** ["):
+                            continue
+                        msg = (tracker.get("msg", "") or tracker.get("message", "")).lower()
+                        if any(p in msg for p in UNREG_PATTERNS):
+                            return {
                                 "hash": t_hash,
                                 "name": torrent.get("name", "Unknown"),
                                 "save_path": torrent.get("save_path", torrent.get("content_path", "")),
                                 "category": torrent.get("category", ""),
-                            })
-                            break
+                            }
                 except Exception:
                     pass
+                return None
+
+            # Check trackers — concurrent when "Only Unregistered" is on, sequential otherwise
+            unregistered = []
+            if only_unregistered:
+                checked = 0
+                with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+                    futures = {executor.submit(_check_torrent, t): t for t in all_torrents}
+                    for future in concurrent.futures.as_completed(futures):
+                        if self.updater_stop_event.is_set():
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            break
+                        result = future.result()
+                        if result:
+                            unregistered.append(result)
+                        checked += 1
+                        if checked % 100 == 0 or checked == total:
+                            self._updater_update_progress(checked, total, "Checking trackers")
+            else:
+                for i, torrent in enumerate(all_torrents):
+                    if self.updater_stop_event.is_set():
+                        break
+                    self._updater_update_progress(i + 1, total, "Checking trackers")
+                    result = _check_torrent(torrent)
+                    if result:
+                        unregistered.append(result)
 
             if self.updater_stop_event.is_set():
                 self.updater_log("Scan stopped by user.")
@@ -6327,6 +6370,10 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                     unknown_count += 1
                 elif str(tid) in topic_data:
                     data = topic_data[str(tid)]
+                    if data is None:
+                        entry["topic_status"] = "Deleted"
+                        deleted_count += 1
+                        continue
                     current_hash = data.get("info_hash", "").upper()
                     qbit_hash = entry["hash"].upper()
                     if current_hash != qbit_hash:

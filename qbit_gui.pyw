@@ -94,7 +94,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.18.1"
+APP_VERSION = "0.18.3"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -3058,8 +3058,8 @@ class QBitAdderApp:
                     try:
                         val = float(parts[0].replace(',', '.'))
                     except: return 0
-                    unit = {'B':1, 'KB':1024, 'MB':1024**2, 'GB':1024**3, 'TB':1024**4}
-                    return val * unit.get(unit, 1)
+                    units = {'B':1, 'KB':1024, 'MB':1024**2, 'GB':1024**3, 'TB':1024**4}
+                    return val * units.get(parts[1], 1)
     
                 l.sort(key=lambda t: size_to_bytes(t[0]), reverse=reverse)
                 
@@ -7383,6 +7383,10 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         action_frame = tk.Frame(self.repair_tab)
         action_frame.pack(fill="x", padx=10, pady=5)
 
+        self.repair_move_files_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(action_frame, text="Also correct save path (move files)",
+                      variable=self.repair_move_files_var).pack(side="left", padx=(0, 10))
+
         self.repair_selected_btn = tk.Button(
             action_frame, text="Repair Selected",
             command=lambda: self._repair_perform_action("selected"), state="disabled")
@@ -7489,24 +7493,28 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         cur = current_save_path.replace("\\", "/").rstrip("/")
         base = base_save_path.replace("\\", "/").rstrip("/")
 
-        if not cur.startswith(base):
-            # Path doesn't start with base — can only fix category, not move
-            return None
+        if cur.startswith(base):
+            remainder = cur[len(base):].strip("/")
+            parts = remainder.split("/") if remainder else []
 
-        remainder = cur[len(base):].strip("/")
-        parts = remainder.split("/") if remainder else []
+            if current_category and len(parts) >= 1 and parts[0] == current_category:
+                parts[0] = correct_category
+            elif not current_category and len(parts) >= 1:
+                parts = [correct_category] + parts
+            else:
+                parts = [correct_category] + parts
 
-        if current_category and len(parts) >= 1 and parts[0] == current_category:
-            # Replace old category segment with new one
-            parts[0] = correct_category
-        elif not current_category and len(parts) >= 1:
-            # No category was set — insert category before existing path
-            parts = [correct_category] + parts
-        else:
-            # Fallback: just prepend category
-            parts = [correct_category] + parts
+            return base + "/" + "/".join(parts)
 
-        return base + "/" + "/".join(parts)
+        # Fallback: base doesn't match — find the category folder segment directly
+        if current_category:
+            segments = cur.split("/")
+            for idx, seg in enumerate(segments):
+                if seg == current_category:
+                    segments[idx] = correct_category
+                    return "/".join(segments)
+
+        return None
 
     def _repair_scan_thread(self):
         self._repair_start_time = time.time()
@@ -7777,9 +7785,13 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                 return
 
         count = len(hashes)
+        move_files = self.repair_move_files_var.get()
+        if move_files:
+            action_desc = "This will update categories and move files to correct paths."
+        else:
+            action_desc = "This will only update categories (files will NOT be moved)."
         if not messagebox.askyesno("Confirm Repair",
-            f"Repair {count} torrent(s)?\n\n"
-            "This will update categories and move files to correct paths."):
+            f"Repair {count} torrent(s)?\n\n{action_desc}"):
             return
 
         self._repair_set_action_buttons("disabled")
@@ -7787,9 +7799,9 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.repair_prog_frame.pack(fill="x", padx=10, after=self.repair_tab.winfo_children()[0])
         self.repair_progress['value'] = 0
         self.repair_progress_label.config(text="Starting repair...")
-        threading.Thread(target=self._repair_action_thread, args=(hashes,), daemon=True).start()
+        threading.Thread(target=self._repair_action_thread, args=(hashes, move_files), daemon=True).start()
 
-    def _repair_action_thread(self, hashes):
+    def _repair_action_thread(self, hashes, move_files=True):
         repair_start = time.time()
         client = self.repair_selected_client
         url = client["url"]
@@ -7864,16 +7876,15 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
                     self.root.after(0, lambda h=t_hash: self.repair_tree.item(h, tags=("error",)))
                     continue
 
-                # Step 2: Move files if path changed
-                if move and new_path != entry["current_path"]:
+                # Step 2: Move files if path changed and user opted in
+                if move_files and move and new_path != entry["current_path"]:
                     resp = session.post(f"{url}/api/v2/torrents/setLocation",
                         data={"hashes": t_hash, "location": new_path}, timeout=30)
                     if resp.status_code != 200:
                         self.repair_log(f"  Category set OK, but move failed: HTTP {resp.status_code}")
                         self.repair_log(f"  Tried moving to: {new_path}")
-                        # Category was set, so partial success
                     else:
-                        self.repair_log(f"  Moved: {new_path}")
+                        self.repair_log(f"  Moved: {entry['current_path']} -> {new_path}")
 
                 self.repair_log(f"  Category: {entry['current_category'] or '(none)'} -> {correct_cat}")
                 success += 1
@@ -10538,6 +10549,16 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         self.scanner_summary_label = tk.Label(results_frame, text="Enter a folder path and click Scan.", fg="gray")
         self.scanner_summary_label.pack(anchor="w", padx=5)
 
+        # --- Filter ---
+        filter_frame = tk.Frame(results_frame)
+        filter_frame.pack(anchor="w", padx=5, pady=(2, 0))
+        self.scanner_filter_zero_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(filter_frame, text="Show only 0 B on disk",
+            variable=self.scanner_filter_zero_var,
+            command=self._scanner_apply_filter).pack(side="left")
+        self.scanner_filter_count_label = tk.Label(filter_frame, text="", fg="gray")
+        self.scanner_filter_count_label.pack(side="left", padx=8)
+
         # --- Action Buttons ---
         btn_frame = tk.Frame(self.scanner_tab)
         btn_frame.pack(fill="x", padx=10, pady=3)
@@ -10588,6 +10609,49 @@ Light Blue          - Size Mismatch (Larger). Your downloaded folder has > 105% 
         if path:
             self.scanner_custom_path_entry.delete(0, tk.END)
             self.scanner_custom_path_entry.insert(0, path)
+
+    def _scanner_apply_filter(self):
+        """Re-populate the scanner treeview based on the 0B filter checkbox."""
+        results = getattr(self, "scanner_scan_results", [])
+        if not results:
+            self.scanner_filter_count_label.config(text="")
+            return
+
+        filter_zero = self.scanner_filter_zero_var.get()
+
+        # Clear treeview
+        for item in self.scanner_tree.get_children():
+            self.scanner_tree.delete(item)
+
+        shown = 0
+        for entry in results:
+            if filter_zero and entry.get("disk_size", -1) != 0:
+                continue
+
+            tags = [entry["tag"]]
+            # Recompute size tag
+            api_size = int(entry.get("size", 0) or 0)
+            disk_size = entry.get("disk_size", 0)
+            if api_size and disk_size == 0:
+                tags.append("size_empty")
+            elif api_size and disk_size < api_size * 0.95:
+                tags.append("size_smaller")
+            elif api_size and disk_size > api_size * 1.05:
+                tags.append("size_larger")
+
+            self.scanner_tree.insert("", "end",
+                values=(entry["topic_id"], entry["name"], entry["size_str"],
+                        entry["disk_size_str"], entry["seeds"], entry["leech"],
+                        entry["rt_status"], entry["category"], entry["in_qbit"],
+                        entry["extra"], entry["missing"], entry["mismatch"],
+                        entry["pieces"], entry["disk_path"]),
+                tags=tuple(tags))
+            shown += 1
+
+        if filter_zero:
+            self.scanner_filter_count_label.config(text=f"Showing {shown} of {len(results)}")
+        else:
+            self.scanner_filter_count_label.config(text="")
 
     def scanner_log(self, message):
         def _write():

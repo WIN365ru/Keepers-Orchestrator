@@ -127,7 +127,7 @@ for _old, _new in _LEGACY_FILES:
             pass
 
 # App Version & Update Info
-APP_VERSION = "0.21.3"
+APP_VERSION = "0.22.0"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---

@@ -92,10 +92,39 @@ DEFAULT_CONFIG = {
     "keeper_nickname": ""
 }
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
-CATEGORY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rutracker_categories.json")
-DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_data.db")
-HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+_CONFIG_DIR = os.path.join(_APP_DIR, "config")
+_DATA_DIR = os.path.join(_APP_DIR, "data")
+
+# Ensure subdirectories exist
+os.makedirs(_CONFIG_DIR, exist_ok=True)
+os.makedirs(_DATA_DIR, exist_ok=True)
+
+CONFIG_FILE = os.path.join(_CONFIG_DIR, "keepers_orchestrator_config.json")
+CATEGORY_CACHE_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_categories.json")
+DATA_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_data.db")
+HASHES_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_hashes.db")
+
+# Legacy filenames (for migration from old versions)
+_LEGACY_FILES = [
+    # (old path, new path)
+    (os.path.join(_APP_DIR, "q_adder_config.json"), CONFIG_FILE),
+    (os.path.join(_APP_DIR, "keepers_orchestrator_config.json"), CONFIG_FILE),
+    (os.path.join(_APP_DIR, "rutracker_categories.json"), CATEGORY_CACHE_FILE),
+    (os.path.join(_APP_DIR, "keepers_orchestrator_categories.json"), CATEGORY_CACHE_FILE),
+    (os.path.join(_APP_DIR, "q_adder_data.db"), DATA_DB_FILE),
+    (os.path.join(_APP_DIR, "keepers_orchestrator_data.db"), DATA_DB_FILE),
+    (os.path.join(_APP_DIR, "q_adder_hashes.db"), HASHES_DB_FILE),
+    (os.path.join(_APP_DIR, "keepers_orchestrator_hashes.db"), HASHES_DB_FILE),
+]
+
+# Auto-migrate legacy filenames → new locations
+for _old, _new in _LEGACY_FILES:
+    if _old != _new and os.path.exists(_old) and not os.path.exists(_new):
+        try:
+            os.rename(_old, _new)
+        except Exception:
+            pass
 
 # App Version & Update Info
 APP_VERSION = "0.21.3"
@@ -511,7 +540,7 @@ TRANSLATIONS = {
 - Deep Checkbox searches deeper matches natively.
 
 [Keepers]
-- Fetches all user profiles cached in your 'q_adder_data.db' Keepers
+- Fetches all user profiles cached in your 'keepers_orchestrator_data.db' Keepers
   list to instantly scan for their latest torrents.
 - Useful for automating downloads from favorite uploaders.
 - Filter by category, size, seeds. Preferred categories can be
@@ -947,7 +976,7 @@ SIZE COMPARISON BACKGROUNDS:
 
 [Хранители]
 - Загружает все профили пользователей из вашего списка Хранителей
-  в базе данных 'q_adder_data.db' для мгновенного сканирования
+  в базе данных 'keepers_orchestrator_data.db' для мгновенного сканирования
   их последних раздач.
 - Удобно для автоматизации загрузок от избранных раздающих.
 - Фильтр по категории, размеру, сидам. Предпочтительные категории
@@ -2784,7 +2813,7 @@ class KeeperAuthDialog:
     """
 
     KEEPERS_API_URL = "https://api.rutracker.cc/v1/static/keepers_user_data"
-    KEEPER_AUTH_TEMP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_keeper_auth_tmp.json")
+    KEEPER_AUTH_TEMP_FILE = os.path.join(_DATA_DIR, "_keeper_auth_tmp.json")
     RUTRACKER_LOGIN_URL = "https://rutracker.org/forum/login.php"
 
     LANG_DISPLAY = {"en": "English", "ru": "Русский"}
@@ -2905,21 +2934,29 @@ class KeeperAuthDialog:
         if not src:
             return
         try:
-            app_dir = os.path.dirname(os.path.abspath(__file__))
-            recognized = {
-                "q_adder_config.json", "rutracker_categories.json",
-                "q_adder_data.db", "q_adder_hashes.db",
+            _import_map = {
+                "keepers_orchestrator_config.json": CONFIG_FILE,
+                "q_adder_config.json": CONFIG_FILE,
+                "keepers_orchestrator_categories.json": CATEGORY_CACHE_FILE,
+                "rutracker_categories.json": CATEGORY_CACHE_FILE,
+                "keepers_orchestrator_data.db": DATA_DB_FILE,
+                "q_adder_data.db": DATA_DB_FILE,
+                "keepers_orchestrator_hashes.db": HASHES_DB_FILE,
+                "q_adder_hashes.db": HASHES_DB_FILE,
             }
+            _cfg_names = {"keepers_orchestrator_config.json", "q_adder_config.json"}
             with zipfile.ZipFile(src, "r") as zf:
                 names = zf.namelist()
-                if "q_adder_config.json" not in names:
+                if not _cfg_names.intersection(names):
                     messagebox.showerror(t("auth.import_config"),
-                                         "ZIP must contain q_adder_config.json",
+                                         "ZIP must contain keepers_orchestrator_config.json",
                                          parent=self.dialog)
                     return
                 for arc_name in names:
-                    if arc_name in recognized:
-                        zf.extract(arc_name, app_dir)
+                    dest = _import_map.get(arc_name)
+                    if dest:
+                        with zf.open(arc_name) as sf, open(dest, "wb") as df:
+                            df.write(sf.read())
 
             # Read imported config
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -3234,7 +3271,7 @@ class KeeperAuthDialog:
 
     @staticmethod
     def _nuke_data_db():
-        """Force-delete q_adder_data.db, retrying after GC if the file is locked."""
+        """Force-delete keepers_orchestrator_data.db, retrying after GC if the file is locked."""
         if not os.path.exists(DATA_DB_FILE):
             return
         gc.collect()
@@ -3270,10 +3307,10 @@ class KeeperAuthDialog:
         return None
 
     def _check_update(self):
-        """Background thread: check GitHub for new version, put result in queue."""
+        """Background thread: check GitHub, auto-download & apply if new version."""
         txt = f"v{APP_VERSION}"
         fg = "gray"
-        click_url = None
+        tag = None
         try:
             session = requests.Session()
             proxies = self._get_proxies()
@@ -3281,31 +3318,119 @@ class KeeperAuthDialog:
                 session.proxies.update(proxies)
             api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
             resp = session.get(api_url, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                tag = str(data.get("tag_name", "")).strip()
-                curr_v = [int(x) for x in re.findall(r"\d+", APP_VERSION)]
-                new_v = [int(x) for x in re.findall(r"\d+", tag)] if tag else curr_v
-                if new_v > curr_v:
-                    txt = f"v{APP_VERSION}  ⬆ Update {tag}"
-                    fg = "red"
-                    click_url = data.get("html_url", "")
-                else:
-                    txt = f"v{APP_VERSION}  ✓ Latest"
-                    fg = "green"
-            else:
-                txt = f"v{APP_VERSION}  ✓ Latest"
-                fg = "green"
+            if resp.status_code != 200:
+                self._update_queue.put((f"v{APP_VERSION}  ✓ Latest", "green", None))
+                return
+            data = resp.json()
+            tag = str(data.get("tag_name", "")).strip()
+            curr_v = [int(x) for x in re.findall(r"\d+", APP_VERSION)]
+            new_v = [int(x) for x in re.findall(r"\d+", tag)] if tag else curr_v
+            if new_v <= curr_v:
+                self._update_queue.put((f"v{APP_VERSION}  ✓ Latest", "green", None))
+                return
+
+            # New version — show "downloading" then try auto-update
+            self._update_queue.put((f"v{APP_VERSION}  ⬆ {tag} downloading…", "orange", None))
+
+            script_bytes = self._download_script(session, data, tag)
+            if not script_bytes:
+                html_url = data.get("html_url", "")
+                self._update_queue.put((f"v{APP_VERSION}  ⬆ Update {tag}", "red", html_url))
+                return
+
+            # Apply update
+            script_path = os.path.abspath(__file__)
+            with open(script_path, "rb") as f:
+                current_bytes = f.read()
+            if current_bytes == script_bytes:
+                self._update_queue.put((f"v{APP_VERSION}  ✓ Latest", "green", None))
+                return
+
+            tmp_path = script_path + ".new"
+            backup_path = script_path + ".bak"
+            try:
+                with open(tmp_path, "wb") as f:
+                    f.write(script_bytes)
+                shutil.copy2(script_path, backup_path)
+                os.replace(tmp_path, script_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+
+            # Signal main thread: update installed, ask to restart
+            self._update_queue.put(("__installed__", tag, None))
+
         except Exception:
-            pass
-        self._update_queue.put((txt, fg, click_url))
+            self._update_queue.put((f"v{APP_VERSION}", "gray", None))
+
+    @staticmethod
+    def _download_script(session, release_data, tag):
+        """Try to download the main script from release assets, zipball, or raw."""
+        # 1) Release assets
+        for asset in (release_data.get("assets", []) or []):
+            name = str(asset.get("name", "")).lower()
+            dl_url = asset.get("browser_download_url", "")
+            if dl_url and ("keepers_orchestrator" in name or "qbit_gui" in name) and \
+               (name.endswith(".pyw") or name.endswith(".py")):
+                r = session.get(dl_url, timeout=30)
+                if r.status_code == 200 and b"class QBitAdderApp" in r.content:
+                    return r.content
+        # 2) Zipball
+        zip_url = release_data.get("zipball_url", "")
+        if zip_url:
+            try:
+                r = session.get(zip_url, timeout=45)
+                if r.status_code == 200:
+                    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+                        for member in zf.namelist():
+                            low = member.lower()
+                            if low.endswith(".pyw") or low.endswith(".py"):
+                                if "keepers_orchestrator" in low or "qbit_gui" in low:
+                                    payload = zf.read(member)
+                                    if b"class QBitAdderApp" in payload:
+                                        return payload
+            except Exception:
+                pass
+        # 3) Raw source
+        for stem in ("keepers_orchestrator.pyw", "qbit_gui.pyw"):
+            for ref in ([tag] if tag else []) + ["main", "master"]:
+                try:
+                    r = session.get(
+                        f"https://raw.githubusercontent.com/{GITHUB_REPO}/{ref}/{stem}",
+                        timeout=20)
+                    if r.status_code == 200 and b"class QBitAdderApp" in r.content:
+                        return r.content
+                except Exception:
+                    continue
+        return None
 
     def _poll_update(self):
         try:
-            txt, fg, click_url = self._update_queue.get_nowait()
-            self._ver_label.config(text=txt, fg=fg, cursor="hand2" if click_url else "")
-            if click_url:
-                self._ver_label.bind("<Button-1>", lambda e: webbrowser.open(click_url))
+            txt, fg_or_tag, click_url = self._update_queue.get_nowait()
+            if txt == "__installed__":
+                # Update was applied — ask to restart
+                tag = fg_or_tag
+                self._ver_label.config(text=f"v{APP_VERSION} → {tag} ✓", fg="green")
+                if messagebox.askyesno("Update Installed",
+                                       f"Updated {APP_VERSION} → {tag}\n\nRestart now?",
+                                       parent=self.dialog):
+                    script_path = os.path.abspath(__file__)
+                    subprocess.Popen([sys.executable, script_path],
+                                     cwd=os.path.dirname(script_path))
+                    self.dialog.destroy()
+                    self.root.destroy()
+                    return
+            else:
+                self._ver_label.config(text=txt, fg=fg_or_tag,
+                                       cursor="hand2" if click_url else "")
+                if click_url:
+                    self._ver_label.bind("<Button-1>", lambda e: webbrowser.open(click_url))
+                # If still downloading, keep polling for next update
+                if "downloading" in txt:
+                    self.dialog.after(200, self._poll_update)
         except queue.Empty:
             self.dialog.after(200, self._poll_update)
 
@@ -3733,7 +3858,7 @@ class QBitAdderApp:
         self.update_cats_ui()
 
     def migrate_keys_from_cache(self):
-        """Move keys from rutracker_categories.json to q_adder_config.json if found."""
+        """Move keys from categories cache to config if found."""
         cache_keys = self.cat_manager.cache.get("user_keys")
         if cache_keys:
             self.log("Migrating user keys from category cache to main config...")
@@ -5842,13 +5967,14 @@ class QBitAdderApp:
             self.version_label.bind("<Button-1>", lambda e: webbrowser.open(html_url))
 
     def _download_latest_app_script(self, session, release_data):
+        _SCRIPT_STEMS = ("keepers_orchestrator", "qbit_gui")  # new name first
         assets = release_data.get("assets", []) or []
         for asset in assets:
             name = str(asset.get("name", "")).lower()
             dl_url = asset.get("browser_download_url", "")
             if not dl_url:
                 continue
-            if "qbit_gui" in name and (name.endswith(".pyw") or name.endswith(".py")):
+            if any(s in name for s in _SCRIPT_STEMS) and (name.endswith(".pyw") or name.endswith(".py")):
                 resp = session.get(dl_url, timeout=30)
                 if resp.status_code == 200 and b"class QBitAdderApp" in resp.content:
                     return resp.content, f"asset:{asset.get('name', '')}"
@@ -5861,20 +5987,21 @@ class QBitAdderApp:
                     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
                         for member in zf.namelist():
                             low_member = member.lower()
-                            if low_member.endswith("/qbit_gui.pyw") or low_member.endswith("/qbit_gui.py"):
-                                payload = zf.read(member)
-                                if b"class QBitAdderApp" in payload:
-                                    return payload, f"zipball:{member}"
+                            if low_member.endswith(".pyw") or low_member.endswith(".py"):
+                                if any(s in low_member for s in _SCRIPT_STEMS):
+                                    payload = zf.read(member)
+                                    if b"class QBitAdderApp" in payload:
+                                        return payload, f"zipball:{member}"
             except Exception:
                 pass
 
         tag = str(release_data.get("tag_name", "")).strip()
         raw_candidates = []
-        if tag:
-            raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag}/qbit_gui.pyw")
-            raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag}/qbit_gui.py")
-        raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/qbit_gui.pyw")
-        raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/master/qbit_gui.pyw")
+        for stem in _SCRIPT_STEMS:
+            if tag:
+                raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag}/{stem}.pyw")
+            raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{stem}.pyw")
+            raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/master/{stem}.pyw")
 
         for raw_url in raw_candidates:
             try:
@@ -5884,7 +6011,7 @@ class QBitAdderApp:
             except Exception:
                 continue
 
-        raise RuntimeError("Could not download qbit_gui.pyw from release assets, zipball, or raw source.")
+        raise RuntimeError("Could not download script from release assets, zipball, or raw source.")
 
     def _apply_script_update(self, script_bytes):
         if not script_bytes:
@@ -13247,10 +13374,10 @@ class QBitAdderApp:
     # ── Export / Import Full Setup ────────────────────────────────────
 
     _BACKUP_FILES = {
-        "q_adder_config.json": CONFIG_FILE,
-        "rutracker_categories.json": CATEGORY_CACHE_FILE,
-        "q_adder_data.db": DATA_DB_FILE,
-        "q_adder_hashes.db": HASHES_DB_FILE,
+        "keepers_orchestrator_config.json": CONFIG_FILE,
+        "keepers_orchestrator_categories.json": CATEGORY_CACHE_FILE,
+        "keepers_orchestrator_data.db": DATA_DB_FILE,
+        "keepers_orchestrator_hashes.db": HASHES_DB_FILE,
     }
 
     def export_full_setup(self):
@@ -13274,6 +13401,18 @@ class QBitAdderApp:
         except Exception as e:
             messagebox.showerror(t("settings.export_setup"), str(e))
 
+    # Map any recognized archive name (old or new) → correct destination path
+    _IMPORT_MAP = {
+        "keepers_orchestrator_config.json": CONFIG_FILE,
+        "q_adder_config.json": CONFIG_FILE,
+        "keepers_orchestrator_categories.json": CATEGORY_CACHE_FILE,
+        "rutracker_categories.json": CATEGORY_CACHE_FILE,
+        "keepers_orchestrator_data.db": DATA_DB_FILE,
+        "q_adder_data.db": DATA_DB_FILE,
+        "keepers_orchestrator_hashes.db": HASHES_DB_FILE,
+        "q_adder_hashes.db": HASHES_DB_FILE,
+    }
+
     def import_full_setup(self):
         src = filedialog.askopenfilename(
             title=t("settings.import_setup"),
@@ -13284,134 +13423,20 @@ class QBitAdderApp:
         try:
             with zipfile.ZipFile(src, "r") as zf:
                 names = zf.namelist()
-                if "q_adder_config.json" not in names:
+                _cfg_names = {"keepers_orchestrator_config.json", "q_adder_config.json"}
+                if not _cfg_names.intersection(names):
                     messagebox.showerror(t("settings.import_setup"),
-                                         "ZIP must contain q_adder_config.json")
+                                         "ZIP must contain keepers_orchestrator_config.json")
                     return
-                app_dir = os.path.dirname(os.path.abspath(__file__))
                 for arc_name in names:
-                    if arc_name in self._BACKUP_FILES:
-                        zf.extract(arc_name, app_dir)
+                    dest = self._IMPORT_MAP.get(arc_name)
+                    if dest:
+                        with zf.open(arc_name) as src_f, open(dest, "wb") as dst_f:
+                            dst_f.write(src_f.read())
             messagebox.showinfo(t("settings.import_setup"),
                                 "✓ Import complete.\nPlease restart the application.")
         except Exception as e:
             messagebox.showerror(t("settings.import_setup"), str(e))
-
-
-def _first_run_update_check(boot_config):
-    """Check GitHub for updates on first startup. Shows popup with result."""
-    try:
-        session = requests.Session()
-        proxy_conf = boot_config.get("proxy", {})
-        if proxy_conf.get("enabled") and proxy_conf.get("url"):
-            url = proxy_conf["url"]
-            user = proxy_conf.get("username", "")
-            pwd = proxy_conf.get("password", "")
-            if user and pwd:
-                scheme, rest = url.split("://", 1)
-                p = {
-                    "http": f"{scheme}://{user}:{pwd}@{rest}",
-                    "https": f"{scheme}://{user}:{pwd}@{rest}",
-                }
-            else:
-                p = {"http": url, "https": url}
-            session.proxies.update(p)
-
-        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-        resp = session.get(api_url, timeout=10)
-        if resp.status_code != 200:
-            messagebox.showinfo("Update Check", f"version {APP_VERSION}\n\n✓ Latest")
-            return False
-
-        data = resp.json()
-        tag = str(data.get("tag_name", "")).strip()
-        if not tag:
-            messagebox.showinfo("Update Check", f"version {APP_VERSION}\n\n✓ Latest")
-            return False
-
-        curr_v = [int(x) for x in re.findall(r"\d+", APP_VERSION)]
-        new_v = [int(x) for x in re.findall(r"\d+", tag)]
-
-        if new_v <= curr_v:
-            messagebox.showinfo("Update Check", f"version {APP_VERSION}\n\n✓ Latest")
-            return False
-
-        # New version found — attempt to download & apply
-        script_bytes = None
-        assets = data.get("assets", []) or []
-        for asset in assets:
-            name = str(asset.get("name", "")).lower()
-            dl_url = asset.get("browser_download_url", "")
-            if dl_url and "qbit_gui" in name and (name.endswith(".pyw") or name.endswith(".py")):
-                r = session.get(dl_url, timeout=30)
-                if r.status_code == 200 and b"class QBitAdderApp" in r.content:
-                    script_bytes = r.content
-                    break
-
-        if not script_bytes:
-            zip_url = data.get("zipball_url", "")
-            if zip_url:
-                r = session.get(zip_url, timeout=45)
-                if r.status_code == 200:
-                    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
-                        for member in zf.namelist():
-                            if member.lower().endswith("/qbit_gui.pyw") or member.lower().endswith("/qbit_gui.py"):
-                                payload = zf.read(member)
-                                if b"class QBitAdderApp" in payload:
-                                    script_bytes = payload
-                                    break
-
-        if not script_bytes:
-            raw_urls = []
-            if tag:
-                raw_urls.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag}/qbit_gui.pyw")
-            raw_urls.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/qbit_gui.pyw")
-            for raw_url in raw_urls:
-                r = session.get(raw_url, timeout=20)
-                if r.status_code == 200 and b"class QBitAdderApp" in r.content:
-                    script_bytes = r.content
-                    break
-
-        if not script_bytes:
-            html_url = data.get("html_url", "")
-            if messagebox.askyesno("Update Available",
-                                   f"New version {tag} available!\n\nCould not auto-download.\nOpen GitHub release page?"):
-                if html_url:
-                    webbrowser.open(html_url)
-            return False
-
-        # Apply update
-        script_path = os.path.abspath(__file__)
-        with open(script_path, "rb") as f:
-            current_bytes = f.read()
-        if current_bytes == script_bytes:
-            messagebox.showinfo("Update Check", f"version {APP_VERSION}\n\n✓ Latest")
-            return False
-
-        tmp_path = script_path + ".new"
-        backup_path = script_path + ".bak"
-        try:
-            with open(tmp_path, "wb") as f:
-                f.write(script_bytes)
-            shutil.copy2(script_path, backup_path)
-            os.replace(tmp_path, script_path)
-        finally:
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-
-        if messagebox.askyesno("Update Installed",
-                               f"Updated {APP_VERSION} → {tag}\n\nRestart now?"):
-            subprocess.Popen([sys.executable, script_path],
-                             cwd=os.path.dirname(script_path))
-            return True  # signal caller to exit
-        return False
-
-    except Exception:
-        messagebox.showinfo("Update Check", f"version {APP_VERSION}\n\n✓ Latest")
-        return False
 
 
 if __name__ == "__main__":
@@ -13448,15 +13473,11 @@ if __name__ == "__main__":
         root.wait_window(auth.dialog)
 
         if auth.authenticated:
-            # First startup — check for app updates (blocking popup)
-            if _first_run_update_check(_boot_config):
-                root.destroy()  # update installed & restarting
-            else:
-                root.deiconify()
-                app = QBitAdderApp(root)
-                app.keeper_nickname = auth.nickname
-                app._schedule_keeper_recheck()
-                root.mainloop()
+            root.deiconify()
+            app = QBitAdderApp(root)
+            app.keeper_nickname = auth.nickname
+            app._schedule_keeper_recheck()
+            root.mainloop()
         else:
             root.destroy()
 

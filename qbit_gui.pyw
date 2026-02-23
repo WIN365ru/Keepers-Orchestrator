@@ -22,6 +22,8 @@ import sys
 import base64
 import copy
 import queue
+import gc
+from PIL import Image as PILImage, ImageTk
 from requests.adapters import HTTPAdapter
 
 # --- Copyable ScrolledText Monkey-Patch ---
@@ -78,7 +80,8 @@ DEFAULT_CONFIG = {
             "use_global_auth": True,
             "username": "",
             "password": "",
-            "base_save_path": "C:/Torrents/Sport/"
+            "base_save_path": "C:/Torrents/Sport/",
+            "enabled": False
         }
     ],
     "last_selected_client_index": 0,
@@ -89,7 +92,8 @@ DEFAULT_CONFIG = {
     "github_app_auto_update_enabled": False,
     "keepers_preferred_categories": [],
     "theme": "Default",
-    "language": "en"
+    "language": "en",
+    "keeper_nickname": ""
 }
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
@@ -98,7 +102,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.20.0"
+APP_VERSION = "0.20.1"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -319,6 +323,7 @@ TRANSLATIONS = {
         "settings.url": "URL:",
         "settings.base_path": "Base Path:",
         "settings.use_global_auth": "Use Global Auth",
+        "settings.client_enabled": "Enabled",
         "settings.save_client": "Save Client Details",
         "settings.rt_login": "Rutracker Forum Login (for downloading .torrents and failover category fetching)",
         "settings.update_keys": "Update Keys",
@@ -650,7 +655,9 @@ SIZE COMPARISON BACKGROUNDS:
         # Auth Gate
         "auth.title": "Keeper Authentication",
         "auth.prompt": "Enter your Keeper nickname:",
+        "auth.password_prompt": "Enter your Rutracker password:",
         "auth.checking": "Verifying...",
+        "auth.captcha_prompt": "Enter the code from the image:",
         "auth.unlock": "Access Granted!",
         "auth.lock": "Access Denied — Not a Keeper",
         "auth.fetch_error": "Could not fetch keeper list. Check your connection.",
@@ -748,6 +755,7 @@ SIZE COMPARISON BACKGROUNDS:
         "settings.url": "URL:",
         "settings.base_path": "Базовый путь:",
         "settings.use_global_auth": "Глобальная авториз.",
+        "settings.client_enabled": "Включён",
         "settings.save_client": "Сохранить клиент",
         "settings.rt_login": "Вход на Rutracker (для скачивания .torrent и резервного получения категорий)",
         "settings.update_keys": "Обновить ключи",
@@ -1085,7 +1093,9 @@ SIZE COMPARISON BACKGROUNDS:
         # Auth Gate
         "auth.title": "Авторизация хранителя",
         "auth.prompt": "Введите ваш ник хранителя:",
+        "auth.password_prompt": "Введите ваш пароль Rutracker:",
         "auth.checking": "Проверка...",
+        "auth.captcha_prompt": "Введите код с картинки:",
         "auth.unlock": "Доступ разрешён!",
         "auth.lock": "Доступ запрещён — Не хранитель",
         "auth.fetch_error": "Не удалось получить список хранителей. Проверьте соединение.",
@@ -2765,47 +2775,76 @@ class ToolTip:
 
 
 class KeeperAuthDialog:
-    """Modal startup dialog — verifies user is an authorized Keeper."""
+    """Modal startup dialog — verifies user is an authorized Keeper.
+    Phase 1: Check keeper list + fetch login page with CAPTCHA.
+    Phase 2: User solves CAPTCHA, submit Rutracker login.
+    Shows only a generic denial on any failure (no hints for non-keepers).
+    """
 
     KEEPERS_API_URL = "https://api.rutracker.cc/v1/static/keepers_user_data"
     KEEPER_AUTH_TEMP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_keeper_auth_tmp.json")
+    RUTRACKER_LOGIN_URL = "https://rutracker.org/forum/login.php"
+
+    LANG_DISPLAY = {"en": "English", "ru": "Русский"}
 
     def __init__(self, root, config):
         self.root = root
         self.config = config
         self.authenticated = False
         self.nickname = ""
+        self._password = ""
+        self._phase = 1
         self.keeper_nicknames_memory = set()
+        self._login_session = None
+        self._cap_sid = ""
+        self._captcha_photo = None
 
         self.dialog = tk.Toplevel(root)
         self.dialog.title(t("auth.title"))
         self.dialog.resizable(False, False)
         self.dialog.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # Center on screen (set size + position in one call)
+        # Center on screen
         sw = root.winfo_screenwidth()
         sh = root.winfo_screenheight()
-        dw, dh = 400, 320
+        dw, dh = 400, 410
         x = (sw // 2) - (dw // 2)
         y = (sh // 2) - (dh // 2)
         self.dialog.geometry(f"{dw}x{dh}+{x}+{y}")
 
-        # Lift to front and grab input focus
         self.dialog.lift()
         self.dialog.focus_force()
         self.dialog.grab_set()
 
+        # Language selector (top-right corner)
+        lang_frame = tk.Frame(self.dialog)
+        lang_frame.pack(fill="x", padx=12, pady=(6, 0))
+        lang_frame.columnconfigure(0, weight=1)
+
+        self._lang_var = tk.StringVar(value=self.LANG_DISPLAY.get(_current_lang, "English"))
+        self._lang_combo = ttk.Combobox(lang_frame, textvariable=self._lang_var,
+                                        values=list(self.LANG_DISPLAY.values()),
+                                        state="readonly", width=12, font=("Segoe UI", 9))
+        self._lang_combo.pack(side="right")
+        self._lang_combo.bind("<<ComboboxSelected>>", self._on_lang_change)
+
         # Title
-        tk.Label(self.dialog, text=t("auth.title"), font=("Segoe UI", 16, "bold")).pack(pady=(18, 8))
+        self.lbl_title = tk.Label(self.dialog, text=t("auth.title"), font=("Segoe UI", 16, "bold"))
+        self.lbl_title.pack(pady=(8, 8))
 
-        # Prompt
-        tk.Label(self.dialog, text=t("auth.prompt"), font=("Segoe UI", 10)).pack(pady=(0, 4))
+        # Nickname
+        self.lbl_nick = tk.Label(self.dialog, text=t("auth.prompt"), font=("Segoe UI", 10))
+        self.lbl_nick.pack(pady=(0, 2))
+        self.entry_nick = tk.Entry(self.dialog, font=("Segoe UI", 12), width=28, justify="center")
+        self.entry_nick.pack(pady=(0, 8))
+        self.entry_nick.focus_set()
 
-        # Entry
-        self.entry = tk.Entry(self.dialog, font=("Segoe UI", 12), width=28, justify="center")
-        self.entry.pack(pady=(0, 8))
-        self.entry.bind("<Return>", lambda e: self._on_login())
-        self.entry.focus_set()
+        # Password
+        self.lbl_pass = tk.Label(self.dialog, text=t("auth.password_prompt"), font=("Segoe UI", 10))
+        self.lbl_pass.pack(pady=(0, 2))
+        self.entry_pass = tk.Entry(self.dialog, font=("Segoe UI", 12), width=28, justify="center", show="\u2022")
+        self.entry_pass.pack(pady=(0, 8))
+        self.entry_pass.bind("<Return>", lambda e: self._on_login())
 
         # Login button
         self.login_btn = tk.Button(self.dialog, text=t("auth.login_btn"), font=("Segoe UI", 11, "bold"),
@@ -2820,21 +2859,57 @@ class KeeperAuthDialog:
         self.status_label = tk.Label(self.dialog, text="", font=("Segoe UI", 11))
         self.status_label.pack(pady=(0, 10))
 
+    # ── Language ──────────────────────────────────────────────────────
+
+    def _on_lang_change(self, event=None):
+        global _current_lang
+        display = self._lang_var.get()
+        for code, name in self.LANG_DISPLAY.items():
+            if name == display:
+                _current_lang = code
+                break
+        self.dialog.title(t("auth.title"))
+        self.lbl_title.config(text=t("auth.title"))
+        self.lbl_nick.config(text=t("auth.prompt"))
+        self.lbl_pass.config(text=t("auth.password_prompt"))
+        self.login_btn.config(text=t("auth.login_btn"))
+        if hasattr(self, "lbl_cap"):
+            self.lbl_cap.config(text=t("auth.captcha_prompt"))
+
+    # ── Close ─────────────────────────────────────────────────────────
+
     def _on_close(self):
         self.authenticated = False
         self.dialog.destroy()
 
+    # ── Login (two-phase) ─────────────────────────────────────────────
+
     def _on_login(self):
-        nickname = self.entry.get().strip()
-        if not nickname:
-            return
-        self.nickname = nickname
-        self.login_btn.config(state="disabled")
-        self.entry.config(state="disabled")
-        self.status_label.config(text=t("auth.checking"), fg="#2196F3")
-        self._result_queue = queue.Queue()
-        threading.Thread(target=self._verify_keeper, daemon=True).start()
-        self._poll_result()
+        if self._phase == 1:
+            nickname = self.entry_nick.get().strip()
+            password = self.entry_pass.get().strip()
+            if not nickname or not password:
+                return
+            self.nickname = nickname
+            self._password = password
+            self.login_btn.config(state="disabled")
+            self.entry_nick.config(state="disabled")
+            self.entry_pass.config(state="disabled")
+            self._lang_combo.config(state="disabled")
+            self.status_label.config(text=t("auth.checking"), fg="#2196F3")
+            self._result_queue = queue.Queue()
+            threading.Thread(target=self._verify_keeper, daemon=True).start()
+            self._poll_result()
+        elif self._phase == 2:
+            cap_code = self.entry_cap.get().strip()
+            if not cap_code:
+                return
+            self.login_btn.config(state="disabled")
+            self.entry_cap.config(state="disabled")
+            self.status_label.config(text=t("auth.checking"), fg="#2196F3")
+            self._result_queue = queue.Queue()
+            threading.Thread(target=self._submit_captcha, args=(cap_code,), daemon=True).start()
+            self._poll_result()
 
     def _poll_result(self):
         try:
@@ -2845,66 +2920,186 @@ class KeeperAuthDialog:
         kind, value = result
         if kind == "ok":
             self._show_result(value)
+        elif kind == "captcha":
+            self._show_captcha(value)
         else:
-            self._show_error(value)
+            self._show_result(False)
+
+    # ── Phase 1: keeper list + fetch CAPTCHA ──────────────────────────
 
     def _verify_keeper(self):
         try:
             proxies = self._get_proxies()
+
+            # Step 1: Fetch keeper list and check nickname (silently)
             resp = requests.get(self.KEEPERS_API_URL, proxies=proxies, timeout=30)
             data = resp.json()
             result = data.get("result", {})
 
-            # Save to temp file
             with open(self.KEEPER_AUTH_TEMP_FILE, "w", encoding="utf-8") as f:
                 json.dump(result, f)
 
-            # Store in memory
             self.keeper_nicknames_memory = {
                 v[0].lower() for v in result.values() if v and len(v) >= 1
             }
 
-            # Store in DB
             db = DatabaseManager(DATA_DB_FILE)
             db.save_keepers_users(result)
             db_nicknames = db.get_all_keeper_usernames()
+            del db
 
-            # Erase temp file
             if os.path.exists(self.KEEPER_AUTH_TEMP_FILE):
                 os.remove(self.KEEPER_AUTH_TEMP_FILE)
 
-            # Check nickname against both sources
             nick_lower = self.nickname.lower()
             in_memory = nick_lower in self.keeper_nicknames_memory
             in_db = nick_lower in db_nicknames
-            is_keeper = in_memory and in_db
+            if not (in_memory and in_db):
+                self._result_queue.put(("ok", False))
+                return
 
-            self._result_queue.put(("ok", is_keeper))
+            # Step 2: Create session and fetch login page
+            self._login_session = requests.Session()
+            self._login_session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/91.0.4472.124 Safari/537.36"
+            })
+            if proxies:
+                self._login_session.proxies.update(proxies)
 
-        except Exception as e:
-            self._result_queue.put(("error", str(e)))
+            get_resp = self._login_session.get(self.RUTRACKER_LOGIN_URL, timeout=15)
+            html_text = get_resp.text
+
+            # Look for CAPTCHA
+            cap_sid_match = re.search(
+                r'name=["\']cap_sid["\'][^>]*value=["\']([^"\']+)', html_text
+            )
+            if not cap_sid_match:
+                cap_sid_match = re.search(
+                    r'value=["\']([^"\']+)["\'][^>]*name=["\']cap_sid["\']', html_text
+                )
+            cap_img_match = re.search(
+                r'<img[^>]+src=["\']([^"\']*captcha[^"\']*)["\']', html_text, re.IGNORECASE
+            )
+
+            if cap_sid_match and cap_img_match:
+                # CAPTCHA required — send image to UI
+                self._cap_sid = cap_sid_match.group(1)
+                cap_img_url = cap_img_match.group(1)
+                if cap_img_url.startswith("/"):
+                    cap_img_url = "https://rutracker.org" + cap_img_url
+                img_resp = self._login_session.get(cap_img_url, timeout=15)
+                img_b64 = base64.b64encode(img_resp.content).decode("ascii")
+                self._result_queue.put(("captcha", img_b64))
+            else:
+                # No CAPTCHA — try direct login
+                login_data = {
+                    "login_username": self.nickname,
+                    "login_password": self._password,
+                    "login": "\u0412\u0445\u043e\u0434",
+                    "redirect": "index.php",
+                }
+                self._login_session.post(self.RUTRACKER_LOGIN_URL, data=login_data, timeout=30)
+                if "bb_session" in self._login_session.cookies.get_dict():
+                    self._result_queue.put(("ok", True))
+                else:
+                    self._result_queue.put(("ok", False))
+
+        except Exception:
+            self._result_queue.put(("ok", False))
+
+    # ── Phase 2 UI: show CAPTCHA ──────────────────────────────────────
+
+    def _show_captcha(self, img_b64):
+        # Unpack bottom widgets so we can insert CAPTCHA before them
+        self.login_btn.pack_forget()
+        self.canvas.pack_forget()
+        self.status_label.pack_forget()
+
+        # CAPTCHA image (JPEG → Pillow → ImageTk)
+        raw_bytes = base64.b64decode(img_b64)
+        pil_img = PILImage.open(io.BytesIO(raw_bytes))
+        self._captcha_photo = ImageTk.PhotoImage(pil_img)
+        self.lbl_captcha_img = tk.Label(self.dialog, image=self._captcha_photo)
+        self.lbl_captcha_img.pack(pady=(4, 4))
+
+        # Code entry
+        self.lbl_cap = tk.Label(self.dialog, text=t("auth.captcha_prompt"), font=("Segoe UI", 10))
+        self.lbl_cap.pack(pady=(0, 2))
+        self.entry_cap = tk.Entry(self.dialog, font=("Segoe UI", 12), width=16, justify="center")
+        self.entry_cap.pack(pady=(0, 8))
+        self.entry_cap.focus_set()
+        self.entry_cap.bind("<Return>", lambda e: self._on_login())
+
+        # Re-pack bottom widgets
+        self.login_btn.pack(pady=(0, 10))
+        self.canvas.pack(pady=(0, 4))
+        self.status_label.pack(pady=(0, 10))
+
+        self.login_btn.config(state="normal")
+        self.status_label.config(text="")
+        self._phase = 2
+
+        # Resize dialog to fit CAPTCHA
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        dw, dh = 400, 540
+        x = (sw // 2) - (dw // 2)
+        y = (sh // 2) - (dh // 2)
+        self.dialog.geometry(f"{dw}x{dh}+{x}+{y}")
+
+    # ── Phase 2 submit: login with CAPTCHA code ──────────────────────
+
+    def _submit_captcha(self, cap_code):
+        try:
+            login_data = {
+                "login_username": self.nickname,
+                "login_password": self._password,
+                "login": "\u0412\u0445\u043e\u0434",
+                "redirect": "index.php",
+                "cap_sid": self._cap_sid,
+                "cap_code": cap_code,
+            }
+            self._login_session.post(self.RUTRACKER_LOGIN_URL, data=login_data, timeout=30)
+            if "bb_session" in self._login_session.cookies.get_dict():
+                self._result_queue.put(("ok", True))
+            else:
+                self._result_queue.put(("ok", False))
+        except Exception:
+            self._result_queue.put(("ok", False))
+
+    # ── Result handling ───────────────────────────────────────────────
 
     def _show_result(self, is_keeper):
         if is_keeper:
             self._animate_unlock()
             self.authenticated = True
+            self.config["keeper_nickname"] = self.nickname
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    disk_config = json.load(f)
+                disk_config["keeper_nickname"] = self.nickname
+                disk_config["language"] = _current_lang
+                if "rutracker_auth" not in disk_config:
+                    disk_config["rutracker_auth"] = {}
+                disk_config["rutracker_auth"]["username"] = self.nickname
+                disk_config["rutracker_auth"]["password"] = self._password
+                with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                    json.dump(disk_config, f, indent=4, ensure_ascii=False)
+            except Exception:
+                pass
         else:
             self._animate_lock()
 
-    def _show_error(self, msg):
-        self.status_label.config(text=t("auth.fetch_error"), fg="#F44336")
-        self.login_btn.config(state="normal")
-        self.entry.config(state="normal")
+    # ── Animations ────────────────────────────────────────────────────
 
     def _draw_padlock(self, color="#888888", shackle_open=False):
         c = self.canvas
         c.delete("all")
-        # Body
         c.create_rectangle(20, 40, 60, 72, fill=color, outline="#333", width=2)
-        # Keyhole
         c.create_oval(35, 48, 45, 58, fill="#333", outline="#333")
         c.create_rectangle(38, 55, 42, 65, fill="#333", outline="#333")
-        # Shackle
         if shackle_open:
             c.create_arc(22, 15, 58, 50, start=0, extent=180, style="arc", outline="#333", width=3)
             c.create_line(58, 32, 58, 20, fill="#333", width=3)
@@ -2960,7 +3155,26 @@ class KeeperAuthDialog:
         else:
             self.dialog.after(800, self._close_denied)
 
+    @staticmethod
+    def _nuke_data_db():
+        """Force-delete q_adder_data.db, retrying after GC if the file is locked."""
+        if not os.path.exists(DATA_DB_FILE):
+            return
+        gc.collect()
+        for attempt in range(5):
+            try:
+                os.remove(DATA_DB_FILE)
+                return
+            except PermissionError:
+                time.sleep(0.3)
+        try:
+            import ctypes
+            ctypes.windll.kernel32.MoveFileExW(DATA_DB_FILE, None, 4)
+        except Exception:
+            pass
+
     def _close_denied(self):
+        self._nuke_data_db()
         messagebox.showerror(t("auth.lock"), t("auth.lock"))
         self.dialog.destroy()
         sys.exit()
@@ -4734,7 +4948,7 @@ class QBitAdderApp:
     def update_remover_client_dropdown(self):
         if hasattr(self, 'remover_client_selector'):
             # Only single client selection makes sense here
-            options = [c["name"] for c in self.config["clients"]]
+            options = [c["name"] for c in self.config["clients"] if c.get("enabled", False)]
             self.remover_client_selector['values'] = options
             if options:
                 self.remover_client_selector.current(0)
@@ -5268,6 +5482,9 @@ class QBitAdderApp:
         self.entry_pass.grid(row=5, column=1, pady=2)
         self.entry_pass.bind("<FocusOut>", lambda e: self.save_current_client())
 
+        self.client_enabled_var = tk.BooleanVar()
+        self._tcb(details_frame, "settings.client_enabled", variable=self.client_enabled_var, command=self.save_current_client).grid(row=3, column=0, columnspan=2, sticky="w")
+
         self.client_use_global_auth_var = tk.BooleanVar()
         self._tcb(details_frame, "settings.use_global_auth", variable=self.client_use_global_auth_var, command=self.on_global_auth_check_toggle).grid(row=6, column=0, columnspan=2, sticky="w")
 
@@ -5625,7 +5842,7 @@ class QBitAdderApp:
             
     def update_client_dropdown(self):
         if hasattr(self, 'client_selector'):
-            options = [c["name"] for c in self.config["clients"]] + [t("adder.all_clients")]
+            options = [c["name"] for c in self.config["clients"] if c.get("enabled", False)] + [t("adder.all_clients")]
             self.client_selector['values'] = options
 
             # Simple restore logic
@@ -5836,8 +6053,12 @@ class QBitAdderApp:
         for i, c in enumerate(self.config.get("clients", [])):
             with self.status_lock:
                 c_status = self.client_statuses[i] if i < len(self.client_statuses) else "gray"
-            self.client_listbox.insert(tk.END, f"● {c.get('name', 'Unnamed')}")
-            if c_status == "green": self.client_listbox.itemconfig(i, {'fg': '#00b300'})
+            enabled = c.get("enabled", False)
+            prefix = "●" if enabled else "○"
+            self.client_listbox.insert(tk.END, f"{prefix} {c.get('name', 'Unnamed')}")
+            if not enabled:
+                self.client_listbox.itemconfig(i, {'fg': '#bbbbbb'})
+            elif c_status == "green": self.client_listbox.itemconfig(i, {'fg': '#00b300'})
             elif c_status == "red": self.client_listbox.itemconfig(i, {'fg': '#e60000'})
             elif c_status == "yellow": self.client_listbox.itemconfig(i, {'fg': '#cccc00'})
             else: self.client_listbox.itemconfig(i, {'fg': 'gray'})
@@ -5879,6 +6100,7 @@ class QBitAdderApp:
         self.entry_path.delete(0, tk.END)
         self.entry_path.insert(0, client["base_save_path"])
 
+        self.client_enabled_var.set(client.get("enabled", False))
         self.client_use_global_auth_var.set(client.get("use_global_auth", True))
         self.toggle_client_auth_fields()
         
@@ -5914,6 +6136,7 @@ class QBitAdderApp:
         self.config["clients"][idx]["name"] = self.entry_name.get()
         self.config["clients"][idx]["url"] = self.entry_url.get()
         self.config["clients"][idx]["base_save_path"] = self.entry_path.get()
+        self.config["clients"][idx]["enabled"] = self.client_enabled_var.get()
         self.config["clients"][idx]["use_global_auth"] = self.client_use_global_auth_var.get()
         self.config["clients"][idx]["username"] = self.entry_user.get()
         self.config["clients"][idx]["password"] = self.entry_pass.get()
@@ -5937,7 +6160,8 @@ class QBitAdderApp:
             "use_global_auth": True,
             "username": "",
             "password": "",
-            "base_save_path": "C:/Downloads/"
+            "base_save_path": "C:/Downloads/",
+            "enabled": False
         }
         self.config["clients"].append(new_client)
         self.current_client_index = len(self.config["clients"]) - 1
@@ -6073,10 +6297,10 @@ class QBitAdderApp:
         self.log_area.pack(fill="both", expand=True)
 
     def update_client_dropdown(self):
-        names = [c["name"] for c in self.config["clients"]]
+        names = [c["name"] for c in self.config["clients"] if c.get("enabled", False)]
         names.append(t("adder.all_clients"))
         self.client_selector['values'] = names
-        
+
         # Restore selection
         idx = self.config.get("last_selected_client_index", 0)
         if idx >= len(names): idx = 0
@@ -7160,7 +7384,7 @@ class QBitAdderApp:
 
     def update_updater_client_dropdown(self):
         if hasattr(self, 'updater_client_selector'):
-            names = [c["name"] for c in self.config["clients"]]
+            names = [c["name"] for c in self.config["clients"] if c.get("enabled", False)]
             self.updater_client_selector['values'] = names
             idx = self.config.get("last_selected_client_index", 0)
             if idx >= len(names):
@@ -7342,7 +7566,7 @@ class QBitAdderApp:
     def update_bitrot_client_dropdown(self):
         if not hasattr(self, 'bitrot_client_combo'):
             return
-        vals = [f"{i}: {c['name']} ({c['url']})" for i, c in enumerate(self.config["clients"])]
+        vals = [f"{i}: {c['name']} ({c['url']})" for i, c in enumerate(self.config["clients"]) if c.get("enabled", False)]
         self.bitrot_client_combo['values'] = vals
         if vals:
             idx = self.config.get("last_selected_client_index", 0)
@@ -8626,7 +8850,7 @@ class QBitAdderApp:
 
     def update_repair_client_dropdown(self):
         if hasattr(self, 'repair_client_selector'):
-            names = [c["name"] for c in self.config["clients"]]
+            names = [c["name"] for c in self.config["clients"] if c.get("enabled", False)]
             self.repair_client_selector['values'] = names
             idx = self.config.get("last_selected_client_index", 0)
             if idx >= len(names):
@@ -9415,7 +9639,7 @@ class QBitAdderApp:
 
     def update_mover_client_dropdown(self):
         if hasattr(self, 'mover_client_selector'):
-            names = [c["name"] for c in self.config["clients"]]
+            names = [c["name"] for c in self.config["clients"] if c.get("enabled", False)]
             self.mover_client_selector['values'] = names
             idx = self.config.get("last_selected_client_index", 0)
             if idx >= len(names):
@@ -11872,7 +12096,7 @@ class QBitAdderApp:
 
     def update_scanner_client_dropdown(self):
         if hasattr(self, 'scanner_client_selector'):
-            names = [c["name"] for c in self.config["clients"]]
+            names = [c["name"] for c in self.config["clients"] if c.get("enabled", False)]
             self.scanner_client_selector['values'] = names
             idx = self.config.get("last_selected_client_index", 0)
             if idx >= len(names):
@@ -12870,6 +13094,7 @@ class QBitAdderApp:
             self.root.after(0, self._schedule_keeper_recheck)
 
     def _lock_application(self):
+        KeeperAuthDialog._nuke_data_db()
         messagebox.showerror(t("auth.locked_title"), t("auth.locked_msg"))
         self.root.destroy()
 
@@ -12893,17 +13118,27 @@ if __name__ == "__main__":
     else:
         _boot_config = DEFAULT_CONFIG.copy()
 
-    # Show auth gate
-    auth = KeeperAuthDialog(root, _boot_config)
-    root.wait_window(auth.dialog)
+    _saved_nickname = _boot_config.get("keeper_nickname", "")
 
-    if auth.authenticated:
-        root.deiconify()  # Show main window
+    if _saved_nickname:
+        # Already authenticated on a previous run — skip dialog
+        root.deiconify()
         app = QBitAdderApp(root)
-        app.keeper_nickname = auth.nickname
+        app.keeper_nickname = _saved_nickname
         app._schedule_keeper_recheck()
         root.mainloop()
     else:
-        root.destroy()
+        # First run — show auth gate
+        auth = KeeperAuthDialog(root, _boot_config)
+        root.wait_window(auth.dialog)
+
+        if auth.authenticated:
+            root.deiconify()
+            app = QBitAdderApp(root)
+            app.keeper_nickname = auth.nickname
+            app._schedule_keeper_recheck()
+            root.mainloop()
+        else:
+            root.destroy()
 
 

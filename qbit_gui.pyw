@@ -913,7 +913,7 @@ SIZE COMPARISON BACKGROUNDS:
         "scanner.del_os": "Удалить с диска",
         # Help dialog
         "help.title": "Справка и документация",
-        "help.content": """# === KEEPERS ORCHESTRATOR — СПРАВКА И ДОКУМЕНТАЦИЯ ===
+        "help.content": """# === ХРАНИТЕЛЬСКИЙ ОРКЕСТРАТОР — СПРАВКА И ДОКУМЕНТАЦИЯ ===
 
 ## ВКЛАДКИ И ФУНКЦИИ ПРИЛОЖЕНИЯ
 --------------------------------------------------
@@ -4340,10 +4340,12 @@ class QBitAdderApp:
             except tk.TclError:
                 pass
 
-        # Update menu bar
+        # Update menu bar labels, then force Windows to redraw
         try:
-            self._menubar.entryconfig(0, label=t("menu.help"))
-            self._help_menu.entryconfig(0, label=t("menu.help.docs"))
+            self._menubar.entryconfigure(0, label=t("menu.help"))
+            self._help_menu.entryconfigure(0, label=t("menu.help.docs"))
+            self.root.config(menu='')
+            self.root.config(menu=self._menubar)
         except Exception:
             pass
 

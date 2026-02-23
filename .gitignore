@@ -1,14 +1,5 @@
 /config/
 /data/
-# Legacy filenames (root level, before migration)
-keepers_orchestrator_config.json
-keepers_orchestrator_categories.json
-keepers_orchestrator_data.db
-keepers_orchestrator_hashes.db
-rutracker_categories.json
-q_adder_config.json
-q_adder_data.db
-q_adder_hashes.db
 swagger.json
 docs.html
 /temp_torrents

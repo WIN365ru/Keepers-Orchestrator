@@ -95,10 +95,12 @@ DEFAULT_CONFIG = {
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 _CONFIG_DIR = os.path.join(_APP_DIR, "config")
 _DATA_DIR = os.path.join(_APP_DIR, "data")
+_LOGS_DIR = os.path.join(_APP_DIR, "logs")
 
 # Ensure subdirectories exist
 os.makedirs(_CONFIG_DIR, exist_ok=True)
 os.makedirs(_DATA_DIR, exist_ok=True)
+os.makedirs(_LOGS_DIR, exist_ok=True)
 
 CONFIG_FILE = os.path.join(_CONFIG_DIR, "keepers_orchestrator_config.json")
 CATEGORY_CACHE_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_categories.json")
@@ -106,7 +108,7 @@ DATA_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_data.db")
 HASHES_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.23.1"
+APP_VERSION = "0.24.0"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -1140,6 +1142,38 @@ def fmt_dt(dt_obj, fmt="datetime"):
     fmt: 'date', 'datetime', or 'datetime_sec'."""
     patterns = _DATE_FORMATS.get(_current_lang, _DATE_FORMATS["en"])
     return dt_obj.strftime(patterns.get(fmt, patterns["datetime"]))
+
+
+# --- File logging ---
+import logging as _logging
+
+_log_lock = threading.Lock()
+_file_loggers = {}
+
+def _get_file_logger(name):
+    """Get or create a file logger for the given tab name."""
+    if name in _file_loggers:
+        return _file_loggers[name]
+    with _log_lock:
+        if name in _file_loggers:
+            return _file_loggers[name]
+        logger = _logging.getLogger(f"ko.{name}")
+        logger.setLevel(_logging.DEBUG)
+        logger.propagate = False
+        fh = _logging.FileHandler(
+            os.path.join(_LOGS_DIR, f"{name}.log"), encoding="utf-8"
+        )
+        fh.setFormatter(_logging.Formatter("%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+        logger.addHandler(fh)
+        _file_loggers[name] = logger
+        return logger
+
+def _log_to_file(tab_name, message):
+    """Write a message to the tab's log file."""
+    try:
+        _get_file_logger(tab_name).info(message)
+    except Exception:
+        pass
 
 
 # --- Simple Bencode Decoder ---
@@ -4629,13 +4663,14 @@ class QBitAdderApp:
         self.root.after(0, self.update_cats_ui)
 
     def log(self, message):
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {message}"
+        _log_to_file("main", message)
         if hasattr(self, 'log_area'):
             self.log_area.config(state="normal")
-            self.log_area.insert(tk.END, message + "\n")
+            self.log_area.insert(tk.END, line + "\n")
             self.log_area.see(tk.END)
             self.log_area.config(state="disabled")
-        else:
-            print(message)
 
     # --- Helper Methods ---
     # --- Helper Methods ---
@@ -7546,9 +7581,12 @@ class QBitAdderApp:
 
     def updater_log(self, message):
         """Log to the updater tab's own log area (thread-safe)."""
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {message}"
+        _log_to_file("updater", message)
         def _write():
             self.updater_log_area.config(state="normal")
-            self.updater_log_area.insert(tk.END, message + "\n")
+            self.updater_log_area.insert(tk.END, line + "\n")
             self.updater_log_area.see(tk.END)
             self.updater_log_area.config(state="disabled")
         self.root.after(0, _write)
@@ -7816,7 +7854,10 @@ class QBitAdderApp:
         self.update_bitrot_client_dropdown()
 
     def bitrot_log(self, msg):
-        self.bitrot_log_text.insert(tk.END, msg + "\n")
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {msg}"
+        _log_to_file("bitrot", msg)
+        self.bitrot_log_text.insert(tk.END, line + "\n")
         self.bitrot_log_text.see(tk.END)
         self.root.update_idletasks()
         
@@ -9098,9 +9139,12 @@ class QBitAdderApp:
 
     def repair_log(self, message):
         """Log to the repair tab's own log area (thread-safe)."""
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {message}"
+        _log_to_file("repair", message)
         def _write():
             self.repair_log_area.config(state="normal")
-            self.repair_log_area.insert(tk.END, message + "\n")
+            self.repair_log_area.insert(tk.END, line + "\n")
             self.repair_log_area.see(tk.END)
             self.repair_log_area.config(state="disabled")
         self.root.after(0, _write)
@@ -9875,9 +9919,12 @@ class QBitAdderApp:
     # --- Helpers ---
 
     def mover_log(self, message):
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {message}"
+        _log_to_file("mover", message)
         def _write():
             self.mover_log_area.config(state="normal")
-            self.mover_log_area.insert(tk.END, message + "\n")
+            self.mover_log_area.insert(tk.END, line + "\n")
             self.mover_log_area.see(tk.END)
             self.mover_log_area.config(state="disabled")
         self.root.after(0, _write)
@@ -11241,10 +11288,13 @@ class QBitAdderApp:
         self.root.after(0, _batch_finish)
 
     def keepers_log(self, msg):
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {msg}"
+        _log_to_file("keepers", msg)
         def _log():
             try:
                 self.keepers_log_area.config(state='normal')
-                self.keepers_log_area.insert(tk.END, f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}\n")
+                self.keepers_log_area.insert(tk.END, line + "\n")
                 self.keepers_log_area.see(tk.END)
                 self.keepers_log_area.config(state='disabled')
             except: pass
@@ -12344,9 +12394,12 @@ class QBitAdderApp:
             self.scanner_filter_count_label.config(text="")
 
     def scanner_log(self, message):
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {message}"
+        _log_to_file("scanner", message)
         def _write():
             self.scanner_log_area.config(state="normal")
-            self.scanner_log_area.insert(tk.END, f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {message}\n")
+            self.scanner_log_area.insert(tk.END, line + "\n")
             self.scanner_log_area.see(tk.END)
             self.scanner_log_area.config(state="disabled")
         self.root.after(0, _write)

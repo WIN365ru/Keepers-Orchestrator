@@ -102,7 +102,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.20.1"
+APP_VERSION = "0.20.2"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -3077,8 +3077,11 @@ class KeeperAuthDialog:
             self.authenticated = True
             self.config["keeper_nickname"] = self.nickname
             try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                    disk_config = json.load(f)
+                if os.path.exists(CONFIG_FILE):
+                    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                        disk_config = json.load(f)
+                else:
+                    disk_config = copy.deepcopy(DEFAULT_CONFIG)
                 disk_config["keeper_nickname"] = self.nickname
                 disk_config["language"] = _current_lang
                 if "rutracker_auth" not in disk_config:

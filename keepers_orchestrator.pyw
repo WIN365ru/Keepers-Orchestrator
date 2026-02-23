@@ -1129,6 +1129,19 @@ def t(key, **kwargs):
     return text
 
 
+# --- Locale-aware date formatting ---
+_DATE_FORMATS = {
+    "en": {"date": "%m/%d/%Y", "datetime": "%m/%d/%Y %H:%M", "datetime_sec": "%m/%d/%Y %H:%M:%S"},
+    "ru": {"date": "%d.%m.%Y", "datetime": "%d.%m.%Y %H:%M", "datetime_sec": "%d.%m.%Y %H:%M:%S"},
+}
+
+def fmt_dt(dt_obj, fmt="datetime"):
+    """Format a datetime object using locale-aware pattern.
+    fmt: 'date', 'datetime', or 'datetime_sec'."""
+    patterns = _DATE_FORMATS.get(_current_lang, _DATE_FORMATS["en"])
+    return dt_obj.strftime(patterns.get(fmt, patterns["datetime"]))
+
+
 # --- Simple Bencode Decoder ---
 def bdecode(data, idx=0):
     """Minimal bencode decoder. Returns (decoded_value, next_index)."""
@@ -1256,7 +1269,7 @@ def parse_torrent_info(file_path_or_bytes):
         creation_date = torrent.get('creation date', 0)
         if creation_date:
             try:
-                result['creation_date'] = datetime.datetime.fromtimestamp(creation_date).strftime('%Y-%m-%d %H:%M:%S')
+                result['creation_date'] = fmt_dt(datetime.datetime.fromtimestamp(creation_date), "datetime_sec")
             except:
                 result['creation_date'] = str(creation_date)
         else:
@@ -7315,7 +7328,7 @@ class QBitAdderApp:
         if not timestamp:
             return "never"
         dt = datetime.datetime.fromtimestamp(timestamp)
-        return dt.strftime("%H:%M:%S %d.%m.%Y")
+        return fmt_dt(dt, "datetime_sec")
 
     def _cache_invalidate(self, client_name=None):
         """Invalidate cache for a specific client, or all if None."""
@@ -7882,17 +7895,17 @@ class QBitAdderApp:
 
     def _bitrot_populate_tree(self, torrents):
         for t in torrents:
-            added_on = datetime.datetime.fromtimestamp(t.get("added_on", 0)).strftime('%Y-%m-%d %H:%M')
+            added_on = fmt_dt(datetime.datetime.fromtimestamp(t.get("added_on", 0)))
             last_activity_ts = t.get("last_activity", 0)
-            last_active = datetime.datetime.fromtimestamp(last_activity_ts).strftime('%Y-%m-%d %H:%M') if last_activity_ts > 0 else "Never"
-            
+            last_active = fmt_dt(datetime.datetime.fromtimestamp(last_activity_ts)) if last_activity_ts > 0 else "Never"
+
             up_speed = format_size(t.get("upspeed", 0)) + "/s"
             seed = t.get("num_seeds", 0)
             path = t.get("save_path", t.get("content_path", ""))
-            
+
             history = t.get("_bitrot_hist", {})
             last_checked_ts = history.get("last_checked", 0)
-            last_checked = datetime.datetime.fromtimestamp(last_checked_ts).strftime('%Y-%m-%d %H:%M') if last_checked_ts > 0 else "Never"
+            last_checked = fmt_dt(datetime.datetime.fromtimestamp(last_checked_ts)) if last_checked_ts > 0 else "Never"
             hist_state = history.get("status", "Pending Check")
             
             size_fmt = format_size(t.get("size", 0))
@@ -8032,7 +8045,7 @@ class QBitAdderApp:
                                         self.bitrot_tree.set(tree_id, "status", s)
                                         self.bitrot_tree.set(tree_id, "progress", f"{p*100:.1f}%")
                                         
-                                        now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+                                        now_str = fmt_dt(datetime.datetime.now())
                                         self.bitrot_tree.set(tree_id, "last_checked", now_str)
                                         
                                         if p < 1.0:
@@ -11685,7 +11698,7 @@ class QBitAdderApp:
                     
                     last_seen_ts = d.get("seeder_last_seen", 0)
                     if last_seen_ts > 0:
-                        str_last_seen = datetime.datetime.fromtimestamp(last_seen_ts).strftime('%Y-%m-%d %H:%M:%S')
+                        str_last_seen = fmt_dt(datetime.datetime.fromtimestamp(last_seen_ts), "datetime_sec")
                     else:
                         str_last_seen = "Never"
             except:

@@ -109,7 +109,7 @@ DATA_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_data.db")
 HASHES_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.24.0"
+APP_VERSION = "0.24.1"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -356,6 +356,11 @@ TRANSLATIONS = {
         "settings.auto_update_enable": "Enable app auto-update from GitHub releases",
         "settings.save_update": "Save App Update Settings",
         "settings.check_updates": "Check for updates",
+        "settings.logging": "Logging",
+        "settings.log_retention": "Keep logs for (days):",
+        "settings.log_save": "Save",
+        "settings.log_purge": "Purge All Logs",
+        "settings.log_purged": "All log files deleted.",
         "settings.statistics": "Statistics",
         "settings.stats_kept": "Torrents Kept: {count}",
         "settings.stats_size": "Total Size Saved: {size}",
@@ -791,6 +796,11 @@ SIZE COMPARISON BACKGROUNDS:
         "settings.auto_update_enable": "Включить автообновление из GitHub releases",
         "settings.save_update": "Сохранить настройки обновлений",
         "settings.check_updates": "Проверить обновления",
+        "settings.logging": "Журналирование",
+        "settings.log_retention": "Хранить логи (дней):",
+        "settings.log_save": "Сохранить",
+        "settings.log_purge": "Очистить все логи",
+        "settings.log_purged": "Все файлы логов удалены.",
         "settings.statistics": "Статистика",
         "settings.stats_kept": "Торрентов сохранено: {count}",
         "settings.stats_size": "Общий размер: {size}",
@@ -5965,6 +5975,19 @@ class QBitAdderApp:
             command=self.save_github_update_settings
         ).pack(side="left", padx=10)
 
+        # Logging settings
+        logging_frame = self._tlf(self.settings_scrollable_frame, "settings.logging", padx=10, pady=5)
+        logging_frame.pack(fill="x", padx=10, pady=5)
+
+        log_row = tk.Frame(logging_frame)
+        log_row.pack(anchor="w", pady=2)
+
+        self._tl(log_row, "settings.log_retention").pack(side="left")
+        self.log_retention_var = tk.StringVar(value=str(self.config.get("log_retention_days", 14)))
+        tk.Spinbox(log_row, from_=1, to=365, width=5, textvariable=self.log_retention_var).pack(side="left", padx=4)
+        self._tb(log_row, "settings.log_save", command=self.save_log_settings).pack(side="left", padx=(8, 0))
+        self._tb(log_row, "settings.log_purge", command=self.purge_logs).pack(side="left", padx=(12, 0))
+
         # Version & Update
         v_frame = tk.Frame(self.settings_scrollable_frame)
         v_frame.pack(side="bottom", anchor="se", padx=10, pady=5)
@@ -6332,6 +6355,39 @@ class QBitAdderApp:
         self.config["github_app_auto_update_enabled"] = self.github_app_auto_update_var.get()
         self.save_config()
         messagebox.showinfo("Success", "GitHub app update settings saved.")
+
+    def save_log_settings(self):
+        global _LOG_RETENTION_DAYS
+        try:
+            days = int(self.log_retention_var.get())
+            if days < 1:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Error", t("settings.log_retention") + " >= 1")
+            return
+        _LOG_RETENTION_DAYS = days
+        self.config["log_retention_days"] = days
+        self.save_config()
+        _cleanup_old_logs(days)
+        messagebox.showinfo("OK", f"{t('settings.log_retention')} {days}")
+
+    def purge_logs(self):
+        if not messagebox.askyesno("Confirm", t("settings.log_purge") + "?"):
+            return
+        global _file_loggers
+        with _log_lock:
+            for name, logger in list(_file_loggers.items()):
+                for h in logger.handlers[:]:
+                    h.close()
+                    logger.removeHandler(h)
+            _file_loggers.clear()
+        for f in os.listdir(_LOGS_DIR):
+            if f.endswith(".log"):
+                try:
+                    os.remove(os.path.join(_LOGS_DIR, f))
+                except OSError:
+                    pass
+        messagebox.showinfo("OK", t("settings.log_purged"))
 
     def save_rt_settings(self):
         enabled = self.auto_update_var.get()

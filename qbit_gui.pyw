@@ -98,7 +98,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.20.2"
+APP_VERSION = "0.21.0"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -303,6 +303,8 @@ TRANSLATIONS = {
         # Settings tab
         "settings.migration": "Migration / Import Data",
         "settings.import_webtlo": "Import from webtlo config.ini",
+        "settings.export_setup": "Export Full Setup (.zip)",
+        "settings.import_setup": "Import Full Setup (.zip)",
         "settings.proxy": "Proxy Settings (HTTP/HTTPS/SOCKS5)",
         "settings.proxy_enable": "Enable Proxy (useful for bypassing regional blocks like Rutracker)",
         "settings.proxy_url": "Proxy URL:",
@@ -660,6 +662,7 @@ SIZE COMPARISON BACKGROUNDS:
         "auth.locked_title": "Session Locked",
         "auth.locked_msg": "Your nickname was removed from the Keepers list.\nThe application will now close.",
         "auth.login_btn": "Login",
+        "auth.import_config": "Import Config",
     },
     "ru": {
         # Window
@@ -735,6 +738,8 @@ SIZE COMPARISON BACKGROUNDS:
         # Settings tab
         "settings.migration": "Миграция / Импорт данных",
         "settings.import_webtlo": "Импорт из webtlo config.ini",
+        "settings.export_setup": "Экспорт полной настройки (.zip)",
+        "settings.import_setup": "Импорт полной настройки (.zip)",
         "settings.proxy": "Настройки прокси (HTTP/HTTPS/SOCKS5)",
         "settings.proxy_enable": "Включить прокси (для обхода блокировок, например Rutracker)",
         "settings.proxy_url": "URL прокси:",
@@ -1098,6 +1103,7 @@ SIZE COMPARISON BACKGROUNDS:
         "auth.locked_title": "Сессия заблокирована",
         "auth.locked_msg": "Ваш ник был удалён из списка хранителей.\nПриложение будет закрыто.",
         "auth.login_btn": "Войти",
+        "auth.import_config": "Импорт настроек",
     },
 }
 
@@ -2824,6 +2830,11 @@ class KeeperAuthDialog:
         self._lang_combo.pack(side="right")
         self._lang_combo.bind("<<ComboboxSelected>>", self._on_lang_change)
 
+        # Import Config button (next to language dropdown)
+        self._import_btn = tk.Button(lang_frame, text=t("auth.import_config"),
+                                     font=("Segoe UI", 9), command=self._on_import)
+        self._import_btn.pack(side="right", padx=(0, 8))
+
         # Title
         self.lbl_title = tk.Label(self.dialog, text=t("auth.title"), font=("Segoe UI", 16, "bold"))
         self.lbl_title.pack(pady=(8, 8))
@@ -2869,8 +2880,65 @@ class KeeperAuthDialog:
         self.lbl_nick.config(text=t("auth.prompt"))
         self.lbl_pass.config(text=t("auth.password_prompt"))
         self.login_btn.config(text=t("auth.login_btn"))
+        self._import_btn.config(text=t("auth.import_config"))
         if hasattr(self, "lbl_cap"):
             self.lbl_cap.config(text=t("auth.captcha_prompt"))
+
+    # ── Import config from ZIP ───────────────────────────────────────
+
+    def _on_import(self):
+        src = filedialog.askopenfilename(
+            title=t("auth.import_config"),
+            filetypes=[("ZIP Archive", "*.zip")],
+            parent=self.dialog,
+        )
+        if not src:
+            return
+        try:
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            recognized = {
+                "q_adder_config.json", "rutracker_categories.json",
+                "q_adder_data.db", "q_adder_hashes.db",
+            }
+            with zipfile.ZipFile(src, "r") as zf:
+                names = zf.namelist()
+                if "q_adder_config.json" not in names:
+                    messagebox.showerror(t("auth.import_config"),
+                                         "ZIP must contain q_adder_config.json",
+                                         parent=self.dialog)
+                    return
+                for arc_name in names:
+                    if arc_name in recognized:
+                        zf.extract(arc_name, app_dir)
+
+            # Read imported config
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                imported_cfg = json.load(f)
+
+            keeper_nick = imported_cfg.get("keeper_nickname", "")
+            if keeper_nick:
+                # Valid keeper — skip login entirely
+                self.nickname = keeper_nick
+                self.authenticated = True
+                self.dialog.destroy()
+            else:
+                # No saved nickname — reload language/config and let user log in
+                global _current_lang
+                _current_lang = imported_cfg.get("language", _current_lang)
+                self.config = imported_cfg
+                self._lang_var.set(self.LANG_DISPLAY.get(_current_lang, "English"))
+                self._on_lang_change()
+                # Pre-fill rutracker username if available
+                rt_user = imported_cfg.get("rutracker_auth", {}).get("username", "")
+                if rt_user:
+                    self.entry_nick.delete(0, "end")
+                    self.entry_nick.insert(0, rt_user)
+                messagebox.showinfo(t("auth.import_config"),
+                                    "✓ Config imported. Please log in.",
+                                    parent=self.dialog)
+        except Exception as e:
+            messagebox.showerror(t("auth.import_config"), str(e),
+                                 parent=self.dialog)
 
     # ── Close ─────────────────────────────────────────────────────────
 
@@ -5397,6 +5465,10 @@ class QBitAdderApp:
         migration_frame = self._tlf(self.settings_scrollable_frame, "settings.migration", padx=10, pady=5)
         migration_frame.pack(fill="x", padx=10, pady=5)
         self._tb(migration_frame, "settings.import_webtlo", command=self.import_webtlo_config).pack(anchor="w", pady=5)
+        zip_row = tk.Frame(migration_frame)
+        zip_row.pack(anchor="w", pady=5)
+        self._tb(zip_row, "settings.export_setup", command=self.export_full_setup).pack(side="left", padx=(0, 6))
+        self._tb(zip_row, "settings.import_setup", command=self.import_full_setup).pack(side="left")
 
         # 0. Proxy Settings Section
         proxy_frame = self._tlf(self.settings_scrollable_frame, "settings.proxy", padx=10, pady=10)
@@ -13121,6 +13193,59 @@ class QBitAdderApp:
         KeeperAuthDialog._nuke_data_db()
         messagebox.showerror(t("auth.locked_title"), t("auth.locked_msg"))
         self.root.destroy()
+
+    # ── Export / Import Full Setup ────────────────────────────────────
+
+    _BACKUP_FILES = {
+        "q_adder_config.json": CONFIG_FILE,
+        "rutracker_categories.json": CATEGORY_CACHE_FILE,
+        "q_adder_data.db": DATA_DB_FILE,
+        "q_adder_hashes.db": HASHES_DB_FILE,
+    }
+
+    def export_full_setup(self):
+        dest = filedialog.asksaveasfilename(
+            title=t("settings.export_setup"),
+            defaultextension=".zip",
+            filetypes=[("ZIP Archive", "*.zip")],
+            initialfile=f"keepers_orchestrator_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+        )
+        if not dest:
+            return
+        try:
+            # Save current config to disk first so export is up-to-date
+            self.save_config()
+            with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+                for arc_name, full_path in self._BACKUP_FILES.items():
+                    if os.path.exists(full_path):
+                        zf.write(full_path, arc_name)
+            messagebox.showinfo(t("settings.export_setup"),
+                                f"✓ Exported to:\n{dest}")
+        except Exception as e:
+            messagebox.showerror(t("settings.export_setup"), str(e))
+
+    def import_full_setup(self):
+        src = filedialog.askopenfilename(
+            title=t("settings.import_setup"),
+            filetypes=[("ZIP Archive", "*.zip")],
+        )
+        if not src:
+            return
+        try:
+            with zipfile.ZipFile(src, "r") as zf:
+                names = zf.namelist()
+                if "q_adder_config.json" not in names:
+                    messagebox.showerror(t("settings.import_setup"),
+                                         "ZIP must contain q_adder_config.json")
+                    return
+                app_dir = os.path.dirname(os.path.abspath(__file__))
+                for arc_name in names:
+                    if arc_name in self._BACKUP_FILES:
+                        zf.extract(arc_name, app_dir)
+            messagebox.showinfo(t("settings.import_setup"),
+                                "✓ Import complete.\nPlease restart the application.")
+        except Exception as e:
+            messagebox.showerror(t("settings.import_setup"), str(e))
 
 
 if __name__ == "__main__":

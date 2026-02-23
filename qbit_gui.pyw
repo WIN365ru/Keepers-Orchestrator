@@ -85,7 +85,8 @@ DEFAULT_CONFIG = {
     "pm_toast_enabled": False,
     "github_app_auto_update_enabled": False,
     "keepers_preferred_categories": [],
-    "theme": "Default"
+    "theme": "Default",
+    "language": "en"
 }
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_config.json")
@@ -94,7 +95,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.18.4"
+APP_VERSION = "0.19.0"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -219,6 +220,565 @@ _DEFAULT_FG = {
     "black", "systemwindowtext", "systembuttontext", "#000000", "#000",
     "#d4d4e8", "#1a2633",   # Night Mode fg, Steel Blue fg
 }
+
+# --- Internationalization ---
+_current_lang = "en"
+_i18n_registry = []  # [(key, widget, prop), ...]
+
+TRANSLATIONS = {
+    "en": {
+        # Window
+        "app.title": "Keepers Orchestrator",
+        # Menu
+        "menu.help": "Help",
+        "menu.help.docs": "Documentation & Colors",
+        # Status bar
+        "status.ready": "Ready",
+        # Tab names
+        "tab.add_torrents": "Add Torrents",
+        "tab.keepers": "Keepers",
+        "tab.update_torrents": "Update Torrents",
+        "tab.remove_torrents": "Remove Torrents",
+        "tab.repair_categories": "Repair Categories",
+        "tab.move_torrents": "Move Torrents",
+        "tab.folder_scanner": "Folder Scanner",
+        "tab.bitrot_scanner": "Bitrot Scanner",
+        "tab.settings": "Settings",
+        "tab.search_torrents": "Search Torrents",
+        # Common
+        "common.client": "Client:",
+        "common.stop": "Stop",
+        "common.browse": "Browse...",
+        "common.filter": "Filter:",
+        "common.name": "Name",
+        "common.size": "Size",
+        "common.category": "Category",
+        "common.path": "Path",
+        "common.status": "Status",
+        "common.log": "Log",
+        "common.scan_now": "Scan Now",
+        "common.scan": "Scan",
+        "common.refresh": "Refresh",
+        "common.add": "Add",
+        "common.remove": "Remove",
+        "common.copy": "Copy",
+        "common.select_all": "Select All",
+        "common.download_torrent": "Download .torrent",
+        "common.list_updated_never": "List updated: never",
+        "common.list_updated": "List updated: {time}",
+        "common.scan_controls": "Scan Controls",
+        "common.select_client": "Select Client",
+        "common.refresh_list": "Refresh List",
+        # Adder tab
+        "adder.target": "Target",
+        "adder.select_client": "Select Client:",
+        "adder.selection": "Selection",
+        "adder.no_file_selected": "No file/folder selected",
+        "adder.select_torrent_zip": "Select Torrent/ZIP File",
+        "adder.select_folder": "Select Folder",
+        "adder.additional_info": "Additional Info",
+        "adder.custom_options": "Custom Options",
+        "adder.folder_structure": "Folder Structure",
+        "adder.create_cat_subfolder": "Create Category Subfolder",
+        "adder.create_id_subfolder": "Create ID Subfolder",
+        "adder.override_cat_path": "Override Category & Path",
+        "adder.category": "Category:",
+        "adder.save_path": "Save Path:",
+        "adder.tags": "Tags:",
+        "adder.tags_hint": "(comma separated)",
+        "adder.add_to_qbit": "Add to qBittorrent",
+        "adder.pause": "Pause",
+        "adder.all_clients": "All Clients",
+        # Remover tab
+        "remover.delete_files": "Also delete content files (DATA)",
+        "remover.select_from_torrents": "Select from .torrent files...",
+        "remover.options_actions": "Options & Actions",
+        "remover.saved_path": "Saved Path",
+        "remover.state": "State",
+        "remover.hash": "Hash",
+        "remover.remove_selected": "Remove Selected Torrents",
+        # Settings tab
+        "settings.migration": "Migration / Import Data",
+        "settings.import_webtlo": "Import from webtlo config.ini",
+        "settings.proxy": "Proxy Settings (HTTP/HTTPS/SOCKS5)",
+        "settings.proxy_enable": "Enable Proxy (useful for bypassing regional blocks like Rutracker)",
+        "settings.proxy_url": "Proxy URL:",
+        "settings.username": "Username:",
+        "settings.password": "Password:",
+        "settings.save_proxy": "Save Proxy Settings",
+        "settings.global_auth": "Global Authentication",
+        "settings.global_auth_enable": "Use Global Authentication for All Clients",
+        "settings.global_user": "Global User:",
+        "settings.global_pass": "Global Pass:",
+        "settings.save_global": "Save Global Settings",
+        "settings.clients": "qBittorrent Clients",
+        "settings.name": "Name:",
+        "settings.url": "URL:",
+        "settings.base_path": "Base Path:",
+        "settings.use_global_auth": "Use Global Auth",
+        "settings.save_client": "Save Client Details",
+        "settings.rt_login": "Rutracker Forum Login (for downloading .torrents and failover category fetching)",
+        "settings.update_keys": "Update Keys",
+        "settings.cat_cache_ttl": "Category cache TTL (hours):",
+        "settings.cat_cache_hint": "(how long to reuse loaded torrent lists before fetching fresh data)",
+        "settings.save_cache": "Save Cache Settings",
+        "settings.clear_cache": "Clear All Cached Lists",
+        "settings.pm": "Private Messages",
+        "settings.pm_enable": "Enable PM inbox polling",
+        "settings.pm_interval": "Interval (sec):",
+        "settings.pm_toast": "Windows notifications",
+        "settings.save_pm": "Save PM Settings",
+        "settings.data_sources": "Data Sources",
+        "settings.refresh_cats": "Refresh Rutracker Categories",
+        "settings.appearance": "Appearance",
+        "settings.theme": "Theme:",
+        "settings.theme_hint": "(applied instantly)",
+        "settings.language": "Language:",
+        "settings.language_hint": "(applied instantly)",
+        "settings.app_updates": "App Updates (GitHub)",
+        "settings.auto_update_enable": "Enable app auto-update from GitHub releases",
+        "settings.save_update": "Save App Update Settings",
+        "settings.check_updates": "Check for updates",
+        "settings.statistics": "Statistics",
+        "settings.stats_kept": "Torrents Kept: {count}",
+        "settings.stats_size": "Total Size Saved: {size}",
+        "settings.stats_active": "Active Seeding Size: {size}",
+        "settings.stats_net": "Global UL: {ul} | DL: {dl}",
+        "settings.stats_total": "Total Torrents: {count} ({size})",
+        "settings.stats_bitrot": "Torrents Checked for Bitrot: {count}",
+        "settings.stats_mover": "Torrents Auto-Balanced: {count}",
+        # Updater tab
+        "updater.only_unreg": "Only Unregistered",
+        "updater.unreg_torrents": "Unregistered Torrents",
+        "updater.torrent_name": "Torrent Name",
+        "updater.reason": "Reason",
+        "updater.topic_id": "Topic ID",
+        "updater.new_topic": "New Topic",
+        "updater.switch_hint": "Switch to this tab to scan.",
+        "updater.keep_files": "Update (Keep Files)",
+        "updater.consumed": "Update Consumed",
+        "updater.redownload": "Update (Re-download)",
+        "updater.remove_qbit": "Remove from qBit",
+        "updater.delete_files": "Delete with Files",
+        "updater.update_log": "Update Log",
+        # Search tab
+        "search.search": "Search",
+        "search.query": "Query:",
+        "search.type": "Type:",
+        "search.type_name": "Name (Scrape)",
+        "search.type_topic": "Topic ID (API)",
+        "search.type_hash": "Hash (API)",
+        "search.results": "Results",
+        "search.id": "ID",
+        "search.seeds": "S",
+        "search.leech": "L",
+        "search.download": "Download",
+        "search.download_add": "Download & Add",
+        # Bitrot tab
+        "bitrot.older_than": "Older than (Days):",
+        "bitrot.load_torrents": "Load 100% Torrents",
+        "bitrot.start_check": "Start Bitrot Check (Selected)",
+        "bitrot.stop_check": "Stop Check",
+        "bitrot.topic_id": "Topic ID",
+        "bitrot.added": "Added",
+        "bitrot.last_active": "Last Active",
+        "bitrot.up_speed": "UP Speed",
+        "bitrot.seeds": "Seeds",
+        "bitrot.last_checked": "Last Checked",
+        "bitrot.progress": "Progress",
+        "bitrot.bitrot_state": "Bitrot State",
+        "bitrot.ready": "Ready",
+        "bitrot.total_stats": "Total: {count} torrents ({size})",
+        # Repair tab
+        "repair.mismatches": "Category Mismatches",
+        "repair.current_cat": "Current Cat",
+        "repair.correct_cat": "Correct Cat",
+        "repair.current_path": "Current Path",
+        "repair.new_path": "New Path",
+        "repair.scan_hint": "Click Scan to check categories.",
+        "repair.move_files": "Also correct save path (move files)",
+        "repair.selected": "Repair Selected",
+        "repair.all": "Repair All",
+        "repair.log": "Repair Log",
+        # Mover tab
+        "mover.client": "Client",
+        "mover.load_torrents": "Load Torrents",
+        "mover.by_category": "Move by Category",
+        "mover.new_root": "New root path:",
+        "mover.max_torrents": "Max torrents to move (0 = all):",
+        "mover.folder_structure": "Folder structure:",
+        "mover.cat_folder": "Category folder:",
+        "mover.id_folder": "ID folder:",
+        "mover.create_cat_sub": "Create /Category/ subfolder in target path",
+        "mover.keep_id": "Keep existing /ID/ folder",
+        "mover.create_id": "Create /ID/ folder (if missing)",
+        "mover.remove_id": "Remove /ID/ folder (flatten)",
+        "mover.cat_summary_hint": "Select a category to see details.",
+        "mover.move_category": "Move Category",
+        "mover.resume": "Resume",
+        "mover.auto_balance": "Auto-Balance Across Disks",
+        "mover.disk_path": "Disk Path",
+        "mover.free_space": "Free Space",
+        "mover.current_load": "Current Load",
+        "mover.target_load": "Target Load",
+        "mover.detect_disks": "Detect Disks",
+        "mover.add_path": "Add path:",
+        "mover.strategy": "Strategy:",
+        "mover.bal_size": "Balance by Size",
+        "mover.bal_seeded": "Balance by Seeded",
+        "mover.bal_both": "Both (recommended)",
+        "mover.preserve_cat": "Preserve /Category/ subfolder in target path",
+        "mover.preview": "Preview Balance",
+        "mover.execute": "Execute Balance",
+        "mover.preview_frame": "Balance Preview",
+        "mover.col_uploaded": "Uploaded",
+        "mover.col_from": "From",
+        "mover.col_to": "To",
+        "mover.move_log": "Move Log",
+        # Keepers tab
+        "keepers.save_category": "Save Category:",
+        "keepers.forum_cat": "Forum Category",
+        "keepers.custom": "Custom:",
+        "keepers.skip_zero_topics": "Skip 0 B topics",
+        "keepers.skip_zero_cats": "Skip 0 B categories",
+        "keepers.max_seeds": "Max Seeds:",
+        "keepers.max_keepers": "Max Keepers:",
+        "keepers.preferred_cats": "Preferred Categories",
+        "keepers.add_pref": "+ Add",
+        "keepers.remove_pref": "- Remove",
+        "keepers.scan_all": "Scan All",
+        "keepers.stats_title": "Category Stats:",
+        "keepers.stats_topics": "Topics: --",
+        "keepers.stats_size": "Total Size: --",
+        "keepers.stats_seeds": "Seeds: --",
+        "keepers.stats_avg": "Avg Seeds: --",
+        "keepers.stats_leechers": "Leechers: --",
+        "keepers.col_id": "ID",
+        "keepers.col_seeds": "Seeds",
+        "keepers.col_leech": "Leech",
+        "keepers.col_link": "Link",
+        "keepers.col_k_count": "# Keepers",
+        "keepers.col_priority": "Priority",
+        "keepers.col_last_seen": "Last Seen",
+        "keepers.col_poster": "Poster",
+        "keepers.start_paused": "Start Paused",
+        "keepers.add_selected": "Add Selected",
+        "keepers.export_csv": "Export to CSV",
+        # Scanner tab
+        "scanner.folder": "Folder:",
+        "scanner.recursive": "Scan subfolders recursively",
+        "scanner.use_parent": "Use parent folder as save_path (content lives in /ID/ folder)",
+        "scanner.skip_subid": "Skip subfolders inside /ID/",
+        "scanner.start_paused": "Start paused",
+        "scanner.deep_scan": "Deep Scan (Verify Files)",
+        "scanner.deep_scan_plus": "Deep Scan+ (Verify Hashes)",
+        "scanner.custom_add": "Custom Add Options",
+        "scanner.override_path": "Override Save Path",
+        "scanner.results": "Scan Results",
+        "scanner.disk_size": "Disk Size",
+        "scanner.seeds": "Seeds",
+        "scanner.leech": "Leech",
+        "scanner.rt_status": "RT Status",
+        "scanner.in_qbit": "In qBit",
+        "scanner.extra": "Extra",
+        "scanner.missing": "Missing",
+        "scanner.mismatch": "Mismatch",
+        "scanner.pieces": "Pieces (Bad/Total)",
+        "scanner.disk_path": "Disk Path",
+        "scanner.scan_hint": "Enter a folder path and click Scan.",
+        "scanner.show_zero": "Show only 0 B on disk",
+        "scanner.add_selected": "Add Selected to qBit",
+        "scanner.add_all": "Add All Missing",
+        "scanner.del_qbit": "Delete from qBit",
+        "scanner.del_data": "Delete Data",
+        "scanner.del_os": "Delete OS Data",
+        # Help dialog
+        "help.title": "Help & Documentation",
+    },
+    "ru": {
+        # Window
+        "app.title": "Keepers Orchestrator",
+        # Menu
+        "menu.help": "Справка",
+        "menu.help.docs": "Документация и цвета",
+        # Status bar
+        "status.ready": "Готов",
+        # Tab names
+        "tab.add_torrents": "Добавление",
+        "tab.keepers": "Хранители",
+        "tab.update_torrents": "Обновление",
+        "tab.remove_torrents": "Удаление",
+        "tab.repair_categories": "Категории",
+        "tab.move_torrents": "Перемещение",
+        "tab.folder_scanner": "Сканер папок",
+        "tab.bitrot_scanner": "Bitrot сканер",
+        "tab.settings": "Настройки",
+        "tab.search_torrents": "Поиск",
+        # Common
+        "common.client": "Клиент:",
+        "common.stop": "Стоп",
+        "common.browse": "Обзор...",
+        "common.filter": "Фильтр:",
+        "common.name": "Название",
+        "common.size": "Размер",
+        "common.category": "Категория",
+        "common.path": "Путь",
+        "common.status": "Статус",
+        "common.log": "Журнал",
+        "common.scan_now": "Сканировать",
+        "common.scan": "Сканировать",
+        "common.refresh": "Обновить",
+        "common.add": "Добавить",
+        "common.remove": "Удалить",
+        "common.copy": "Копировать",
+        "common.select_all": "Выделить все",
+        "common.download_torrent": "Скачать .torrent",
+        "common.list_updated_never": "Список обновлён: никогда",
+        "common.list_updated": "Список обновлён: {time}",
+        "common.scan_controls": "Управление сканированием",
+        "common.select_client": "Выбор клиента",
+        "common.refresh_list": "Обновить список",
+        # Adder tab
+        "adder.target": "Цель",
+        "adder.select_client": "Выбрать клиент:",
+        "adder.selection": "Выбор файла",
+        "adder.no_file_selected": "Файл или папка не выбраны",
+        "adder.select_torrent_zip": "Выбрать Torrent/ZIP",
+        "adder.select_folder": "Выбрать папку",
+        "adder.additional_info": "Доп. информация",
+        "adder.custom_options": "Пользовательские опции",
+        "adder.folder_structure": "Структура папок",
+        "adder.create_cat_subfolder": "Создать подпапку категории",
+        "adder.create_id_subfolder": "Создать подпапку ID",
+        "adder.override_cat_path": "Переопределить категорию и путь",
+        "adder.category": "Категория:",
+        "adder.save_path": "Путь сохранения:",
+        "adder.tags": "Теги:",
+        "adder.tags_hint": "(через запятую)",
+        "adder.add_to_qbit": "Добавить в qBittorrent",
+        "adder.pause": "Пауза",
+        "adder.all_clients": "Все клиенты",
+        # Remover tab
+        "remover.delete_files": "Также удалить файлы содержимого (ДАННЫЕ)",
+        "remover.select_from_torrents": "Выбрать из .torrent файлов...",
+        "remover.options_actions": "Опции и действия",
+        "remover.saved_path": "Путь сохранения",
+        "remover.state": "Состояние",
+        "remover.hash": "Хеш",
+        "remover.remove_selected": "Удалить выбранные торренты",
+        # Settings tab
+        "settings.migration": "Миграция / Импорт данных",
+        "settings.import_webtlo": "Импорт из webtlo config.ini",
+        "settings.proxy": "Настройки прокси (HTTP/HTTPS/SOCKS5)",
+        "settings.proxy_enable": "Включить прокси (для обхода блокировок, например Rutracker)",
+        "settings.proxy_url": "URL прокси:",
+        "settings.username": "Логин:",
+        "settings.password": "Пароль:",
+        "settings.save_proxy": "Сохранить настройки прокси",
+        "settings.global_auth": "Глобальная аутентификация",
+        "settings.global_auth_enable": "Использовать глобальную аутентификацию для всех клиентов",
+        "settings.global_user": "Глоб. логин:",
+        "settings.global_pass": "Глоб. пароль:",
+        "settings.save_global": "Сохранить глобальные настройки",
+        "settings.clients": "Клиенты qBittorrent",
+        "settings.name": "Имя:",
+        "settings.url": "URL:",
+        "settings.base_path": "Базовый путь:",
+        "settings.use_global_auth": "Глобальная авториз.",
+        "settings.save_client": "Сохранить клиент",
+        "settings.rt_login": "Вход на Rutracker (для скачивания .torrent и резервного получения категорий)",
+        "settings.update_keys": "Обновить ключи",
+        "settings.cat_cache_ttl": "TTL кеша категорий (часы):",
+        "settings.cat_cache_hint": "(как долго использовать загруженные списки перед обновлением)",
+        "settings.save_cache": "Сохранить настройки кеша",
+        "settings.clear_cache": "Очистить весь кеш",
+        "settings.pm": "Личные сообщения",
+        "settings.pm_enable": "Включить опрос входящих ЛС",
+        "settings.pm_interval": "Интервал (сек):",
+        "settings.pm_toast": "Уведомления Windows",
+        "settings.save_pm": "Сохранить настройки ЛС",
+        "settings.data_sources": "Источники данных",
+        "settings.refresh_cats": "Обновить категории Rutracker",
+        "settings.appearance": "Оформление",
+        "settings.theme": "Тема:",
+        "settings.theme_hint": "(применяется мгновенно)",
+        "settings.language": "Язык:",
+        "settings.language_hint": "(применяется мгновенно)",
+        "settings.app_updates": "Обновление приложения (GitHub)",
+        "settings.auto_update_enable": "Включить автообновление из GitHub releases",
+        "settings.save_update": "Сохранить настройки обновлений",
+        "settings.check_updates": "Проверить обновления",
+        "settings.statistics": "Статистика",
+        "settings.stats_kept": "Торрентов сохранено: {count}",
+        "settings.stats_size": "Общий размер: {size}",
+        "settings.stats_active": "Активная раздача: {size}",
+        "settings.stats_net": "Отдача: {ul} | Загрузка: {dl}",
+        "settings.stats_total": "Всего торрентов: {count} ({size})",
+        "settings.stats_bitrot": "Проверено на Bitrot: {count}",
+        "settings.stats_mover": "Авто-балансировка: {count}",
+        # Updater tab
+        "updater.only_unreg": "Только незарег.",
+        "updater.unreg_torrents": "Незарегистрированные торренты",
+        "updater.torrent_name": "Название торрента",
+        "updater.reason": "Причина",
+        "updater.topic_id": "ID темы",
+        "updater.new_topic": "Новая тема",
+        "updater.switch_hint": "Переключитесь на эту вкладку для сканирования.",
+        "updater.keep_files": "Обновить (сохранить файлы)",
+        "updater.consumed": "Обновить поглощённые",
+        "updater.redownload": "Обновить (перекачать)",
+        "updater.remove_qbit": "Удалить из qBit",
+        "updater.delete_files": "Удалить с файлами",
+        "updater.update_log": "Журнал обновлений",
+        # Search tab
+        "search.search": "Поиск",
+        "search.query": "Запрос:",
+        "search.type": "Тип:",
+        "search.type_name": "Имя (парсинг)",
+        "search.type_topic": "ID темы (API)",
+        "search.type_hash": "Хеш (API)",
+        "search.results": "Результаты",
+        "search.id": "ID",
+        "search.seeds": "С",
+        "search.leech": "Л",
+        "search.download": "Скачать",
+        "search.download_add": "Скачать и добавить",
+        # Bitrot tab
+        "bitrot.older_than": "Старше (дней):",
+        "bitrot.load_torrents": "Загрузить 100% торренты",
+        "bitrot.start_check": "Проверка Bitrot (выбранные)",
+        "bitrot.stop_check": "Остановить проверку",
+        "bitrot.topic_id": "ID темы",
+        "bitrot.added": "Добавлен",
+        "bitrot.last_active": "Посл. активность",
+        "bitrot.up_speed": "Скорость отдачи",
+        "bitrot.seeds": "Сиды",
+        "bitrot.last_checked": "Посл. проверка",
+        "bitrot.progress": "Прогресс",
+        "bitrot.bitrot_state": "Состояние Bitrot",
+        "bitrot.ready": "Готов",
+        "bitrot.total_stats": "Всего: {count} торрентов ({size})",
+        # Repair tab
+        "repair.mismatches": "Несоответствия категорий",
+        "repair.current_cat": "Текущая кат.",
+        "repair.correct_cat": "Верная кат.",
+        "repair.current_path": "Текущий путь",
+        "repair.new_path": "Новый путь",
+        "repair.scan_hint": "Нажмите Сканировать для проверки.",
+        "repair.move_files": "Также исправить путь (переместить файлы)",
+        "repair.selected": "Исправить выбранные",
+        "repair.all": "Исправить все",
+        "repair.log": "Журнал исправлений",
+        # Mover tab
+        "mover.client": "Клиент",
+        "mover.load_torrents": "Загрузить торренты",
+        "mover.by_category": "Перемещение по категории",
+        "mover.new_root": "Новый корневой путь:",
+        "mover.max_torrents": "Макс. торрентов (0 = все):",
+        "mover.folder_structure": "Структура папок:",
+        "mover.cat_folder": "Папка категории:",
+        "mover.id_folder": "Папка ID:",
+        "mover.create_cat_sub": "Создать подпапку /Категория/ в целевом пути",
+        "mover.keep_id": "Сохранить существующую папку /ID/",
+        "mover.create_id": "Создать папку /ID/ (если нет)",
+        "mover.remove_id": "Убрать папку /ID/ (объединить)",
+        "mover.cat_summary_hint": "Выберите категорию для просмотра деталей.",
+        "mover.move_category": "Переместить категорию",
+        "mover.resume": "Продолжить",
+        "mover.auto_balance": "Авто-балансировка между дисками",
+        "mover.disk_path": "Путь к диску",
+        "mover.free_space": "Свободно",
+        "mover.current_load": "Текущая нагрузка",
+        "mover.target_load": "Целевая нагрузка",
+        "mover.detect_disks": "Обнаружить диски",
+        "mover.add_path": "Добавить путь:",
+        "mover.strategy": "Стратегия:",
+        "mover.bal_size": "По размеру",
+        "mover.bal_seeded": "По раздаче",
+        "mover.bal_both": "Оба (рекомендуется)",
+        "mover.preserve_cat": "Сохранить подпапку /Категория/ в целевом пути",
+        "mover.preview": "Предпросмотр",
+        "mover.execute": "Выполнить балансировку",
+        "mover.preview_frame": "Предпросмотр балансировки",
+        "mover.col_uploaded": "Отдано",
+        "mover.col_from": "Откуда",
+        "mover.col_to": "Куда",
+        "mover.move_log": "Журнал перемещений",
+        # Keepers tab
+        "keepers.save_category": "Категория сохр.:",
+        "keepers.forum_cat": "Категория форума",
+        "keepers.custom": "Своя:",
+        "keepers.skip_zero_topics": "Пропускать 0 Б темы",
+        "keepers.skip_zero_cats": "Пропускать 0 Б категории",
+        "keepers.max_seeds": "Макс. сидов:",
+        "keepers.max_keepers": "Макс. хранителей:",
+        "keepers.preferred_cats": "Избранные категории",
+        "keepers.add_pref": "+ Доб.",
+        "keepers.remove_pref": "- Убрать",
+        "keepers.scan_all": "Сканировать все",
+        "keepers.stats_title": "Стат. категории:",
+        "keepers.stats_topics": "Тем: --",
+        "keepers.stats_size": "Общий размер: --",
+        "keepers.stats_seeds": "Сиды: --",
+        "keepers.stats_avg": "Ср. сиды: --",
+        "keepers.stats_leechers": "Личеры: --",
+        "keepers.col_id": "ID",
+        "keepers.col_seeds": "Сиды",
+        "keepers.col_leech": "Личи",
+        "keepers.col_link": "Ссылка",
+        "keepers.col_k_count": "Хранителей",
+        "keepers.col_priority": "Приоритет",
+        "keepers.col_last_seen": "Посл. визит",
+        "keepers.col_poster": "Автор",
+        "keepers.start_paused": "Добавить на паузе",
+        "keepers.add_selected": "Добавить выбранные",
+        "keepers.export_csv": "Экспорт в CSV",
+        # Scanner tab
+        "scanner.folder": "Папка:",
+        "scanner.recursive": "Сканировать подпапки рекурсивно",
+        "scanner.use_parent": "Родительская папка как save_path (содержимое в /ID/)",
+        "scanner.skip_subid": "Пропускать подпапки внутри /ID/",
+        "scanner.start_paused": "Добавить на паузе",
+        "scanner.deep_scan": "Глубокое сканирование (проверка файлов)",
+        "scanner.deep_scan_plus": "Глубокое сканирование+ (проверка хешей)",
+        "scanner.custom_add": "Опции добавления",
+        "scanner.override_path": "Переопределить путь",
+        "scanner.results": "Результаты сканирования",
+        "scanner.disk_size": "Размер на диске",
+        "scanner.seeds": "Сиды",
+        "scanner.leech": "Личи",
+        "scanner.rt_status": "Статус RT",
+        "scanner.in_qbit": "В qBit",
+        "scanner.extra": "Лишние",
+        "scanner.missing": "Нет",
+        "scanner.mismatch": "Несовп.",
+        "scanner.pieces": "Части (плох./всего)",
+        "scanner.disk_path": "Путь на диске",
+        "scanner.scan_hint": "Укажите папку и нажмите Сканировать.",
+        "scanner.show_zero": "Показать только 0 Б на диске",
+        "scanner.add_selected": "Добавить выбранные в qBit",
+        "scanner.add_all": "Добавить все отсутствующие",
+        "scanner.del_qbit": "Удалить из qBit",
+        "scanner.del_data": "Удалить данные",
+        "scanner.del_os": "Удалить с диска",
+        # Help dialog
+        "help.title": "Справка и документация",
+    },
+}
+
+
+def t(key, **kwargs):
+    """Look up a translation key, with fallback to English. Supports {placeholder} interpolation."""
+    text = TRANSLATIONS.get(_current_lang, TRANSLATIONS["en"]).get(key)
+    if text is None:
+        text = TRANSLATIONS["en"].get(key, key)
+    if kwargs:
+        try:
+            text = text.format(**kwargs)
+        except (KeyError, IndexError):
+            pass
+    return text
+
 
 # --- Simple Bencode Decoder ---
 def bdecode(data, idx=0):
@@ -1854,16 +2414,16 @@ class ToolTip:
 class QBitAdderApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Keepers Orchestrator")
+        self.root.title(t("app.title"))
         self.root.geometry("1200x870")
 
         # Global Menu Bar
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
-        
+
         help_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Help", menu=help_menu)
-        help_menu.add_command(label="Documentation & Colors", command=self._show_help)
+        menubar.add_cascade(label=t("menu.help"), menu=help_menu)
+        help_menu.add_command(label=t("menu.help.docs"), command=self._show_help)
 
         # Custom progress bar styling
         style = ttk.Style()
@@ -1889,6 +2449,9 @@ class QBitAdderApp:
             bordercolor="#bdbdbd", thickness=22)
 
         self.config = self.load_config()
+        # Initialize language from config
+        global _current_lang
+        _current_lang = self.config.get("language", "en")
         self.db_manager = DatabaseManager(DATA_DB_FILE)
         self.hash_db_manager = HashDatabaseManager(HASHES_DB_FILE)
         self.selected_files = [] # List of file paths
@@ -1926,15 +2489,15 @@ class QBitAdderApp:
         self.bitrot_tab = tk.Frame(self.notebook)
         self.settings_tab = tk.Frame(self.notebook)
 
-        self.notebook.add(self.adder_tab, text="Add Torrents")
-        self.notebook.add(self.keepers_tab, text="Keepers")
-        self.notebook.add(self.updater_tab, text="Update Torrents")
-        self.notebook.add(self.remover_tab, text="Remove Torrents")
-        self.notebook.add(self.repair_tab, text="Repair Categories")
-        self.notebook.add(self.mover_tab, text="Move Torrents")
-        self.notebook.add(self.scanner_tab, text="Folder Scanner")
-        self.notebook.add(self.bitrot_tab, text="Bitrot Scanner")
-        self.notebook.add(self.settings_tab, text="Settings")
+        self.notebook.add(self.adder_tab, text=t("tab.add_torrents"))
+        self.notebook.add(self.keepers_tab, text=t("tab.keepers"))
+        self.notebook.add(self.updater_tab, text=t("tab.update_torrents"))
+        self.notebook.add(self.remover_tab, text=t("tab.remove_torrents"))
+        self.notebook.add(self.repair_tab, text=t("tab.repair_categories"))
+        self.notebook.add(self.mover_tab, text=t("tab.move_torrents"))
+        self.notebook.add(self.scanner_tab, text=t("tab.folder_scanner"))
+        self.notebook.add(self.bitrot_tab, text=t("tab.bitrot_scanner"))
+        self.notebook.add(self.settings_tab, text=t("tab.settings"))
 
         # --- Torrent List Cache (per client) ---
         # Structure: {client_name: {"torrents": [...], "timestamp": float}}
@@ -2034,7 +2597,7 @@ class QBitAdderApp:
         
         # Search Tab (New)
         self.search_tab = tk.Frame(self.notebook)
-        self.notebook.add(self.search_tab, text="Search Torrents")
+        self.notebook.add(self.search_tab, text=t("tab.search_torrents"))
         self.create_search_ui()
         
         # Temp directory for downloads
@@ -2054,7 +2617,7 @@ class QBitAdderApp:
         status_frame = tk.Frame(self.root)
         status_frame.pack(side="bottom", fill="x")
 
-        self.status_bar = tk.Label(status_frame, text="Ready", bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar = tk.Label(status_frame, text=t("status.ready"), bd=1, relief=tk.SUNKEN, anchor=tk.W)
         self.status_bar.pack(side="left", fill="x", expand=True)
 
         self.pm_indicator = tk.Label(
@@ -2064,8 +2627,9 @@ class QBitAdderApp:
         self.pm_indicator.pack(side="right", padx=2)
         self.pm_indicator.bind("<Button-1>", lambda e: self._pm_open_inbox_dialog())
 
-        # Apply saved theme (after all UI is built)
+        # Apply saved theme and language (after all UI is built)
         self.apply_theme()
+        self.apply_language()
 
         # Start Category Manager (Auto-fetch if needed)
         threading.Thread(target=self._initial_category_fetch, daemon=True).start()
@@ -3398,67 +3962,67 @@ SIZE COMPARISON BACKGROUNDS:
             theme_name = self.config.get("theme", "Default")
         if theme_name not in THEMES:
             theme_name = "Default"
-        t = THEMES[theme_name]
+        th = THEMES[theme_name]
         self.config["theme"] = theme_name
 
         # --- Configure ttk styles ---
         style = ttk.Style()
 
-        style.configure("TNotebook", background=t["bg"])
-        style.configure("TNotebook.Tab", background=t["tab_bg"], foreground=t["tab_fg"], padding=[8, 4])
+        style.configure("TNotebook", background=th["bg"])
+        style.configure("TNotebook.Tab", background=th["tab_bg"], foreground=th["tab_fg"], padding=[8, 4])
         style.map("TNotebook.Tab",
-                  background=[("selected", t["tab_sel_bg"])],
-                  foreground=[("selected", t["fg"])])
+                  background=[("selected", th["tab_sel_bg"])],
+                  foreground=[("selected", th["fg"])])
 
         style.configure("Treeview",
-                        background=t["tree_bg"], foreground=t["tree_fg"],
-                        fieldbackground=t["tree_field_bg"])
+                        background=th["tree_bg"], foreground=th["tree_fg"],
+                        fieldbackground=th["tree_field_bg"])
         style.map("Treeview",
-                  background=[("selected", t["select_bg"])],
-                  foreground=[("selected", t["select_fg"])])
+                  background=[("selected", th["select_bg"])],
+                  foreground=[("selected", th["select_fg"])])
         style.configure("Treeview.Heading",
-                        background=t["btn_bg"], foreground=t["fg"])
+                        background=th["btn_bg"], foreground=th["fg"])
 
         style.configure("PM.Treeview",
-                        background=t["tree_bg"], foreground=t["tree_fg"],
-                        fieldbackground=t["tree_field_bg"])
+                        background=th["tree_bg"], foreground=th["tree_fg"],
+                        fieldbackground=th["tree_field_bg"])
         style.map("PM.Treeview",
                   background=[("selected", "#fdae62")],
                   foreground=[("selected", "black")])
 
-        style.configure("TScrollbar", background=t["btn_bg"], troughcolor=t["trough"])
+        style.configure("TScrollbar", background=th["btn_bg"], troughcolor=th["trough"])
         style.configure("TCombobox",
-                        fieldbackground=t["entry_bg"],
-                        background=t["btn_bg"], foreground=t["entry_fg"])
-        style.configure("TCheckbutton", background=t["bg"], foreground=t["fg"])
-        style.configure("TLabel", background=t["bg"], foreground=t["fg"])
-        style.configure("TFrame", background=t["bg"])
-        style.configure("TLabelframe", background=t["bg"])
-        style.configure("TLabelframe.Label", background=t["bg"], foreground=t["lf_fg"])
+                        fieldbackground=th["entry_bg"],
+                        background=th["btn_bg"], foreground=th["entry_fg"])
+        style.configure("TCheckbutton", background=th["bg"], foreground=th["fg"])
+        style.configure("TLabel", background=th["bg"], foreground=th["fg"])
+        style.configure("TFrame", background=th["bg"])
+        style.configure("TLabelframe", background=th["bg"])
+        style.configure("TLabelframe.Label", background=th["bg"], foreground=th["lf_fg"])
 
         # Progress bars - keep accent colors, update trough only
-        style.configure("green.Horizontal.TProgressbar", troughcolor=t["trough"])
-        style.configure("blue.Horizontal.TProgressbar", troughcolor=t["trough"])
-        style.configure("Horizontal.TProgressbar", troughcolor=t["trough"])
+        style.configure("green.Horizontal.TProgressbar", troughcolor=th["trough"])
+        style.configure("blue.Horizontal.TProgressbar", troughcolor=th["trough"])
+        style.configure("Horizontal.TProgressbar", troughcolor=th["trough"])
 
         # --- Walk all tk widgets ---
-        self.root.configure(bg=t["bg"])
-        self._apply_theme_to_widget(self.root, t)
+        self.root.configure(bg=th["bg"])
+        self._apply_theme_to_widget(self.root, th)
 
         # --- Menu bar ---
         try:
             menu_name = self.root.cget("menu")
             if menu_name:
                 menubar = self.root.nametowidget(menu_name)
-                self._apply_theme_to_menu(menubar, t)
+                self._apply_theme_to_menu(menubar, th)
         except Exception:
             pass
 
-    def _apply_theme_to_menu(self, menu, t):
+    def _apply_theme_to_menu(self, menu, th):
         """Recursively theme a Menu and its sub-menus."""
         try:
-            menu.configure(bg=t["menu_bg"], fg=t["menu_fg"],
-                          activebackground=t["select_bg"], activeforeground=t["select_fg"])
+            menu.configure(bg=th["menu_bg"], fg=th["menu_fg"],
+                          activebackground=th["select_bg"], activeforeground=th["select_fg"])
         except tk.TclError:
             pass
         # Theme sub-menus
@@ -3467,70 +4031,186 @@ SIZE COMPARISON BACKGROUNDS:
             for i in range(last + 1):
                 try:
                     submenu = menu.nametowidget(menu.entrycget(i, "menu"))
-                    self._apply_theme_to_menu(submenu, t)
+                    self._apply_theme_to_menu(submenu, th)
                 except (tk.TclError, ValueError):
                     pass
 
-    def _resolve_fg(self, current_fg, t):
+    def _resolve_fg(self, current_fg, th):
         """Decide what fg a widget should get.
         Returns new fg string, or None to leave unchanged."""
         fg = current_fg.lower()
         if fg in _DEFAULT_FG:
-            return t["fg"]
-        remap = t.get("fg_remap")
+            return th["fg"]
+        remap = th.get("fg_remap")
         if remap and fg in remap:
             return remap[fg]
         return None
 
-    def _apply_theme_to_widget(self, widget, t):
+    def _apply_theme_to_widget(self, widget, th):
         """Recursively apply theme colors to a widget tree."""
         cls = widget.winfo_class()
         try:
             if cls == "Frame":
-                widget.configure(bg=t["bg"])
+                widget.configure(bg=th["bg"])
             elif cls == "Labelframe":
-                widget.configure(bg=t["bg"], fg=t["lf_fg"])
+                widget.configure(bg=th["bg"], fg=th["lf_fg"])
             elif cls == "Label":
-                widget.configure(bg=t["bg"])
-                new_fg = self._resolve_fg(str(widget.cget("fg")), t)
+                widget.configure(bg=th["bg"])
+                new_fg = self._resolve_fg(str(widget.cget("fg")), th)
                 if new_fg:
                     widget.configure(fg=new_fg)
             elif cls == "Button":
-                widget.configure(bg=t["btn_bg"],
-                                activebackground=t["select_bg"],
-                                activeforeground=t["select_fg"])
-                new_fg = self._resolve_fg(str(widget.cget("fg")), t)
+                widget.configure(bg=th["btn_bg"],
+                                activebackground=th["select_bg"],
+                                activeforeground=th["select_fg"])
+                new_fg = self._resolve_fg(str(widget.cget("fg")), th)
                 if new_fg:
                     widget.configure(fg=new_fg)
             elif cls == "Entry":
                 state = str(widget.cget("state"))
                 if state == "readonly":
-                    widget.configure(readonlybackground=t["entry_bg"], fg=t["entry_fg"])
+                    widget.configure(readonlybackground=th["entry_bg"], fg=th["entry_fg"])
                 else:
-                    widget.configure(bg=t["entry_bg"], fg=t["entry_fg"],
-                                    insertbackground=t["insert"])
+                    widget.configure(bg=th["entry_bg"], fg=th["entry_fg"],
+                                    insertbackground=th["insert"])
             elif cls == "Listbox":
-                widget.configure(bg=t["entry_bg"], fg=t["entry_fg"],
-                                selectbackground=t["select_bg"],
-                                selectforeground=t["select_fg"])
+                widget.configure(bg=th["entry_bg"], fg=th["entry_fg"],
+                                selectbackground=th["select_bg"],
+                                selectforeground=th["select_fg"])
             elif cls == "Text":
-                widget.configure(bg=t["log_bg"], fg=t["log_fg"],
-                                insertbackground=t["insert"])
+                widget.configure(bg=th["log_bg"], fg=th["log_fg"],
+                                insertbackground=th["insert"])
             elif cls == "Canvas":
-                widget.configure(bg=t["bg"])
+                widget.configure(bg=th["bg"])
             elif cls == "Checkbutton":
-                widget.configure(bg=t["bg"], activebackground=t["bg"],
-                                selectcolor=t["cb_select"])
-                new_fg = self._resolve_fg(str(widget.cget("fg")), t)
+                widget.configure(bg=th["bg"], activebackground=th["bg"],
+                                selectcolor=th["cb_select"])
+                new_fg = self._resolve_fg(str(widget.cget("fg")), th)
                 if new_fg:
                     widget.configure(fg=new_fg)
             elif cls == "Scrollbar":
-                widget.configure(bg=t["btn_bg"], troughcolor=t["trough"])
+                widget.configure(bg=th["btn_bg"], troughcolor=th["trough"])
         except tk.TclError:
             pass
 
         for child in widget.winfo_children():
-            self._apply_theme_to_widget(child, t)
+            self._apply_theme_to_widget(child, th)
+
+    # --- Internationalization Helpers ---
+
+    def _tr_register(self, key, widget, prop="text"):
+        """Register a widget for language switching."""
+        _i18n_registry.append((key, widget, prop))
+
+    def _tl(self, parent, key, **opts):
+        """Create a tk.Label with translated text and register it."""
+        w = tk.Label(parent, text=t(key), **opts)
+        self._tr_register(key, w)
+        return w
+
+    def _tb(self, parent, key, **opts):
+        """Create a tk.Button with translated text and register it."""
+        w = tk.Button(parent, text=t(key), **opts)
+        self._tr_register(key, w)
+        return w
+
+    def _tlf(self, parent, key, **opts):
+        """Create a tk.LabelFrame with translated text and register it."""
+        w = tk.LabelFrame(parent, text=t(key), **opts)
+        self._tr_register(key, w)
+        return w
+
+    def _tcb(self, parent, key, **opts):
+        """Create a tk.Checkbutton with translated text and register it."""
+        w = tk.Checkbutton(parent, text=t(key), **opts)
+        self._tr_register(key, w)
+        return w
+
+    def _trb(self, parent, key, **opts):
+        """Create a tk.Radiobutton with translated text and register it."""
+        w = tk.Radiobutton(parent, text=t(key), **opts)
+        self._tr_register(key, w)
+        return w
+
+    def _tr_heading(self, tree, col, key, **opts):
+        """Set a treeview heading with translated text and register it."""
+        tree.heading(col, text=t(key), **opts)
+        _i18n_registry.append((key, tree, f"heading:{col}"))
+
+    def apply_language(self, lang=None):
+        """Apply language to all registered widgets, tabs, menus, and title."""
+        global _current_lang
+        if lang is None:
+            lang = self.config.get("language", "en")
+        if lang not in TRANSLATIONS:
+            lang = "en"
+        _current_lang = lang
+        self.config["language"] = lang
+
+        # Update all registered widgets
+        for key, widget, prop in _i18n_registry:
+            try:
+                if not widget.winfo_exists():
+                    continue
+            except Exception:
+                continue
+            try:
+                if prop == "text":
+                    widget.config(text=t(key))
+                elif prop.startswith("heading:"):
+                    col = prop.split(":", 1)[1]
+                    # Preserve existing command
+                    widget.heading(col, text=t(key))
+            except tk.TclError:
+                pass
+
+        # Update notebook tab titles
+        tab_keys = [
+            ("tab.add_torrents", self.adder_tab),
+            ("tab.keepers", self.keepers_tab),
+            ("tab.update_torrents", self.updater_tab),
+            ("tab.remove_torrents", self.remover_tab),
+            ("tab.repair_categories", self.repair_tab),
+            ("tab.move_torrents", self.mover_tab),
+            ("tab.folder_scanner", self.scanner_tab),
+            ("tab.bitrot_scanner", self.bitrot_tab),
+            ("tab.settings", self.settings_tab),
+        ]
+        if hasattr(self, 'search_tab'):
+            tab_keys.append(("tab.search_torrents", self.search_tab))
+        for tkey, tab_widget in tab_keys:
+            try:
+                self.notebook.tab(tab_widget, text=t(tkey))
+            except tk.TclError:
+                pass
+
+        # Update menu bar
+        try:
+            menu_name = self.root.cget("menu")
+            if menu_name:
+                menubar = self.root.nametowidget(menu_name)
+                menubar.entryconfig(0, label=t("menu.help"))
+                help_menu = menubar.nametowidget(menubar.entrycget(0, "menu"))
+                help_menu.entryconfig(0, label=t("menu.help.docs"))
+        except Exception:
+            pass
+
+        # Update window title
+        self.root.title(t("app.title"))
+
+        # Update combobox values that depend on language
+        if hasattr(self, 'search_type_combo'):
+            cur = self.search_type_combo.current()
+            self.search_type_combo['values'] = [t("search.type_name"), t("search.type_topic"), t("search.type_hash")]
+            if cur >= 0:
+                self.search_type_combo.current(cur)
+
+        # Update "All Clients" label in client dropdowns
+        if hasattr(self, 'client_selector'):
+            cur = self.client_selector.current()
+            self.update_client_dropdown()
+            if cur >= 0:
+                self.client_selector.current(cur)
 
     # --- Remover Tab UI (New) ---
     def create_remover_ui(self):
@@ -3538,52 +4218,52 @@ SIZE COMPARISON BACKGROUNDS:
         self.remover_all_torrents = []
 
         # 1. Client Selection
-        client_frame = tk.LabelFrame(self.remover_tab, text="Select Client", padx=10, pady=5)
+        client_frame = self._tlf(self.remover_tab, "common.select_client", padx=10, pady=5)
         client_frame.pack(fill="x", padx=10, pady=5)
-        
-        tk.Label(client_frame, text="Client:").pack(side="left")
+
+        self._tl(client_frame, "common.client").pack(side="left")
         self.remover_client_selector = ttk.Combobox(client_frame, state="readonly", width=30)
         self.remover_client_selector.pack(side="left", padx=5)
         self.remover_client_selector.bind("<<ComboboxSelected>>", lambda e: self._remover_on_client_changed())
-        
-        tk.Button(client_frame, text="Refresh List", command=lambda: self.remover_load_torrents(force=True)).pack(side="left", padx=10)
 
-        self.remover_cache_label = tk.Label(client_frame, text="List updated: never", fg="gray")
+        self._tb(client_frame, "common.refresh_list", command=lambda: self.remover_load_torrents(force=True)).pack(side="left", padx=10)
+
+        self.remover_cache_label = self._tl(client_frame, "common.list_updated_never", fg="gray")
         self.remover_cache_label.pack(side="left", padx=10)
 
         # 2. Filter & Options
         ctrl_frame = tk.Frame(self.remover_tab)
         ctrl_frame.pack(fill="x", padx=10, pady=5)
-        
+
         # Filter
-        tk.Label(ctrl_frame, text="Filter:").pack(side="left")
+        self._tl(ctrl_frame, "common.filter").pack(side="left")
         self.remover_filter_var = tk.StringVar()
         self.remover_filter_var.trace("w", lambda name, index, mode, sv=self.remover_filter_var: self.remover_apply_filter())
         entry_filter = tk.Entry(ctrl_frame, textvariable=self.remover_filter_var, width=30)
         entry_filter.pack(side="left", padx=5)
 
         # 3. Features
-        opts_frame = tk.LabelFrame(self.remover_tab, text="Options & Actions", padx=10, pady=5)
+        opts_frame = self._tlf(self.remover_tab, "remover.options_actions", padx=10, pady=5)
         opts_frame.pack(fill="x", padx=10, pady=5)
-        
-        self.delete_files_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(opts_frame, text="Also delete content files (DATA)", variable=self.delete_files_var, fg="red").pack(side="left")
 
-        tk.Button(opts_frame, text="Select from .torrent files...", command=self.remover_match_from_files).pack(side="right", padx=5)
+        self.delete_files_var = tk.BooleanVar(value=False)
+        self._tcb(opts_frame, "remover.delete_files", variable=self.delete_files_var, fg="red").pack(side="left")
+
+        self._tb(opts_frame, "remover.select_from_torrents", command=self.remover_match_from_files).pack(side="right", padx=5)
 
         # 4. Torrent List
         list_frame = tk.Frame(self.remover_tab)
         list_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        
+
         cols = ("Name", "Size", "Category", "State", "Path", "Hash")
         self.remover_tree = ttk.Treeview(list_frame, columns=cols, show="headings", selectmode="extended")
-        
-        self.remover_tree.heading("Name", text="Name", command=lambda: self.sort_tree(self.remover_tree, "Name", False))
-        self.remover_tree.heading("Size", text="Size", command=lambda: self.sort_tree(self.remover_tree, "Size", False))
-        self.remover_tree.heading("Category", text="Category", command=lambda: self.sort_tree(self.remover_tree, "Category", False))
-        self.remover_tree.heading("State", text="State", command=lambda: self.sort_tree(self.remover_tree, "State", False))
-        self.remover_tree.heading("Path", text="Saved Path", command=lambda: self.sort_tree(self.remover_tree, "Path", False))
-        self.remover_tree.heading("Hash", text="Hash")
+
+        self._tr_heading(self.remover_tree, "Name", "common.name", command=lambda: self.sort_tree(self.remover_tree, "Name", False))
+        self._tr_heading(self.remover_tree, "Size", "common.size", command=lambda: self.sort_tree(self.remover_tree, "Size", False))
+        self._tr_heading(self.remover_tree, "Category", "common.category", command=lambda: self.sort_tree(self.remover_tree, "Category", False))
+        self._tr_heading(self.remover_tree, "State", "remover.state", command=lambda: self.sort_tree(self.remover_tree, "State", False))
+        self._tr_heading(self.remover_tree, "Path", "remover.saved_path", command=lambda: self.sort_tree(self.remover_tree, "Path", False))
+        self._tr_heading(self.remover_tree, "Hash", "remover.hash")
         
         self.remover_tree.column("Name", width=250)
         self.remover_tree.column("Size", width=80)
@@ -3612,7 +4292,7 @@ SIZE COMPARISON BACKGROUNDS:
         # self.remover_progress.pack(side="right") # Pack only when busy
         
         # 6. Main Remove Button
-        tk.Button(self.remover_tab, text="Remove Selected Torrents", bg="#ffcccc", command=self.remover_delete_selected).pack(pady=10)
+        self._tb(self.remover_tab, "remover.remove_selected", bg="#ffcccc", command=self.remover_delete_selected).pack(pady=10)
         
         self.update_remover_client_dropdown()
 
@@ -4042,71 +4722,71 @@ SIZE COMPARISON BACKGROUNDS:
 
 
         # -1. Migration / Import Data
-        migration_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Migration / Import Data", padx=10, pady=5)
+        migration_frame = self._tlf(self.settings_scrollable_frame, "settings.migration", padx=10, pady=5)
         migration_frame.pack(fill="x", padx=10, pady=5)
-        tk.Button(migration_frame, text="Import from webtlo config.ini", command=self.import_webtlo_config).pack(anchor="w", pady=5)
+        self._tb(migration_frame, "settings.import_webtlo", command=self.import_webtlo_config).pack(anchor="w", pady=5)
 
         # 0. Proxy Settings Section
-        proxy_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Proxy Settings (HTTP/HTTPS/SOCKS5)", padx=10, pady=10)
+        proxy_frame = self._tlf(self.settings_scrollable_frame, "settings.proxy", padx=10, pady=10)
         proxy_frame.pack(fill="x", padx=10, pady=5)
-        
+
         # Traffic Light for Proxy
         self.canvas_proxy_status = tk.Canvas(proxy_frame, width=20, height=20, highlightthickness=0)
         self.canvas_proxy_status.pack(side="right", padx=10)
         self.oval_proxy_status = self.canvas_proxy_status.create_oval(2, 2, 18, 18, fill=self.status_data["proxy"], outline="gray")
-        
+
         self.proxy_enabled_var = tk.BooleanVar(value=self.config.get("proxy", {}).get("enabled", False))
-        tk.Checkbutton(proxy_frame, text="Enable Proxy (useful for bypassing regional blocks like Rutracker)", 
+        self._tcb(proxy_frame, "settings.proxy_enable",
                       variable=self.proxy_enabled_var, command=self.save_proxy_settings).pack(anchor="w", padx=5)
 
         p_auth_frame = tk.Frame(proxy_frame)
         p_auth_frame.pack(fill="x", padx=20, pady=2)
 
-        tk.Label(p_auth_frame, text="Proxy URL:").pack(side="left")
+        self._tl(p_auth_frame, "settings.proxy_url").pack(side="left")
         self.entry_proxy_url = tk.Entry(p_auth_frame, width=30)
         self.entry_proxy_url.pack(side="left", padx=5)
         self.entry_proxy_url.insert(0, self.config.get("proxy", {}).get("url", "socks5://127.0.0.1:10808"))
-        
-        tk.Label(p_auth_frame, text="Username:").pack(side="left", padx=(15, 0))
+
+        self._tl(p_auth_frame, "settings.username").pack(side="left", padx=(15, 0))
         self.entry_proxy_user = tk.Entry(p_auth_frame, width=15)
         self.entry_proxy_user.pack(side="left", padx=5)
         self.entry_proxy_user.insert(0, self.config.get("proxy", {}).get("username", ""))
 
-        tk.Label(p_auth_frame, text="Password:").pack(side="left", padx=(5, 0))
+        self._tl(p_auth_frame, "settings.password").pack(side="left", padx=(5, 0))
         self.entry_proxy_pass = tk.Entry(p_auth_frame, width=15, show="*")
         self.entry_proxy_pass.pack(side="left", padx=5)
         self.entry_proxy_pass.insert(0, self.config.get("proxy", {}).get("password", ""))
-        
-        tk.Button(proxy_frame, text="Save Proxy Settings", command=lambda: [self.save_proxy_settings(), self.trigger_status_check()]).pack(pady=5)
+
+        self._tb(proxy_frame, "settings.save_proxy", command=lambda: [self.save_proxy_settings(), self.trigger_status_check()]).pack(pady=5)
 
         # 1. Global Auth Section
-        global_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Global Authentication", padx=10, pady=10)
+        global_frame = self._tlf(self.settings_scrollable_frame, "settings.global_auth", padx=10, pady=10)
         self.global_auth_var = tk.BooleanVar(value=self.config["global_auth"]["enabled"])
-        tk.Checkbutton(global_frame, text="Use Global Authentication for All Clients", 
+        self._tcb(global_frame, "settings.global_auth_enable",
                       variable=self.global_auth_var, command=self.toggle_global_auth).pack(anchor="w", padx=5)
 
         auth_frame = tk.Frame(global_frame)
         auth_frame.pack(fill="x", padx=20, pady=2)
 
-        tk.Label(auth_frame, text="Global User:").pack(side="left")
+        self._tl(auth_frame, "settings.global_user").pack(side="left")
         self.entry_global_user = tk.Entry(auth_frame, width=15)
         self.entry_global_user.pack(side="left", padx=5)
         self.entry_global_user.insert(0, self.config["global_auth"]["username"])
 
-        tk.Label(auth_frame, text="Global Pass:").pack(side="left")
+        self._tl(auth_frame, "settings.global_pass").pack(side="left")
         self.entry_global_pass = tk.Entry(auth_frame, show="*", width=15)
         self.entry_global_pass.pack(side="left", padx=5)
         self.entry_global_pass.insert(0, self.config["global_auth"]["password"])
-        
-        tk.Button(global_frame, text="Save Global Settings", command=self.save_global_settings).pack(pady=5)
+
+        self._tb(global_frame, "settings.save_global", command=self.save_global_settings).pack(pady=5)
 
         # 2. Clients List Section
-        clients_frame = tk.LabelFrame(self.settings_scrollable_frame, text="qBittorrent Clients", padx=10, pady=10)
+        clients_frame = self._tlf(self.settings_scrollable_frame, "settings.clients", padx=10, pady=10)
         clients_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
         list_frame = tk.Frame(clients_frame)
         list_frame.pack(side="left", fill="y", padx=5)
-        
+
         self.client_listbox = tk.Listbox(list_frame, width=20)
         self.client_listbox.pack(side="top", fill="y", expand=True)
         self.client_listbox.bind("<<ListboxSelect>>", self.on_client_select)
@@ -4119,50 +4799,50 @@ SIZE COMPARISON BACKGROUNDS:
         # 3. Client Details Editor
         details_frame = tk.Frame(clients_frame)
         details_frame.pack(side="left", fill="both", expand=True, padx=10)
-        
+
         # Traffic light for Client
         self.canvas_client_status = tk.Canvas(details_frame, width=20, height=20, highlightthickness=0)
         self.canvas_client_status.grid(row=0, column=3, padx=0, sticky="e")
         self.oval_client_status = self.canvas_client_status.create_oval(2, 2, 18, 18, fill=self.status_data["client"], outline="gray")
-        
+
         # Expand middle column so column 3 pushes to the right
         details_frame.grid_columnconfigure(2, weight=1)
 
-        tk.Label(details_frame, text="Name:").grid(row=0, column=0, sticky="w")
+        self._tl(details_frame, "settings.name").grid(row=0, column=0, sticky="w")
         self.entry_name = tk.Entry(details_frame, width=30)
         self.entry_name.grid(row=0, column=1, pady=2)
         self.entry_name.bind("<FocusOut>", lambda e: self.save_current_client())
 
-        tk.Label(details_frame, text="URL:").grid(row=1, column=0, sticky="w")
+        self._tl(details_frame, "settings.url").grid(row=1, column=0, sticky="w")
         self.entry_url = tk.Entry(details_frame, width=30)
         self.entry_url.grid(row=1, column=1, pady=2)
         self.entry_url.bind("<FocusOut>", lambda e: self.save_current_client())
 
-        tk.Label(details_frame, text="Base Path:").grid(row=2, column=0, sticky="w")
+        self._tl(details_frame, "settings.base_path").grid(row=2, column=0, sticky="w")
         self.entry_path = tk.Entry(details_frame, width=30)
         self.entry_path.grid(row=2, column=1, pady=2)
         self.entry_path.bind("<FocusOut>", lambda e: self.save_current_client())
 
-        tk.Label(details_frame, text="Username:").grid(row=4, column=0, sticky="w")
+        self._tl(details_frame, "settings.username").grid(row=4, column=0, sticky="w")
         self.entry_user = tk.Entry(details_frame, width=30)
         self.entry_user.grid(row=4, column=1, pady=2)
         self.entry_user.bind("<FocusOut>", lambda e: self.save_current_client())
 
-        tk.Label(details_frame, text="Password:").grid(row=5, column=0, sticky="w")
+        self._tl(details_frame, "settings.password").grid(row=5, column=0, sticky="w")
         self.entry_pass = tk.Entry(details_frame, width=30, show="*")
         self.entry_pass.grid(row=5, column=1, pady=2)
         self.entry_pass.bind("<FocusOut>", lambda e: self.save_current_client())
 
         self.client_use_global_auth_var = tk.BooleanVar()
-        tk.Checkbutton(details_frame, text="Use Global Auth", variable=self.client_use_global_auth_var, command=self.on_global_auth_check_toggle).grid(row=6, column=0, columnspan=2, sticky="w")
+        self._tcb(details_frame, "settings.use_global_auth", variable=self.client_use_global_auth_var, command=self.on_global_auth_check_toggle).grid(row=6, column=0, columnspan=2, sticky="w")
 
-        tk.Button(details_frame, text="Save Client Details", command=lambda: [self.save_current_client(), self.trigger_status_check()]).grid(row=7, column=1, sticky="e", pady=10)
+        self._tb(details_frame, "settings.save_client", command=lambda: [self.save_current_client(), self.trigger_status_check()]).grid(row=7, column=1, sticky="e", pady=10)
 
 
         # 3. Rutracker Auth Section
-        rt_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Rutracker Forum Login (for downloading .torrents and failover category fetching)", padx=10, pady=10)
+        rt_frame = self._tlf(self.settings_scrollable_frame, "settings.rt_login", padx=10, pady=10)
         rt_frame.pack(fill="x", padx=10, pady=5)
-        
+
         # Traffic light for Rutracker
         self.canvas_rt_status = tk.Canvas(rt_frame, width=20, height=20, highlightthickness=0)
         self.canvas_rt_status.pack(side="right", anchor="ne", padx=5)
@@ -4171,12 +4851,12 @@ SIZE COMPARISON BACKGROUNDS:
         rt_auth_frame = tk.Frame(rt_frame)
         rt_auth_frame.pack(fill="x", padx=5, pady=2)
 
-        tk.Label(rt_auth_frame, text="Username:").pack(side="left")
+        self._tl(rt_auth_frame, "settings.username").pack(side="left")
         self.entry_rt_user = tk.Entry(rt_auth_frame, width=20)
         self.entry_rt_user.pack(side="left", padx=5)
         self.entry_rt_user.insert(0, self.config.get("rutracker_auth", {}).get("username", ""))
 
-        tk.Label(rt_auth_frame, text="Password:").pack(side="left")
+        self._tl(rt_auth_frame, "settings.password").pack(side="left")
         self.entry_rt_pass = tk.Entry(rt_auth_frame, show="*", width=20)
         self.entry_rt_pass.pack(side="left", padx=5)
         self.entry_rt_pass.pack(side="left", padx=5)
@@ -4185,7 +4865,7 @@ SIZE COMPARISON BACKGROUNDS:
         # Extracted Keys Display
         keys_frame = tk.Frame(rt_frame)
         keys_frame.pack(fill="x", padx=5, pady=5)
-        
+
         # Helper to add read-only field
         def add_ro_field(parent, label, key):
             tk.Label(parent, text=label).pack(side="left")
@@ -4200,56 +4880,56 @@ SIZE COMPARISON BACKGROUNDS:
         self.entry_key_id = add_ro_field(keys_frame, "ID:", "id")
         self.entry_key_bt = add_ro_field(keys_frame, "BT:", "bt")
         self.entry_key_api = add_ro_field(keys_frame, "API:", "api")
-        
-        tk.Button(keys_frame, text="Update Keys", command=self.update_keys_action).pack(side="left", padx=10)
+
+        self._tb(keys_frame, "settings.update_keys", command=self.update_keys_action).pack(side="left", padx=10)
 
         rt_ttl_frame = tk.Frame(rt_frame)
         rt_ttl_frame.pack(fill="x", padx=5, pady=2)
 
-        tk.Label(rt_ttl_frame, text="Category cache TTL (hours):").pack(side="left")
+        self._tl(rt_ttl_frame, "settings.cat_cache_ttl").pack(side="left")
         self.entry_cat_ttl = tk.Entry(rt_ttl_frame, width=5)
         self.entry_cat_ttl.pack(side="left", padx=5)
         self.entry_cat_ttl.insert(0, str(self.config.get("category_ttl_hours", 24)))
 
-        tk.Label(rt_ttl_frame, text="(how long to reuse loaded torrent lists before fetching fresh data)", fg="gray").pack(side="left", padx=5)
+        self._tl(rt_ttl_frame, "settings.cat_cache_hint", fg="gray").pack(side="left", padx=5)
 
-        cache_btn_frame = tk.Frame(rt_frame) # Changed from cache_frame to rt_frame
+        cache_btn_frame = tk.Frame(rt_frame)
         cache_btn_frame.pack(fill="x", padx=5, pady=2)
 
-        tk.Button(cache_btn_frame, text="Save Cache Settings", command=self._save_torrent_cache_settings).pack(side="left")
-        tk.Button(cache_btn_frame, text="Clear All Cached Lists", command=self._clear_torrent_cache).pack(side="left", padx=10)
+        self._tb(cache_btn_frame, "settings.save_cache", command=self._save_torrent_cache_settings).pack(side="left")
+        self._tb(cache_btn_frame, "settings.clear_cache", command=self._clear_torrent_cache).pack(side="left", padx=10)
 
         # PM Inbox Settings
-        pm_settings_frame = tk.LabelFrame(rt_frame, text="Private Messages", padx=5, pady=5)
+        pm_settings_frame = self._tlf(rt_frame, "settings.pm", padx=5, pady=5)
         pm_settings_frame.pack(fill="x", padx=5, pady=5)
 
         pm_row1 = tk.Frame(pm_settings_frame)
         pm_row1.pack(fill="x")
 
         self.pm_enabled_var = tk.BooleanVar(value=self.config.get("pm_polling_enabled", True))
-        tk.Checkbutton(pm_row1, text="Enable PM inbox polling",
+        self._tcb(pm_row1, "settings.pm_enable",
                       variable=self.pm_enabled_var).pack(side="left")
 
-        tk.Label(pm_row1, text="Interval (sec):").pack(side="left", padx=(15, 0))
+        self._tl(pm_row1, "settings.pm_interval").pack(side="left", padx=(15, 0))
         self.pm_interval_entry = tk.Entry(pm_row1, width=6)
         self.pm_interval_entry.pack(side="left", padx=5)
         self.pm_interval_entry.insert(0, str(self.config.get("pm_poll_interval_sec", 300)))
 
         self.pm_toast_var = tk.BooleanVar(value=self.config.get("pm_toast_enabled", False))
-        tk.Checkbutton(pm_row1, text="Windows notifications",
+        self._tcb(pm_row1, "settings.pm_toast",
                       variable=self.pm_toast_var,
                       command=self._pm_on_toast_toggle).pack(side="left", padx=(15, 0))
 
-        tk.Button(pm_row1, text="Save PM Settings", command=self._save_pm_settings).pack(side="left", padx=10)
+        self._tb(pm_row1, "settings.save_pm", command=self._save_pm_settings).pack(side="left", padx=10)
 
         # 4. Data Sources Section
-        data_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Data Sources")
+        data_frame = self._tlf(self.settings_scrollable_frame, "settings.data_sources")
         data_frame.pack(fill="x", padx=10, pady=5)
 
         top_row = tk.Frame(data_frame)
         top_row.pack(fill="x", padx=5, pady=5)
 
-        self.refresh_cats_btn = tk.Button(top_row, text="Refresh Rutracker Categories", command=self.refresh_categories)
+        self.refresh_cats_btn = self._tb(top_row, "settings.refresh_cats", command=self.refresh_categories)
         self.refresh_cats_btn.pack(side="left")
 
         self.cats_status_label = tk.Label(top_row, text=self.get_cats_status_text())
@@ -4258,51 +4938,59 @@ SIZE COMPARISON BACKGROUNDS:
         self.cats_progress = ttk.Progressbar(data_frame, mode='determinate', length=300, style="green.Horizontal.TProgressbar")
         self.cats_progress_label = tk.Label(data_frame, text="", fg="#333333", font=("Segoe UI", 9))
 
-        # Appearance / Theme
-        appear_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Appearance", padx=10, pady=5)
+        # Appearance / Theme & Language
+        appear_frame = self._tlf(self.settings_scrollable_frame, "settings.appearance", padx=10, pady=5)
         appear_frame.pack(fill="x", padx=10, pady=5)
 
-        tk.Label(appear_frame, text="Theme:").pack(side="left")
+        self._tl(appear_frame, "settings.theme").pack(side="left")
         self.theme_var = tk.StringVar(value=self.config.get("theme", "Default"))
         theme_combo = ttk.Combobox(appear_frame, textvariable=self.theme_var,
                                    values=list(THEMES.keys()), state="readonly", width=15)
         theme_combo.pack(side="left", padx=5)
         theme_combo.bind("<<ComboboxSelected>>", self._on_theme_change)
-        tk.Label(appear_frame, text="(applied instantly)", fg="gray").pack(side="left", padx=5)
+        self._tl(appear_frame, "settings.theme_hint", fg="gray").pack(side="left", padx=5)
+
+        tk.Label(appear_frame, text="   ").pack(side="left")  # spacer
+
+        self._tl(appear_frame, "settings.language").pack(side="left")
+        self.lang_var = tk.StringVar(value=self.config.get("language", "en"))
+        lang_combo = ttk.Combobox(appear_frame, textvariable=self.lang_var,
+                                  values=list(TRANSLATIONS.keys()), state="readonly", width=5)
+        lang_combo.pack(side="left", padx=5)
+        lang_combo.bind("<<ComboboxSelected>>", self._on_language_change)
+        self._tl(appear_frame, "settings.language_hint", fg="gray").pack(side="left", padx=5)
 
         # App update preferences (separate from torrent updater tab settings)
-        app_update_frame = tk.LabelFrame(self.settings_scrollable_frame, text="App Updates (GitHub)", padx=10, pady=5)
+        app_update_frame = self._tlf(self.settings_scrollable_frame, "settings.app_updates", padx=10, pady=5)
         app_update_frame.pack(fill="x", padx=10, pady=5)
 
         self.github_app_auto_update_var = tk.BooleanVar(
             value=self.config.get("github_app_auto_update_enabled", False)
         )
-        tk.Checkbutton(
-            app_update_frame,
-            text="Enable app auto-update from GitHub releases",
+        self._tcb(
+            app_update_frame, "settings.auto_update_enable",
             variable=self.github_app_auto_update_var
         ).pack(side="left")
-        tk.Button(
-            app_update_frame,
-            text="Save App Update Settings",
+        self._tb(
+            app_update_frame, "settings.save_update",
             command=self.save_github_update_settings
         ).pack(side="left", padx=10)
 
         # Version & Update
         v_frame = tk.Frame(self.settings_scrollable_frame)
         v_frame.pack(side="bottom", anchor="se", padx=10, pady=5)
-        
+
         self.version_label = tk.Label(v_frame, text=f"version {APP_VERSION}", fg="gray")
         self.version_label.pack(side="right", padx=5)
-        
+
         # Check Updates Button
-        tk.Button(v_frame, text="Check for updates", command=lambda: threading.Thread(target=self.check_github_updates, args=(False,), daemon=True).start()).pack(side="right", padx=5)
-        
+        self._tb(v_frame, "settings.check_updates", command=lambda: threading.Thread(target=self.check_github_updates, args=(False,), daemon=True).start()).pack(side="right", padx=5)
+
         # GitHub Link
         lbl_gh = tk.Label(v_frame, text="GitHub", fg="blue", cursor="hand2")
         lbl_gh.pack(side="right", padx=5)
         lbl_gh.bind("<Button-1>", lambda e: webbrowser.open(f"https://github.com/{GITHUB_REPO}"))
-        
+
         # Check for updates on startup (threaded, silent)
         threading.Thread(target=self.check_github_updates, args=(True,), daemon=True).start()
 
@@ -4310,37 +4998,37 @@ SIZE COMPARISON BACKGROUNDS:
         self.refresh_client_list()
 
         # 5. Statistics (Bottom Left)
-        stats_frame = tk.LabelFrame(self.settings_scrollable_frame, text="Statistics")
+        stats_frame = self._tlf(self.settings_scrollable_frame, "settings.statistics")
         stats_frame.pack(side="bottom", anchor="sw", padx=10, pady=5, fill="x")
 
         s_grid = tk.Frame(stats_frame)
         s_grid.pack(fill="x", padx=5, pady=2)
 
         # Row 1
-        self.stats_label_count = tk.Label(s_grid, text="Torrents Kept: 0", font=("", 9))
+        self.stats_label_count = tk.Label(s_grid, text=t("settings.stats_kept", count=0), font=("", 9))
         self.stats_label_count.grid(row=0, column=0, sticky="w", padx=10)
-        
-        self.stats_label_size = tk.Label(s_grid, text="Total Size Saved: 0 B", font=("", 9))
+
+        self.stats_label_size = tk.Label(s_grid, text=t("settings.stats_size", size="0 B"), font=("", 9))
         self.stats_label_size.grid(row=0, column=1, sticky="w", padx=10)
 
-        self.stats_label_active = tk.Label(s_grid, text="Active Seeding Size: 0 B", font=("", 9))
+        self.stats_label_active = tk.Label(s_grid, text=t("settings.stats_active", size="0 B"), font=("", 9))
         self.stats_label_active.grid(row=0, column=2, sticky="w", padx=10)
-        
+
         # Row 2
-        self.stats_label_global_net = tk.Label(s_grid, text="Global UL: 0 B/s | DL: 0 B/s", font=("", 9))
+        self.stats_label_global_net = tk.Label(s_grid, text=t("settings.stats_net", ul="0 B/s", dl="0 B/s"), font=("", 9))
         self.stats_label_global_net.grid(row=1, column=0, sticky="w", padx=10)
-        
-        self.stats_label_global_client = tk.Label(s_grid, text="Total Torrents: 0 (0 B)", font=("", 9))
+
+        self.stats_label_global_client = tk.Label(s_grid, text=t("settings.stats_total", count=0, size="0 B"), font=("", 9))
         self.stats_label_global_client.grid(row=1, column=1, sticky="w", padx=10)
-        
-        self.stats_label_bitrot = tk.Label(s_grid, text="Torrents Checked for Bitrot: 0", font=("", 9))
+
+        self.stats_label_bitrot = tk.Label(s_grid, text=t("settings.stats_bitrot", count=0), font=("", 9))
         self.stats_label_bitrot.grid(row=1, column=2, sticky="w", padx=10)
-        
+
         # Row 3
-        self.stats_label_mover = tk.Label(s_grid, text="Torrents Auto-Balanced: 0", font=("", 9))
+        self.stats_label_mover = tk.Label(s_grid, text=t("settings.stats_mover", count=0), font=("", 9))
         self.stats_label_mover.grid(row=2, column=0, sticky="w", padx=10)
-        
-        ref_btn = tk.Button(s_grid, text="Refresh", command=self.refresh_statistics, height=1)
+
+        ref_btn = self._tb(s_grid, "common.refresh", command=self.refresh_statistics, height=1)
         ref_btn.grid(row=2, column=2, sticky="e", padx=5)
 
         # Refresh stats on load
@@ -4502,7 +5190,7 @@ SIZE COMPARISON BACKGROUNDS:
             
     def update_client_dropdown(self):
         if hasattr(self, 'client_selector'):
-            options = [c["name"] for c in self.config["clients"]] + ["All Clients"]
+            options = [c["name"] for c in self.config["clients"]] + [t("adder.all_clients")]
             self.client_selector['values'] = options
 
             # Simple restore logic
@@ -4554,7 +5242,7 @@ SIZE COMPARISON BACKGROUNDS:
             self.root.after(0, self.update_cats_ui)
 
     def update_cats_ui(self):
-        self.refresh_cats_btn.config(state="normal", text="Refresh Rutracker Categories")
+        self.refresh_cats_btn.config(state="normal", text=t("settings.refresh_cats"))
         self.cats_status_label.config(text=self.get_cats_status_text())
         self.cats_progress.pack_forget()
         self.cats_progress_label.pack_forget()
@@ -4645,6 +5333,12 @@ SIZE COMPARISON BACKGROUNDS:
         self.apply_theme(name)
         self.save_config()
 
+    def _on_language_change(self, event=None):
+        """Handle language combobox change — apply and save immediately."""
+        lang = self.lang_var.get()
+        self.apply_language(lang)
+        self.save_config()
+
     def save_github_update_settings(self):
         self.config["github_app_auto_update_enabled"] = self.github_app_auto_update_var.get()
         self.save_config()
@@ -4682,7 +5376,7 @@ SIZE COMPARISON BACKGROUNDS:
         # Reset all cache labels
         for lbl_name in ('remover_cache_label', 'repair_cache_label', 'mover_cache_label', 'scanner_cache_label'):
             if hasattr(self, lbl_name):
-                getattr(self, lbl_name).config(text="List updated: never", fg="gray")
+                getattr(self, lbl_name).config(text=t("common.list_updated_never"), fg="gray")
         messagebox.showinfo("Cache Cleared", "All cached torrent lists have been cleared.")
 
     def save_rutracker_settings(self):
@@ -4846,85 +5540,85 @@ SIZE COMPARISON BACKGROUNDS:
     # --- Adder Tab UI ---
     def create_adder_ui(self):
         # Target Selection
-        target_frame = tk.LabelFrame(self.adder_tab, text="Target", padx=10, pady=5)
+        target_frame = self._tlf(self.adder_tab, "adder.target", padx=10, pady=5)
         target_frame.pack(fill="x", padx=10, pady=5)
-        
-        tk.Label(target_frame, text="Select Client:").pack(side="left")
+
+        self._tl(target_frame, "adder.select_client").pack(side="left")
         self.client_selector = ttk.Combobox(target_frame, state="readonly", width=30)
         self.client_selector.pack(side="left", padx=5)
         self.update_client_dropdown()
-        
+
         # File/Folder Selection
-        sel_frame = tk.LabelFrame(self.adder_tab, text="Selection", padx=10, pady=10)
+        sel_frame = self._tlf(self.adder_tab, "adder.selection", padx=10, pady=10)
         sel_frame.pack(fill="x", padx=10, pady=5)
-        
-        self.file_label = tk.Label(sel_frame, text="No file/folder selected", fg="gray", wraplength=500, justify="left")
+
+        self.file_label = self._tl(sel_frame, "adder.no_file_selected", fg="gray", wraplength=500, justify="left")
         self.file_label.pack(pady=5)
-        
+
         self.link_label = tk.Label(sel_frame, text="", fg="blue", cursor="hand2", wraplength=500, justify="left")
         self.link_label.pack(pady=(0, 5))
         self.link_label.bind("<Button-1>", self._open_link)
         self._current_link = None
-        
+
         btn_frame = tk.Frame(sel_frame)
         btn_frame.pack(pady=5)
-        tk.Button(btn_frame, text="Select Torrent/ZIP File", command=self.select_file).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="Select Folder", command=self.select_folder).pack(side="left", padx=5)
-        self.info_btn = tk.Button(btn_frame, text="Additional Info", command=self.show_additional_info, state="disabled")
+        self._tb(btn_frame, "adder.select_torrent_zip", command=self.select_file).pack(side="left", padx=5)
+        self._tb(btn_frame, "adder.select_folder", command=self.select_folder).pack(side="left", padx=5)
+        self.info_btn = self._tb(btn_frame, "adder.additional_info", command=self.show_additional_info, state="disabled")
         self.info_btn.pack(side="left", padx=5)
         self._current_torrent_info = None
 
         # Custom Options
-        custom_frame = tk.LabelFrame(self.adder_tab, text="Custom Options", padx=10, pady=5)
+        custom_frame = self._tlf(self.adder_tab, "adder.custom_options", padx=10, pady=5)
         custom_frame.pack(fill="x", padx=10, pady=5)
 
         # Folder Structure Options
-        fs_frame = tk.LabelFrame(custom_frame, text="Folder Structure", padx=5, pady=5)
+        fs_frame = self._tlf(custom_frame, "adder.folder_structure", padx=5, pady=5)
         fs_frame.pack(fill="x", padx=5, pady=5)
 
         self.add_create_cat_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(fs_frame, text="Create Category Subfolder", variable=self.add_create_cat_var).pack(anchor="w")
-        
+        self._tcb(fs_frame, "adder.create_cat_subfolder", variable=self.add_create_cat_var).pack(anchor="w")
+
         self.add_create_id_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(fs_frame, text="Create ID Subfolder", variable=self.add_create_id_var).pack(anchor="w")
+        self._tcb(fs_frame, "adder.create_id_subfolder", variable=self.add_create_id_var).pack(anchor="w")
 
         # Custom Path/Cat/Tags
         opts_frame = tk.Frame(custom_frame)
         opts_frame.pack(fill="x", padx=5, pady=5)
 
         self.use_custom_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(opts_frame, text="Override Category & Path", variable=self.use_custom_var, command=self.toggle_custom_options).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        self._tcb(opts_frame, "adder.override_cat_path", variable=self.use_custom_var, command=self.toggle_custom_options).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
 
-        tk.Label(opts_frame, text="Category:").grid(row=1, column=0, sticky="w")
+        self._tl(opts_frame, "adder.category").grid(row=1, column=0, sticky="w")
         self.custom_cat_entry = tk.Entry(opts_frame, width=30)
         self.custom_cat_entry.grid(row=1, column=1, padx=5, pady=2)
 
-        tk.Label(opts_frame, text="Save Path:").grid(row=2, column=0, sticky="w")
+        self._tl(opts_frame, "adder.save_path").grid(row=2, column=0, sticky="w")
         self.custom_path_entry = tk.Entry(opts_frame, width=30)
         self.custom_path_entry.grid(row=2, column=1, padx=5, pady=2)
-        
-        self.browse_custom_path_btn = tk.Button(opts_frame, text="Browse...", command=self.browse_custom_path, width=10)
+
+        self.browse_custom_path_btn = self._tb(opts_frame, "common.browse", command=self.browse_custom_path, width=10)
         self.browse_custom_path_btn.grid(row=2, column=2, padx=5)
 
         # Tags
-        tk.Label(opts_frame, text="Tags:").grid(row=3, column=0, sticky="w", pady=(5,0))
+        self._tl(opts_frame, "adder.tags").grid(row=3, column=0, sticky="w", pady=(5,0))
         self.add_custom_tags_entry = tk.Entry(opts_frame, width=30)
         self.add_custom_tags_entry.grid(row=3, column=1, padx=5, pady=(5,0))
-        tk.Label(opts_frame, text="(comma separated)", fg="gray").grid(row=3, column=2, sticky="w", pady=(5,0))
+        self._tl(opts_frame, "adder.tags_hint", fg="gray").grid(row=3, column=2, sticky="w", pady=(5,0))
 
         self.toggle_custom_options() # Initialize state
 
         # Actions
         action_frame = tk.Frame(self.adder_tab)
         action_frame.pack(fill="x", padx=10, pady=5)
-        
-        self.add_btn = tk.Button(action_frame, text="Add to qBittorrent", command=self.process_torrent, bg="#dddddd", height=2)
+
+        self.add_btn = self._tb(action_frame, "adder.add_to_qbit", command=self.process_torrent, bg="#dddddd", height=2)
         self.add_btn.pack(side="left", padx=5, fill="x", expand=True)
 
-        self.pause_btn = tk.Button(action_frame, text="Pause", command=self.toggle_pause, state="disabled", height=2)
+        self.pause_btn = self._tb(action_frame, "adder.pause", command=self.toggle_pause, state="disabled", height=2)
         self.pause_btn.pack(side="left", padx=5)
-        
-        self.stop_btn = tk.Button(action_frame, text="Stop", command=self.stop_processing, state="disabled", fg="red", height=2)
+
+        self.stop_btn = self._tb(action_frame, "common.stop", command=self.stop_processing, state="disabled", fg="red", height=2)
         self.stop_btn.pack(side="left", padx=5)
 
         # --- Adder Progress (hidden until processing) ---
@@ -4937,15 +5631,15 @@ SIZE COMPARISON BACKGROUNDS:
         self.adder_progress_label.pack(fill="x", padx=5, pady=(0, 2))
 
         # Log
-        log_frame = tk.LabelFrame(self.adder_tab, text="Log", padx=1, pady=1)
+        log_frame = self._tlf(self.adder_tab, "common.log", padx=1, pady=1)
         log_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        
+
         self.log_area = scrolledtext.ScrolledText(log_frame, height=10, state="disabled")
         self.log_area.pack(fill="both", expand=True)
 
     def update_client_dropdown(self):
         names = [c["name"] for c in self.config["clients"]]
-        names.append("All Clients")
+        names.append(t("adder.all_clients"))
         self.client_selector['values'] = names
         
         # Restore selection
@@ -5731,7 +6425,7 @@ SIZE COMPARISON BACKGROUNDS:
     def _update_cache_labels(self, client_name, timestamp):
         """Update all 'last updated' labels across tabs for this client."""
         time_str = self._cache_format_time(timestamp)
-        text = f"List updated: {time_str}"
+        text = t("common.list_updated", time=time_str)
 
         # Update labels only if the tab is showing the same client
         if hasattr(self, 'remover_cache_label'):
@@ -5782,9 +6476,9 @@ SIZE COMPARISON BACKGROUNDS:
         entry = self.torrent_cache.get(client_name)
         if entry:
             time_str = self._cache_format_time(entry["timestamp"])
-            label_widget.config(text=f"List updated: {time_str}", fg="gray")
+            label_widget.config(text=t("common.list_updated", time=time_str), fg="gray")
         else:
-            label_widget.config(text="List updated: never", fg="gray")
+            label_widget.config(text=t("common.list_updated_never"), fg="gray")
 
     def _remover_show_cache_label(self):
         if hasattr(self, 'remover_cache_label') and hasattr(self, 'remover_client_selector'):
@@ -5812,21 +6506,21 @@ SIZE COMPARISON BACKGROUNDS:
 
     def create_updater_ui(self):
         # --- Scan Controls ---
-        ctrl_frame = tk.LabelFrame(self.updater_tab, text="Scan Controls", padx=10, pady=5)
+        ctrl_frame = self._tlf(self.updater_tab, "common.scan_controls", padx=10, pady=5)
         ctrl_frame.pack(fill="x", padx=10, pady=5)
 
-        tk.Label(ctrl_frame, text="Client:").pack(side="left")
+        self._tl(ctrl_frame, "common.client").pack(side="left")
         self.updater_client_selector = ttk.Combobox(ctrl_frame, state="readonly", width=25)
         self.updater_client_selector.pack(side="left", padx=5)
 
-        self.updater_scan_btn = tk.Button(ctrl_frame, text="Scan Now", command=self.updater_start_scan)
+        self.updater_scan_btn = self._tb(ctrl_frame, "common.scan_now", command=self.updater_start_scan)
         self.updater_scan_btn.pack(side="left", padx=5)
 
-        self.updater_stop_btn = tk.Button(ctrl_frame, text="Stop", command=self.updater_stop_scan, state="disabled")
+        self.updater_stop_btn = self._tb(ctrl_frame, "common.stop", command=self.updater_stop_scan, state="disabled")
         self.updater_stop_btn.pack(side="left", padx=5)
 
-        self.updater_only_errored_cb = tk.Checkbutton(
-            ctrl_frame, text="Only Unregistered", variable=self.updater_only_errored)
+        self.updater_only_errored_cb = self._tcb(
+            ctrl_frame, "updater.only_unreg", variable=self.updater_only_errored)
         self.updater_only_errored_cb.pack(side="left", padx=(15, 5))
 
         # --- Progress (hidden until scan) ---
@@ -5837,7 +6531,7 @@ SIZE COMPARISON BACKGROUNDS:
         self.updater_progress_label.pack(fill="x", padx=5, pady=(0, 2))
 
         # --- Results Treeview ---
-        results_frame = tk.LabelFrame(self.updater_tab, text="Unregistered Torrents", padx=5, pady=5)
+        results_frame = self._tlf(self.updater_tab, "updater.unreg_torrents", padx=5, pady=5)
         results_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
         tree_container = tk.Frame(results_frame)
@@ -5849,12 +6543,12 @@ SIZE COMPARISON BACKGROUNDS:
             show="headings",
             selectmode="extended"
         )
-        self.updater_tree.heading("name", text="Torrent Name")
-        self.updater_tree.heading("path", text="Path")
-        self.updater_tree.heading("status", text="Status")
-        self.updater_tree.heading("reason", text="Reason")
-        self.updater_tree.heading("topic_id", text="Topic ID")
-        self.updater_tree.heading("new_topic", text="New Topic")
+        self._tr_heading(self.updater_tree, "name", "updater.torrent_name")
+        self._tr_heading(self.updater_tree, "path", "common.path")
+        self._tr_heading(self.updater_tree, "status", "common.status")
+        self._tr_heading(self.updater_tree, "reason", "updater.reason")
+        self._tr_heading(self.updater_tree, "topic_id", "updater.topic_id")
+        self._tr_heading(self.updater_tree, "new_topic", "updater.new_topic")
         self.updater_tree.column("name", width=250, minwidth=150)
         self.updater_tree.column("path", width=200, minwidth=80)
         self.updater_tree.column("status", width=80, anchor="center")
@@ -5881,40 +6575,40 @@ SIZE COMPARISON BACKGROUNDS:
         self._updater_tree_menu = tk.Menu(self.updater_tree, tearoff=0)
         self.updater_tree.bind("<Button-3>", self._updater_tree_right_click)
 
-        self.updater_summary_label = tk.Label(results_frame, text="Switch to this tab to scan.", fg="gray")
+        self.updater_summary_label = self._tl(results_frame, "updater.switch_hint", fg="gray")
         self.updater_summary_label.pack(anchor="w", pady=(5, 0))
 
         # --- Action Buttons ---
         action_frame = tk.Frame(self.updater_tab)
         action_frame.pack(fill="x", padx=10, pady=5)
 
-        self.updater_readd_keep_btn = tk.Button(
-            action_frame, text="Update (Keep Files)",
+        self.updater_readd_keep_btn = self._tb(
+            action_frame, "updater.keep_files",
             command=lambda: self.updater_perform_action("readd_keep"), state="disabled")
         self.updater_readd_keep_btn.pack(side="left", padx=3, fill="x", expand=True)
 
-        self.updater_consumed_btn = tk.Button(
-            action_frame, text="Update Consumed",
+        self.updater_consumed_btn = self._tb(
+            action_frame, "updater.consumed",
             command=lambda: self.updater_perform_action("update_consumed"), state="disabled", fg="dark orange")
         self.updater_consumed_btn.pack(side="left", padx=3, fill="x", expand=True)
 
-        self.updater_readd_redown_btn = tk.Button(
-            action_frame, text="Update (Re-download)",
+        self.updater_readd_redown_btn = self._tb(
+            action_frame, "updater.redownload",
             command=lambda: self.updater_perform_action("readd_redownload"), state="disabled")
         self.updater_readd_redown_btn.pack(side="left", padx=3, fill="x", expand=True)
 
-        self.updater_skip_btn = tk.Button(
-            action_frame, text="Remove from qBit",
+        self.updater_skip_btn = self._tb(
+            action_frame, "updater.remove_qbit",
             command=lambda: self.updater_perform_action("skip_delete"), state="disabled")
         self.updater_skip_btn.pack(side="left", padx=3, fill="x", expand=True)
 
-        self.updater_delete_btn = tk.Button(
-            action_frame, text="Delete with Files",
+        self.updater_delete_btn = self._tb(
+            action_frame, "updater.delete_files",
             command=lambda: self.updater_perform_action("delete_files"), state="disabled", fg="red")
         self.updater_delete_btn.pack(side="left", padx=3, fill="x", expand=True)
 
         # --- Updater Log ---
-        log_frame = tk.LabelFrame(self.updater_tab, text="Update Log", padx=1, pady=1)
+        log_frame = self._tlf(self.updater_tab, "updater.update_log", padx=1, pady=1)
         log_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
         self.updater_log_area = scrolledtext.ScrolledText(log_frame, height=6, state="disabled")
@@ -5922,9 +6616,9 @@ SIZE COMPARISON BACKGROUNDS:
 
         # Right-click context menu for copy
         updater_log_menu = tk.Menu(self.updater_log_area, tearoff=0)
-        updater_log_menu.add_command(label="Copy", accelerator="Ctrl+C",
+        updater_log_menu.add_command(label=t("common.copy"), accelerator="Ctrl+C",
             command=lambda: self.updater_log_area.event_generate("<<Copy>>"))
-        updater_log_menu.add_command(label="Select All", accelerator="Ctrl+A",
+        updater_log_menu.add_command(label=t("common.select_all"), accelerator="Ctrl+A",
             command=lambda: (self.updater_log_area.tag_add("sel", "1.0", "end"),))
         self.updater_log_area.bind("<Button-3>",
             lambda e: updater_log_menu.tk_popup(e.x_root, e.y_root))
@@ -6052,38 +6746,38 @@ SIZE COMPARISON BACKGROUNDS:
 
     def create_search_ui(self):
         # Controls
-        ctrl_frame = tk.LabelFrame(self.search_tab, text="Search", padx=10, pady=5)
+        ctrl_frame = self._tlf(self.search_tab, "search.search", padx=10, pady=5)
         ctrl_frame.pack(fill="x", padx=10, pady=5)
-        
-        tk.Label(ctrl_frame, text="Query:").pack(side="left")
+
+        self._tl(ctrl_frame, "search.query").pack(side="left")
         self.search_entry = tk.Entry(ctrl_frame, width=40)
         self.search_entry.pack(side="left", padx=5)
         self.search_entry.bind("<Return>", lambda e: self.perform_search())
         
         self.search_entry.bind("<Return>", lambda e: self.perform_search())
         
-        tk.Label(ctrl_frame, text="Type:").pack(side="left")
+        self._tl(ctrl_frame, "search.type").pack(side="left")
         self.search_type_combo = ttk.Combobox(ctrl_frame, state="readonly", width=15)
-        self.search_type_combo['values'] = ["Name (Scrape)", "Topic ID (API)", "Hash (API)"]
+        self.search_type_combo['values'] = [t("search.type_name"), t("search.type_topic"), t("search.type_hash")]
         self.search_type_combo.current(0)
         self.search_type_combo.pack(side="left", padx=5)
         
-        self.search_btn = tk.Button(ctrl_frame, text="Search", command=self.perform_search)
+        self.search_btn = self._tb(ctrl_frame, "search.search", command=self.perform_search)
         self.search_btn.pack(side="left", padx=10)
 
         # Results
-        res_frame = tk.LabelFrame(self.search_tab, text="Results", padx=5, pady=5)
+        res_frame = self._tlf(self.search_tab, "search.results", padx=5, pady=5)
         res_frame.pack(fill="both", expand=True, padx=10, pady=5)
         
         cols = ("id", "name", "size", "seeds", "leech", "category")
         self.search_tree = ttk.Treeview(res_frame, columns=cols, show="headings", selectmode="browse")
         
-        self.search_tree.heading("id", text="ID")
-        self.search_tree.heading("name", text="Name")
-        self.search_tree.heading("size", text="Size")
-        self.search_tree.heading("seeds", text="S")
-        self.search_tree.heading("leech", text="L")
-        self.search_tree.heading("category", text="Category")
+        self._tr_heading(self.search_tree, "id", "search.id")
+        self._tr_heading(self.search_tree, "name", "common.name")
+        self._tr_heading(self.search_tree, "size", "common.size")
+        self._tr_heading(self.search_tree, "seeds", "search.seeds")
+        self._tr_heading(self.search_tree, "leech", "search.leech")
+        self._tr_heading(self.search_tree, "category", "common.category")
         
         self.search_tree.column("id", width=60, stretch=False)
         self.search_tree.column("name", width=400)
@@ -6105,8 +6799,8 @@ SIZE COMPARISON BACKGROUNDS:
         act_frame = tk.Frame(self.search_tab)
         act_frame.pack(fill="x", padx=10, pady=5)
         
-        tk.Button(act_frame, text="Download", command=self.download_selected_torrent).pack(side="left", padx=5)
-        tk.Button(act_frame, text="Download & Add", command=self.download_and_add_torrent).pack(side="left", padx=5)
+        self._tb(act_frame, "search.download", command=self.download_selected_torrent).pack(side="left", padx=5)
+        self._tb(act_frame, "search.download_add", command=self.download_and_add_torrent).pack(side="left", padx=5)
         
         self.search_status = tk.Label(act_frame, text="", fg="gray")
         self.search_status.pack(side="left", padx=10)
@@ -6116,24 +6810,24 @@ SIZE COMPARISON BACKGROUNDS:
         top_frame = tk.Frame(self.bitrot_tab)
         top_frame.pack(fill="x", padx=10, pady=5)
         
-        tk.Label(top_frame, text="Client:").pack(side="left")
+        self._tl(top_frame, "common.client").pack(side="left")
         self.bitrot_client_combo = ttk.Combobox(top_frame, state="readonly", width=15)
         self.bitrot_client_combo.pack(side="left", padx=5)
         self.bitrot_client_combo.bind("<<ComboboxSelected>>", self._bitrot_on_client_select)
 
-        tk.Label(top_frame, text="Older than (Days):").pack(side="left", padx=(15, 0))
+        self._tl(top_frame, "bitrot.older_than").pack(side="left", padx=(15, 0))
         self.bitrot_age_spinbox = tk.Spinbox(top_frame, from_=0, to=9999, width=5)
         self.bitrot_age_spinbox.delete(0, "end")
         self.bitrot_age_spinbox.insert(0, "30")
         self.bitrot_age_spinbox.pack(side="left", padx=5)
 
-        self.bitrot_load_btn = tk.Button(top_frame, text="Load 100% Torrents", command=self.bitrot_load_torrents)
+        self.bitrot_load_btn = self._tb(top_frame, "bitrot.load_torrents", command=self.bitrot_load_torrents)
         self.bitrot_load_btn.pack(side="left", padx=15)
 
-        self.bitrot_scan_btn = tk.Button(top_frame, text="Start Bitrot Check (Selected)", command=self.bitrot_start_check)
+        self.bitrot_scan_btn = self._tb(top_frame, "bitrot.start_check", command=self.bitrot_start_check)
         self.bitrot_scan_btn.pack(side="left", padx=5)
 
-        self.bitrot_cancel_btn = tk.Button(top_frame, text="Stop Check", state=tk.DISABLED, command=self.bitrot_cancel_check)
+        self.bitrot_cancel_btn = self._tb(top_frame, "bitrot.stop_check", state=tk.DISABLED, command=self.bitrot_cancel_check)
         self.bitrot_cancel_btn.pack(side="left", padx=5)
 
         # 2. Treeview
@@ -6143,18 +6837,18 @@ SIZE COMPARISON BACKGROUNDS:
         cols = ("topic_id", "name", "size", "added_on", "last_active", "up_speed", "seed", "path", "last_checked", "status", "progress", "bitrot_state")
         self.bitrot_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="extended")
         
-        self.bitrot_tree.heading("topic_id", text="Topic ID")
-        self.bitrot_tree.heading("name", text="Name", command=lambda: self.sort_tree(self.bitrot_tree, "name", False))
-        self.bitrot_tree.heading("size", text="Size", command=lambda: self.sort_tree(self.bitrot_tree, "size", False))
-        self.bitrot_tree.heading("added_on", text="Added", command=lambda: self.sort_tree(self.bitrot_tree, "added_on", False))
-        self.bitrot_tree.heading("last_active", text="Last Active", command=lambda: self.sort_tree(self.bitrot_tree, "last_active", False))
-        self.bitrot_tree.heading("up_speed", text="UP Speed", command=lambda: self.sort_tree(self.bitrot_tree, "up_speed", False))
-        self.bitrot_tree.heading("seed", text="Seeds", command=lambda: self.sort_tree(self.bitrot_tree, "seed", False))
-        self.bitrot_tree.heading("path", text="Path", command=lambda: self.sort_tree(self.bitrot_tree, "path", False))
-        self.bitrot_tree.heading("last_checked", text="Last Checked", command=lambda: self.sort_tree(self.bitrot_tree, "last_checked", False))
-        self.bitrot_tree.heading("status", text="Status")
-        self.bitrot_tree.heading("progress", text="Progress")
-        self.bitrot_tree.heading("bitrot_state", text="Bitrot State", command=lambda: self.sort_tree(self.bitrot_tree, "bitrot_state", False))
+        self._tr_heading(self.bitrot_tree, "topic_id", "bitrot.topic_id")
+        self._tr_heading(self.bitrot_tree, "name", "common.name", command=lambda: self.sort_tree(self.bitrot_tree, "name", False))
+        self._tr_heading(self.bitrot_tree, "size", "common.size", command=lambda: self.sort_tree(self.bitrot_tree, "size", False))
+        self._tr_heading(self.bitrot_tree, "added_on", "bitrot.added", command=lambda: self.sort_tree(self.bitrot_tree, "added_on", False))
+        self._tr_heading(self.bitrot_tree, "last_active", "bitrot.last_active", command=lambda: self.sort_tree(self.bitrot_tree, "last_active", False))
+        self._tr_heading(self.bitrot_tree, "up_speed", "bitrot.up_speed", command=lambda: self.sort_tree(self.bitrot_tree, "up_speed", False))
+        self._tr_heading(self.bitrot_tree, "seed", "bitrot.seeds", command=lambda: self.sort_tree(self.bitrot_tree, "seed", False))
+        self._tr_heading(self.bitrot_tree, "path", "common.path", command=lambda: self.sort_tree(self.bitrot_tree, "path", False))
+        self._tr_heading(self.bitrot_tree, "last_checked", "bitrot.last_checked", command=lambda: self.sort_tree(self.bitrot_tree, "last_checked", False))
+        self._tr_heading(self.bitrot_tree, "status", "common.status")
+        self._tr_heading(self.bitrot_tree, "progress", "bitrot.progress")
+        self._tr_heading(self.bitrot_tree, "bitrot_state", "bitrot.bitrot_state", command=lambda: self.sort_tree(self.bitrot_tree, "bitrot_state", False))
 
         self.bitrot_tree.column("topic_id", width=80, stretch=False)
         self.bitrot_tree.column("name", width=300)
@@ -6193,13 +6887,13 @@ SIZE COMPARISON BACKGROUNDS:
         progress_frame = tk.Frame(bottom_frame)
         progress_frame.pack(fill="x", pady=2)
         
-        self.bitrot_progress_lbl = tk.Label(progress_frame, text="Ready", width=40, anchor="w")
+        self.bitrot_progress_lbl = self._tl(progress_frame, "bitrot.ready", width=40, anchor="w")
         self.bitrot_progress_lbl.pack(side="left")
         
         self.bitrot_progress = ttk.Progressbar(progress_frame, orient="horizontal", mode="determinate")
         self.bitrot_progress.pack(side="left", fill="x", expand=True, padx=5)
         
-        self.bitrot_stats_lbl = tk.Label(progress_frame, text="Total: 0 torrents (0 B)", fg="blue", anchor="e")
+        self.bitrot_stats_lbl = tk.Label(progress_frame, text=t("bitrot.total_stats", count=0, size="0 B"), fg="blue", anchor="e")
         self.bitrot_stats_lbl.pack(side="right", padx=10)
         
         # Populate client dropdown correctly on startup
@@ -7394,21 +8088,21 @@ SIZE COMPARISON BACKGROUNDS:
 
     def create_repair_ui(self):
         # --- Scan Controls ---
-        ctrl_frame = tk.LabelFrame(self.repair_tab, text="Scan Controls", padx=10, pady=5)
+        ctrl_frame = self._tlf(self.repair_tab, "common.scan_controls", padx=10, pady=5)
         ctrl_frame.pack(fill="x", padx=10, pady=5)
 
-        tk.Label(ctrl_frame, text="Client:").pack(side="left")
+        self._tl(ctrl_frame, "common.client").pack(side="left")
         self.repair_client_selector = ttk.Combobox(ctrl_frame, state="readonly", width=25)
         self.repair_client_selector.pack(side="left", padx=5)
         self.repair_client_selector.bind("<<ComboboxSelected>>", lambda e: self._repair_on_client_changed())
 
-        self.repair_scan_btn = tk.Button(ctrl_frame, text="Scan Now", command=self.repair_start_scan)
+        self.repair_scan_btn = self._tb(ctrl_frame, "common.scan_now", command=self.repair_start_scan)
         self.repair_scan_btn.pack(side="left", padx=5)
 
-        self.repair_stop_btn = tk.Button(ctrl_frame, text="Stop", command=self.repair_stop_scan, state="disabled")
+        self.repair_stop_btn = self._tb(ctrl_frame, "common.stop", command=self.repair_stop_scan, state="disabled")
         self.repair_stop_btn.pack(side="left", padx=5)
 
-        self.repair_cache_label = tk.Label(ctrl_frame, text="List updated: never", fg="gray")
+        self.repair_cache_label = self._tl(ctrl_frame, "common.list_updated_never", fg="gray")
         self.repair_cache_label.pack(side="left", padx=10)
 
         # --- Progress (hidden until scan) ---
@@ -7419,7 +8113,7 @@ SIZE COMPARISON BACKGROUNDS:
         self.repair_progress_label.pack(fill="x", padx=5, pady=(0, 2))
 
         # --- Results Treeview ---
-        results_frame = tk.LabelFrame(self.repair_tab, text="Category Mismatches", padx=5, pady=5)
+        results_frame = self._tlf(self.repair_tab, "repair.mismatches", padx=5, pady=5)
         results_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
         tree_container = tk.Frame(results_frame)
@@ -7431,11 +8125,11 @@ SIZE COMPARISON BACKGROUNDS:
             show="headings",
             selectmode="extended"
         )
-        self.repair_tree.heading("name", text="Torrent Name")
-        self.repair_tree.heading("cur_cat", text="Current Cat")
-        self.repair_tree.heading("correct_cat", text="Correct Cat")
-        self.repair_tree.heading("cur_path", text="Current Path")
-        self.repair_tree.heading("new_path", text="New Path")
+        self._tr_heading(self.repair_tree, "name", "updater.torrent_name")
+        self._tr_heading(self.repair_tree, "cur_cat", "repair.current_cat")
+        self._tr_heading(self.repair_tree, "correct_cat", "repair.correct_cat")
+        self._tr_heading(self.repair_tree, "cur_path", "repair.current_path")
+        self._tr_heading(self.repair_tree, "new_path", "repair.new_path")
         self.repair_tree.column("name", width=250, minwidth=120)
         self.repair_tree.column("cur_cat", width=100, minwidth=60)
         self.repair_tree.column("correct_cat", width=100, minwidth=60)
@@ -7456,7 +8150,7 @@ SIZE COMPARISON BACKGROUNDS:
         self.repair_tree.tag_configure("fixed", foreground="dark green")
         self.repair_tree.tag_configure("error", foreground="red")
 
-        self.repair_summary_label = tk.Label(results_frame, text="Click Scan to check categories.", fg="gray")
+        self.repair_summary_label = self._tl(results_frame, "repair.scan_hint", fg="gray")
         self.repair_summary_label.pack(anchor="w", pady=(5, 0))
 
         # --- Action Buttons ---
@@ -7464,21 +8158,21 @@ SIZE COMPARISON BACKGROUNDS:
         action_frame.pack(fill="x", padx=10, pady=5)
 
         self.repair_move_files_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(action_frame, text="Also correct save path (move files)",
+        self._tcb(action_frame, "repair.move_files",
                       variable=self.repair_move_files_var).pack(side="left", padx=(0, 10))
 
-        self.repair_selected_btn = tk.Button(
-            action_frame, text="Repair Selected",
+        self.repair_selected_btn = self._tb(
+            action_frame, "repair.selected",
             command=lambda: self._repair_perform_action("selected"), state="disabled")
         self.repair_selected_btn.pack(side="left", padx=3, fill="x", expand=True)
 
-        self.repair_all_btn = tk.Button(
-            action_frame, text="Repair All",
+        self.repair_all_btn = self._tb(
+            action_frame, "repair.all",
             command=lambda: self._repair_perform_action("all"), state="disabled")
         self.repair_all_btn.pack(side="left", padx=3, fill="x", expand=True)
 
         # --- Repair Log ---
-        log_frame = tk.LabelFrame(self.repair_tab, text="Repair Log", padx=1, pady=1)
+        log_frame = self._tlf(self.repair_tab, "repair.log", padx=1, pady=1)
         log_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
         self.repair_log_area = scrolledtext.ScrolledText(log_frame, height=6, state="disabled")
@@ -8029,85 +8723,85 @@ SIZE COMPARISON BACKGROUNDS:
         parent = self.mover_inner
 
         # --- Section A: Client + Load ---
-        client_frame = tk.LabelFrame(parent, text="Client", padx=10, pady=5)
+        client_frame = self._tlf(parent, "mover.client", padx=10, pady=5)
         client_frame.pack(fill="x", padx=10, pady=5)
 
-        tk.Label(client_frame, text="Client:").pack(side="left")
+        self._tl(client_frame, "common.client").pack(side="left")
         self.mover_client_selector = ttk.Combobox(client_frame, state="readonly", width=25)
         self.mover_client_selector.pack(side="left", padx=5)
         self.mover_client_selector.bind("<<ComboboxSelected>>", lambda e: self._mover_on_client_changed())
 
-        self.mover_load_btn = tk.Button(client_frame, text="Load Torrents", command=lambda: self._mover_load_torrents(force=True))
+        self.mover_load_btn = self._tb(client_frame, "mover.load_torrents", command=lambda: self._mover_load_torrents(force=True))
         self.mover_load_btn.pack(side="left", padx=5)
 
         self.mover_load_status = tk.Label(client_frame, text="", fg="gray")
         self.mover_load_status.pack(side="left", padx=10)
 
-        self.mover_cache_label = tk.Label(client_frame, text="List updated: never", fg="gray", anchor="w")
+        self.mover_cache_label = self._tl(client_frame, "common.list_updated_never", fg="gray", anchor="w")
         self.mover_cache_label.pack(side="left", padx=5, fill="x", expand=True)
 
         # --- Section B: Category Mover ---
-        cat_frame = tk.LabelFrame(parent, text="Move by Category", padx=10, pady=5)
+        cat_frame = self._tlf(parent, "mover.by_category", padx=10, pady=5)
         cat_frame.pack(fill="x", padx=10, pady=5)
 
         row1 = tk.Frame(cat_frame)
         row1.pack(fill="x", pady=2)
-        tk.Label(row1, text="Category:").pack(side="left")
+        self._tl(row1, "common.category").pack(side="left")
         self.mover_cat_selector = ttk.Combobox(row1, state="readonly")
         self.mover_cat_selector.pack(side="left", padx=5, fill="x", expand=True)
         self.mover_cat_selector.bind("<<ComboboxSelected>>", self._mover_on_cat_selected)
 
         row2 = tk.Frame(cat_frame)
         row2.pack(fill="x", pady=2)
-        tk.Label(row2, text="New root path:").pack(side="left")
-        tk.Button(row2, text="Browse...", command=self._mover_browse_path).pack(side="right")
+        self._tl(row2, "mover.new_root").pack(side="left")
+        self._tb(row2, "common.browse", command=self._mover_browse_path).pack(side="right")
         self.mover_new_path_var = tk.StringVar()
         self.mover_new_path_entry = tk.Entry(row2, textvariable=self.mover_new_path_var)
         self.mover_new_path_entry.pack(side="left", padx=5, fill="x", expand=True)
 
         row3 = tk.Frame(cat_frame)
         row3.pack(fill="x", pady=2)
-        tk.Label(row3, text="Max torrents to move (0 = all):").pack(side="left")
+        self._tl(row3, "mover.max_torrents").pack(side="left")
         self.mover_cat_limit_var = tk.IntVar(value=0)
         tk.Spinbox(row3, from_=0, to=99999, textvariable=self.mover_cat_limit_var, width=8).pack(side="left", padx=5)
 
         # Folder structure options
-        opts_label = tk.Label(cat_frame, text="Folder structure:", font=("", 9, "bold"))
+        opts_label = self._tl(cat_frame, "mover.folder_structure", font=("", 9, "bold"))
         opts_label.pack(anchor="w", pady=(5, 0))
 
         row4a = tk.Frame(cat_frame)
         row4a.pack(fill="x", pady=1)
-        tk.Label(row4a, text="Category folder:").pack(side="left")
+        self._tl(row4a, "mover.cat_folder").pack(side="left")
         self.mover_cat_create_cat_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(row4a, text="Create /Category/ subfolder in target path",
+        self._tcb(row4a, "mover.create_cat_sub",
             variable=self.mover_cat_create_cat_var).pack(side="left", padx=5)
 
         row4b = tk.Frame(cat_frame)
         row4b.pack(fill="x", pady=1)
-        tk.Label(row4b, text="ID folder:").pack(side="left")
+        self._tl(row4b, "mover.id_folder").pack(side="left")
         self.mover_cat_id_action = tk.StringVar(value="keep")
-        tk.Radiobutton(row4b, text="Keep existing /ID/ folder",
+        self._trb(row4b, "mover.keep_id",
             variable=self.mover_cat_id_action, value="keep").pack(side="left", padx=5)
-        tk.Radiobutton(row4b, text="Create /ID/ folder (if missing)",
+        self._trb(row4b, "mover.create_id",
             variable=self.mover_cat_id_action, value="create").pack(side="left", padx=5)
-        tk.Radiobutton(row4b, text="Remove /ID/ folder (flatten)",
+        self._trb(row4b, "mover.remove_id",
             variable=self.mover_cat_id_action, value="strip").pack(side="left", padx=5)
 
-        self.mover_cat_summary = tk.Label(cat_frame, text="Select a category to see details.", fg="gray")
+        self.mover_cat_summary = self._tl(cat_frame, "mover.cat_summary_hint", fg="gray")
         self.mover_cat_summary.pack(anchor="w", pady=3)
 
         cat_btn_frame = tk.Frame(cat_frame)
         cat_btn_frame.pack(fill="x", pady=3)
 
-        self.mover_cat_move_btn = tk.Button(cat_btn_frame, text="Move Category", state="disabled",
+        self.mover_cat_move_btn = self._tb(cat_btn_frame, "mover.move_category", state="disabled",
             command=self._mover_start_category_move)
         self.mover_cat_move_btn.pack(side="left")
 
-        self.mover_cat_stop_btn = tk.Button(cat_btn_frame, text="Stop", state="disabled",
+        self.mover_cat_stop_btn = self._tb(cat_btn_frame, "common.stop", state="disabled",
             command=self._mover_stop)
         self.mover_cat_stop_btn.pack(side="left", padx=5)
 
-        self.mover_cat_resume_btn = tk.Button(cat_btn_frame, text="Resume", state="disabled",
+        self.mover_cat_resume_btn = self._tb(cat_btn_frame, "mover.resume", state="disabled",
             command=self._mover_resume_category_move)
         self.mover_cat_resume_btn.pack(side="left", padx=5)
 
@@ -8115,7 +8809,7 @@ SIZE COMPARISON BACKGROUNDS:
         self.mover_cat_progress_label.pack(side="left", padx=10)
 
         # --- Section C: Disk Auto-Balancer ---
-        bal_frame = tk.LabelFrame(parent, text="Auto-Balance Across Disks", padx=10, pady=5)
+        bal_frame = self._tlf(parent, "mover.auto_balance", padx=10, pady=5)
         bal_frame.pack(fill="x", padx=10, pady=5)
 
         # Disk list
@@ -8130,10 +8824,10 @@ SIZE COMPARISON BACKGROUNDS:
             columns=("path", "free", "current", "target"),
             show="headings", height=4, selectmode="browse"
         )
-        self.mover_disk_tree.heading("path", text="Disk Path")
-        self.mover_disk_tree.heading("free", text="Free Space")
-        self.mover_disk_tree.heading("current", text="Current Load")
-        self.mover_disk_tree.heading("target", text="Target Load")
+        self._tr_heading(self.mover_disk_tree, "path", "mover.disk_path")
+        self._tr_heading(self.mover_disk_tree, "free", "mover.free_space")
+        self._tr_heading(self.mover_disk_tree, "current", "mover.current_load")
+        self._tr_heading(self.mover_disk_tree, "target", "mover.target_load")
         self.mover_disk_tree.column("path", width=200, minwidth=100)
         self.mover_disk_tree.column("free", width=100, anchor="center")
         self.mover_disk_tree.column("current", width=100, anchor="center")
@@ -8150,67 +8844,67 @@ SIZE COMPARISON BACKGROUNDS:
         disk_btn_frame = tk.Frame(disk_top)
         disk_btn_frame.pack(side="right", padx=5, fill="y")
 
-        tk.Button(disk_btn_frame, text="Detect Disks", command=self._mover_detect_disks).pack(fill="x", pady=1)
-        tk.Button(disk_btn_frame, text="Remove", command=self._mover_remove_disk).pack(fill="x", pady=1)
+        self._tb(disk_btn_frame, "mover.detect_disks", command=self._mover_detect_disks).pack(fill="x", pady=1)
+        self._tb(disk_btn_frame, "common.remove", command=self._mover_remove_disk).pack(fill="x", pady=1)
 
         disk_add_frame = tk.Frame(bal_frame)
         disk_add_frame.pack(fill="x", pady=2)
-        tk.Label(disk_add_frame, text="Add path:").pack(side="left")
-        tk.Button(disk_add_frame, text="Add", command=self._mover_add_disk).pack(side="right", padx=(5, 0))
-        tk.Button(disk_add_frame, text="Browse...", command=self._mover_browse_disk).pack(side="right")
+        self._tl(disk_add_frame, "mover.add_path").pack(side="left")
+        self._tb(disk_add_frame, "common.add", command=self._mover_add_disk).pack(side="right", padx=(5, 0))
+        self._tb(disk_add_frame, "common.browse", command=self._mover_browse_disk).pack(side="right")
         self.mover_add_disk_var = tk.StringVar()
         tk.Entry(disk_add_frame, textvariable=self.mover_add_disk_var).pack(side="left", padx=5, fill="x", expand=True)
 
         # Strategy
         strat_frame = tk.Frame(bal_frame)
         strat_frame.pack(fill="x", pady=5)
-        tk.Label(strat_frame, text="Strategy:").pack(side="left")
+        self._tl(strat_frame, "mover.strategy").pack(side="left")
         self.mover_strategy_var = tk.StringVar(value="both")
-        tk.Radiobutton(strat_frame, text="Balance by Size", variable=self.mover_strategy_var, value="size").pack(side="left", padx=5)
-        tk.Radiobutton(strat_frame, text="Balance by Seeded", variable=self.mover_strategy_var, value="uploaded").pack(side="left", padx=5)
-        tk.Radiobutton(strat_frame, text="Both (recommended)", variable=self.mover_strategy_var, value="both").pack(side="left", padx=5)
+        self._trb(strat_frame, "mover.bal_size", variable=self.mover_strategy_var, value="size").pack(side="left", padx=5)
+        self._trb(strat_frame, "mover.bal_seeded", variable=self.mover_strategy_var, value="uploaded").pack(side="left", padx=5)
+        self._trb(strat_frame, "mover.bal_both", variable=self.mover_strategy_var, value="both").pack(side="left", padx=5)
 
         limit_frame = tk.Frame(bal_frame)
         limit_frame.pack(fill="x", pady=2)
-        tk.Label(limit_frame, text="Max torrents to move (0 = all):").pack(side="left")
+        self._tl(limit_frame, "mover.max_torrents").pack(side="left")
         self.mover_bal_limit_var = tk.IntVar(value=0)
         tk.Spinbox(limit_frame, from_=0, to=99999, textvariable=self.mover_bal_limit_var, width=8).pack(side="left", padx=5)
 
         # Folder structure options
-        bal_opts_label = tk.Label(bal_frame, text="Folder structure:", font=("", 9, "bold"))
+        bal_opts_label = self._tl(bal_frame, "mover.folder_structure", font=("", 9, "bold"))
         bal_opts_label.pack(anchor="w", pady=(5, 0))
 
         bal_opts1 = tk.Frame(bal_frame)
         bal_opts1.pack(fill="x", pady=1)
-        tk.Label(bal_opts1, text="Category folder:").pack(side="left")
+        self._tl(bal_opts1, "mover.cat_folder").pack(side="left")
         self.mover_bal_keep_cat_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(bal_opts1, text="Preserve /Category/ subfolder in target path",
+        self._tcb(bal_opts1, "mover.preserve_cat",
             variable=self.mover_bal_keep_cat_var).pack(side="left", padx=5)
 
         bal_opts2 = tk.Frame(bal_frame)
         bal_opts2.pack(fill="x", pady=1)
-        tk.Label(bal_opts2, text="ID folder:").pack(side="left")
+        self._tl(bal_opts2, "mover.id_folder").pack(side="left")
         self.mover_bal_id_action = tk.StringVar(value="keep")
-        tk.Radiobutton(bal_opts2, text="Keep existing /ID/ folder",
+        self._trb(bal_opts2, "mover.keep_id",
             variable=self.mover_bal_id_action, value="keep").pack(side="left", padx=5)
-        tk.Radiobutton(bal_opts2, text="Create /ID/ folder (if missing)",
+        self._trb(bal_opts2, "mover.create_id",
             variable=self.mover_bal_id_action, value="create").pack(side="left", padx=5)
-        tk.Radiobutton(bal_opts2, text="Remove /ID/ folder (flatten)",
+        self._trb(bal_opts2, "mover.remove_id",
             variable=self.mover_bal_id_action, value="strip").pack(side="left", padx=5)
 
         bal_btn_frame = tk.Frame(bal_frame)
         bal_btn_frame.pack(fill="x", pady=3)
-        self.mover_preview_btn = tk.Button(bal_btn_frame, text="Preview Balance", state="disabled",
+        self.mover_preview_btn = self._tb(bal_btn_frame, "mover.preview", state="disabled",
             command=self._mover_preview_balance)
         self.mover_preview_btn.pack(side="left", padx=3)
-        self.mover_execute_btn = tk.Button(bal_btn_frame, text="Execute Balance", state="disabled",
+        self.mover_execute_btn = self._tb(bal_btn_frame, "mover.execute", state="disabled",
             command=self._mover_start_execute_balance)
         self.mover_execute_btn.pack(side="left", padx=3)
         self.mover_bal_summary = tk.Label(bal_btn_frame, text="", fg="gray")
         self.mover_bal_summary.pack(side="left", padx=10)
 
         # Preview treeview
-        preview_frame = tk.LabelFrame(parent, text="Balance Preview", padx=5, pady=5)
+        preview_frame = self._tlf(parent, "mover.preview_frame", padx=5, pady=5)
         preview_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
         prev_container = tk.Frame(preview_frame)
@@ -8221,14 +8915,14 @@ SIZE COMPARISON BACKGROUNDS:
             columns=("name", "size", "uploaded", "from", "to"),
             show="headings", selectmode="extended", height=8
         )
-        self.mover_preview_tree.heading("name", text="Name",
+        self._tr_heading(self.mover_preview_tree, "name", "common.name",
             command=lambda: self.sort_tree(self.mover_preview_tree, "name", False))
-        self.mover_preview_tree.heading("size", text="Size",
+        self._tr_heading(self.mover_preview_tree, "size", "common.size",
             command=lambda: self.sort_tree(self.mover_preview_tree, "size", False))
-        self.mover_preview_tree.heading("uploaded", text="Uploaded",
+        self._tr_heading(self.mover_preview_tree, "uploaded", "mover.col_uploaded",
             command=lambda: self.sort_tree(self.mover_preview_tree, "uploaded", False))
-        self.mover_preview_tree.heading("from", text="From")
-        self.mover_preview_tree.heading("to", text="To")
+        self._tr_heading(self.mover_preview_tree, "from", "mover.col_from")
+        self._tr_heading(self.mover_preview_tree, "to", "mover.col_to")
         self.mover_preview_tree.column("name", width=220, minwidth=100)
         self.mover_preview_tree.column("size", width=80, anchor="center")
         self.mover_preview_tree.column("uploaded", width=80, anchor="center")
@@ -8254,7 +8948,7 @@ SIZE COMPARISON BACKGROUNDS:
         self.mover_progress_label.pack(fill="x", padx=5, pady=(0, 2))
 
         # --- Log ---
-        log_frame = tk.LabelFrame(parent, text="Move Log", padx=1, pady=1)
+        log_frame = self._tlf(parent, "mover.move_log", padx=1, pady=1)
         log_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
         self.mover_log_area = scrolledtext.ScrolledText(log_frame, height=6, state="disabled")
@@ -9154,7 +9848,7 @@ SIZE COMPARISON BACKGROUNDS:
         top_frame = tk.Frame(self.keepers_tab)
         top_frame.pack(fill="x", padx=5, pady=5)
 
-        tk.Label(top_frame, text="Category:").pack(side="left")
+        self._tl(top_frame, "common.category").pack(side="left")
         
         # Category Combobox with Search
         self.keepers_cat_var = tk.StringVar()
@@ -9178,7 +9872,7 @@ SIZE COMPARISON BACKGROUNDS:
         self.keepers_cat_combo.bind('<Button-3>', self._keepers_cat_right_click)
 
         # Client Selector
-        tk.Label(top_frame, text="Client:").pack(side="left", padx=5)
+        self._tl(top_frame, "common.client").pack(side="left", padx=5)
         self.keepers_client_combo = ttk.Combobox(top_frame, width=15, state="readonly")
         self.keepers_client_combo['values'] = [c['name'] for c in self.config['clients']]
         if self.keepers_client_combo['values']:
@@ -9193,40 +9887,40 @@ SIZE COMPARISON BACKGROUNDS:
         cat_frame = tk.Frame(self.keepers_tab)
         cat_frame.pack(fill="x", padx=5, pady=2)
         
-        tk.Label(cat_frame, text="Save Category:").pack(side="left", padx=5)
+        self._tl(cat_frame, "keepers.save_category").pack(side="left", padx=5)
         self.keepers_cat_mode = tk.StringVar(value="preserve") # preserve / custom
-        
-        tk.Radiobutton(cat_frame, text="Forum Category", variable=self.keepers_cat_mode, value="preserve", command=self._keepers_toggle_cat_input).pack(side="left")
-        tk.Radiobutton(cat_frame, text="Custom:", variable=self.keepers_cat_mode, value="custom", command=self._keepers_toggle_cat_input).pack(side="left")
+
+        self._trb(cat_frame, "keepers.forum_cat", variable=self.keepers_cat_mode, value="preserve", command=self._keepers_toggle_cat_input).pack(side="left")
+        self._trb(cat_frame, "keepers.custom", variable=self.keepers_cat_mode, value="custom", command=self._keepers_toggle_cat_input).pack(side="left")
         
         self.keepers_custom_cat_entry = tk.Entry(cat_frame, width=15, state="disabled")
         self.keepers_custom_cat_entry.pack(side="left", padx=5)
         self.keepers_custom_cat_entry.insert(0, "Keepers")
 
         self.keepers_skip_zero_topics = tk.BooleanVar(value=True)
-        tk.Checkbutton(cat_frame, text="Skip 0 B topics", variable=self.keepers_skip_zero_topics).pack(side="left", padx=(15, 0))
+        self._tcb(cat_frame, "keepers.skip_zero_topics", variable=self.keepers_skip_zero_topics).pack(side="left", padx=(15, 0))
 
         self.keepers_skip_zero_cats = tk.BooleanVar(value=True)
-        tk.Checkbutton(cat_frame, text="Skip 0 B categories", variable=self.keepers_skip_zero_cats).pack(side="left", padx=(8, 0))
+        self._tcb(cat_frame, "keepers.skip_zero_cats", variable=self.keepers_skip_zero_cats).pack(side="left", padx=(8, 0))
 
-        tk.Label(top_frame, text="Max Seeds:").pack(side="left", padx=5)
+        self._tl(top_frame, "keepers.max_seeds").pack(side="left", padx=5)
         self.keepers_max_seeds = tk.IntVar(value=5)
         seeds_spin = tk.Spinbox(top_frame, from_=0, to=100, textvariable=self.keepers_max_seeds, width=5)
         seeds_spin.pack(side="left")
 
-        tk.Label(top_frame, text="Max Keepers:").pack(side="left", padx=5)
+        self._tl(top_frame, "keepers.max_keepers").pack(side="left", padx=5)
         self.keepers_max_keepers = tk.IntVar(value=-1)
         keepers_spin = tk.Spinbox(top_frame, from_=-1, to=100, textvariable=self.keepers_max_keepers, width=5)
         keepers_spin.pack(side="left")
 
-        self.keepers_scan_btn = tk.Button(top_frame, text="Scan", command=self.keepers_start_scan, bg="#dddddd")
+        self.keepers_scan_btn = self._tb(top_frame, "common.scan", command=self.keepers_start_scan, bg="#dddddd")
         self.keepers_scan_btn.pack(side="left", padx=5)
 
-        self.keepers_stop_btn = tk.Button(top_frame, text="Stop", command=self.keepers_stop_scan, state="disabled")
+        self.keepers_stop_btn = self._tb(top_frame, "common.stop", command=self.keepers_stop_scan, state="disabled")
         self.keepers_stop_btn.pack(side="left")
 
         # --- Preferred Categories ---
-        pref_frame = tk.LabelFrame(self.keepers_tab, text="Preferred Categories", padx=5, pady=3)
+        pref_frame = self._tlf(self.keepers_tab, "keepers.preferred_cats", padx=5, pady=3)
         pref_frame.pack(fill="x", padx=5, pady=(3, 0))
 
         pref_inner = tk.Frame(pref_frame)
@@ -9243,9 +9937,9 @@ SIZE COMPARISON BACKGROUNDS:
         pref_btn_frame = tk.Frame(pref_inner)
         pref_btn_frame.pack(side="left", padx=(5, 0))
 
-        tk.Button(pref_btn_frame, text="+ Add", width=10,
+        self._tb(pref_btn_frame, "keepers.add_pref", width=10,
             command=self._keepers_add_preferred).pack(pady=1)
-        tk.Button(pref_btn_frame, text="- Remove", width=10,
+        self._tb(pref_btn_frame, "keepers.remove_pref", width=10,
             command=self._keepers_remove_preferred).pack(pady=1)
 
         id_row = tk.Frame(pref_btn_frame)
@@ -9256,7 +9950,7 @@ SIZE COMPARISON BACKGROUNDS:
         tk.Button(id_row, text="+", width=2,
             command=self._keepers_add_preferred_by_id).pack(side="left", padx=(2, 0))
 
-        self.keepers_scan_all_btn = tk.Button(pref_btn_frame, text="Scan All", width=10,
+        self.keepers_scan_all_btn = self._tb(pref_btn_frame, "keepers.scan_all", width=10,
             command=self._keepers_start_scan_all, bg="#dddddd")
         self.keepers_scan_all_btn.pack(pady=(4, 1))
 
@@ -9278,27 +9972,27 @@ SIZE COMPARISON BACKGROUNDS:
         stats_inner = tk.Frame(self.keepers_stats_frame)
         stats_inner.pack(fill="x", padx=8, pady=4)
 
-        self.keepers_stats_lbl_title = tk.Label(stats_inner, text="Category Stats:",
+        self.keepers_stats_lbl_title = self._tl(stats_inner, "keepers.stats_title",
             font=("Segoe UI", 9, "bold"), fg="#444444")
         self.keepers_stats_lbl_title.pack(side="left")
 
-        self.keepers_stats_lbl_topics = tk.Label(stats_inner, text="Topics: --",
+        self.keepers_stats_lbl_topics = self._tl(stats_inner, "keepers.stats_topics",
             font=("Segoe UI", 9), fg="#555555")
         self.keepers_stats_lbl_topics.pack(side="left", padx=(12, 0))
 
-        self.keepers_stats_lbl_size = tk.Label(stats_inner, text="Total Size: --",
+        self.keepers_stats_lbl_size = self._tl(stats_inner, "keepers.stats_size",
             font=("Segoe UI", 9), fg="#555555")
         self.keepers_stats_lbl_size.pack(side="left", padx=(12, 0))
 
-        self.keepers_stats_lbl_seeds = tk.Label(stats_inner, text="Seeds: --",
+        self.keepers_stats_lbl_seeds = self._tl(stats_inner, "keepers.stats_seeds",
             font=("Segoe UI", 9), fg="#555555")
         self.keepers_stats_lbl_seeds.pack(side="left", padx=(12, 0))
 
-        self.keepers_stats_lbl_avg = tk.Label(stats_inner, text="Avg Seeds: --",
+        self.keepers_stats_lbl_avg = self._tl(stats_inner, "keepers.stats_avg",
             font=("Segoe UI", 9), fg="#555555")
         self.keepers_stats_lbl_avg.pack(side="left", padx=(12, 0))
 
-        self.keepers_stats_lbl_leechers = tk.Label(stats_inner, text="Leechers: --",
+        self.keepers_stats_lbl_leechers = self._tl(stats_inner, "keepers.stats_leechers",
             font=("Segoe UI", 9), fg="#555555")
         self.keepers_stats_lbl_leechers.pack(side="left", padx=(12, 0))
 
@@ -9316,17 +10010,17 @@ SIZE COMPARISON BACKGROUNDS:
 
         cols = ("id", "name", "size", "seeds", "leech", "status", "link", "k_count", "priority", "last_seen", "poster")
         self.keepers_tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
-        self.keepers_tree.heading("id", text="ID", command=lambda: self.sort_tree(self.keepers_tree, "id", False))
-        self.keepers_tree.heading("name", text="Name", command=lambda: self.sort_tree(self.keepers_tree, "name", False))
-        self.keepers_tree.heading("size", text="Size", command=lambda: self.sort_tree(self.keepers_tree, "size", False))
-        self.keepers_tree.heading("seeds", text="Seeds", command=lambda: self.sort_tree(self.keepers_tree, "seeds", False))
-        self.keepers_tree.heading("leech", text="Leech", command=lambda: self.sort_tree(self.keepers_tree, "leech", False))
-        self.keepers_tree.heading("status", text="Status", command=lambda: self.sort_tree(self.keepers_tree, "status", False))
-        self.keepers_tree.heading("link", text="Link", command=lambda: self.sort_tree(self.keepers_tree, "link", False))
-        self.keepers_tree.heading("k_count", text="# Keepers", command=lambda: self.sort_tree(self.keepers_tree, "k_count", False))
-        self.keepers_tree.heading("priority", text="Priority", command=lambda: self.sort_tree(self.keepers_tree, "priority", False))
-        self.keepers_tree.heading("last_seen", text="Last Seen", command=lambda: self.sort_tree(self.keepers_tree, "last_seen", False))
-        self.keepers_tree.heading("poster", text="Poster", command=lambda: self.sort_tree(self.keepers_tree, "poster", False))
+        self._tr_heading(self.keepers_tree, "id", "keepers.col_id", command=lambda: self.sort_tree(self.keepers_tree, "id", False))
+        self._tr_heading(self.keepers_tree, "name", "common.name", command=lambda: self.sort_tree(self.keepers_tree, "name", False))
+        self._tr_heading(self.keepers_tree, "size", "common.size", command=lambda: self.sort_tree(self.keepers_tree, "size", False))
+        self._tr_heading(self.keepers_tree, "seeds", "keepers.col_seeds", command=lambda: self.sort_tree(self.keepers_tree, "seeds", False))
+        self._tr_heading(self.keepers_tree, "leech", "keepers.col_leech", command=lambda: self.sort_tree(self.keepers_tree, "leech", False))
+        self._tr_heading(self.keepers_tree, "status", "common.status", command=lambda: self.sort_tree(self.keepers_tree, "status", False))
+        self._tr_heading(self.keepers_tree, "link", "keepers.col_link", command=lambda: self.sort_tree(self.keepers_tree, "link", False))
+        self._tr_heading(self.keepers_tree, "k_count", "keepers.col_k_count", command=lambda: self.sort_tree(self.keepers_tree, "k_count", False))
+        self._tr_heading(self.keepers_tree, "priority", "keepers.col_priority", command=lambda: self.sort_tree(self.keepers_tree, "priority", False))
+        self._tr_heading(self.keepers_tree, "last_seen", "keepers.col_last_seen", command=lambda: self.sort_tree(self.keepers_tree, "last_seen", False))
+        self._tr_heading(self.keepers_tree, "poster", "keepers.col_poster", command=lambda: self.sort_tree(self.keepers_tree, "poster", False))
 
         self.keepers_tree.column("id", width=60)
         self.keepers_tree.column("name", width=350)
@@ -9362,15 +10056,15 @@ SIZE COMPARISON BACKGROUNDS:
         action_frame.pack(fill="x", padx=5, pady=5)
 
         self.keepers_paused_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(action_frame, text="Start Paused", variable=self.keepers_paused_var).pack(side="left")
+        self._tcb(action_frame, "keepers.start_paused", variable=self.keepers_paused_var).pack(side="left")
 
-        self.keepers_add_btn = tk.Button(action_frame, text="Add Selected", command=self._keepers_add_selected, state="normal")
+        self.keepers_add_btn = self._tb(action_frame, "keepers.add_selected", command=self._keepers_add_selected, state="normal")
         self.keepers_add_btn.pack(side="left", padx=5)
 
-        self.keepers_dl_btn = tk.Button(action_frame, text="Download .torrent", command=self._keepers_download_torrent)
+        self.keepers_dl_btn = self._tb(action_frame, "common.download_torrent", command=self._keepers_download_torrent)
         self.keepers_dl_btn.pack(side="left", padx=5)
-        
-        self.keepers_csv_btn = tk.Button(action_frame, text="Export to CSV", command=self._keepers_export_csv)
+
+        self.keepers_csv_btn = self._tb(action_frame, "keepers.export_csv", command=self._keepers_export_csv)
         self.keepers_csv_btn.pack(side="right", padx=5)
 
         # Log
@@ -10392,8 +11086,8 @@ SIZE COMPARISON BACKGROUNDS:
 
     def refresh_statistics(self):
         count, size = self.db_manager.get_kept_stats()
-        self.stats_label_count.config(text=f"Torrents Kept: {count}")
-        self.stats_label_size.config(text=f"Total Size Saved: {format_size(size)}")
+        self.stats_label_count.config(text=t("settings.stats_kept", count=count))
+        self.stats_label_size.config(text=t("settings.stats_size", size=format_size(size)))
         
         # External Fetchers
         active_size = 0
@@ -10410,10 +11104,10 @@ SIZE COMPARISON BACKGROUNDS:
             history = self.db_manager.get_bitrot_history()
             bitrot_checked = len(history)
             bitrot_rot = sum(1 for v in history.values() if v.get("status") == "Bitrot Detected")
-            self.stats_label_bitrot.config(text=f"Checked for Bitrot: {bitrot_checked} (Corrupted: {bitrot_rot})")
-            
+            self.stats_label_bitrot.config(text=t("settings.stats_bitrot", count=f"{bitrot_checked} ({bitrot_rot})"))
+
             mover_count = self.db_manager.get_mover_stats()
-            self.stats_label_mover.config(text=f"Torrents Auto-Balanced: {mover_count}")
+            self.stats_label_mover.config(text=t("settings.stats_mover", count=mover_count))
             
             # API Lookups
             client_conf = self.config["clients"][self.config["last_selected_client_index"]]
@@ -10431,7 +11125,7 @@ SIZE COMPARISON BACKGROUNDS:
                         up_speed = t_data.get("up_info_speed", 0)
                 except: pass
                 
-                self.stats_label_global_net.config(text=f"Global UL: {format_size(up_speed)}/s | DL: {format_size(dl_speed)}/s")
+                self.stats_label_global_net.config(text=t("settings.stats_net", ul=f"{format_size(up_speed)}/s", dl=f"{format_size(dl_speed)}/s"))
 
                 # Get aggregate torrent sums
                 try:
@@ -10439,21 +11133,21 @@ SIZE COMPARISON BACKGROUNDS:
                     if resp.status_code == 200:
                         torrents = resp.json()
                         global_count = len(torrents)
-                        for t in torrents:
-                            global_size += t.get('size', 0)
-                            if t.get('category') == "Keepers":
-                                active_size += t.get('size', 0)
+                        for torr in torrents:
+                            global_size += torr.get('size', 0)
+                            if torr.get('category') == "Keepers":
+                                active_size += torr.get('size', 0)
                                 
-                        self.stats_label_active.config(text=f"Active Seeding Size: {format_size(active_size)}")
-                        self.stats_label_global_client.config(text=f"Total Torrents: {global_count} ({format_size(global_size)})")
+                        self.stats_label_active.config(text=t("settings.stats_active", size=format_size(active_size)))
+                        self.stats_label_global_client.config(text=t("settings.stats_total", count=global_count, size=format_size(global_size)))
                     else:
-                        self.stats_label_active.config(text=f"Active Seeding Size: (Client Error {resp.status_code})")
+                        self.stats_label_active.config(text=t("settings.stats_active", size=f"(Error {resp.status_code})"))
                 except:
-                    self.stats_label_active.config(text="Active Seeding Size: (Error)")
+                    self.stats_label_active.config(text=t("settings.stats_active", size="(Error)"))
             else:
-                self.stats_label_active.config(text="Active Seeding Size: (Not connected)")
-                self.stats_label_global_net.config(text="Global UL: ? | DL: ? (Not connected)")
-                self.stats_label_global_client.config(text="Total Torrents: 0 (Not connected)")
+                self.stats_label_active.config(text=t("settings.stats_active", size="N/A"))
+                self.stats_label_global_net.config(text=t("settings.stats_net", ul="?", dl="?"))
+                self.stats_label_global_client.config(text=t("settings.stats_total", count=0, size="N/A"))
                 
         except Exception as e:
             self.stats_label_active.config(text=f"Active Seeding Size: (Error)")
@@ -10466,30 +11160,30 @@ SIZE COMPARISON BACKGROUNDS:
 
     def create_scanner_ui(self):
         # --- Scan Controls ---
-        ctrl_frame = tk.LabelFrame(self.scanner_tab, text="Scan Controls", padx=10, pady=5)
+        ctrl_frame = self._tlf(self.scanner_tab, "common.scan_controls", padx=10, pady=5)
         ctrl_frame.pack(fill="x", padx=10, pady=5)
 
         row1 = tk.Frame(ctrl_frame)
         row1.pack(fill="x", pady=2)
-        tk.Label(row1, text="Folder:").pack(side="left")
+        self._tl(row1, "scanner.folder").pack(side="left")
         self.scanner_folder_var = tk.StringVar()
         tk.Entry(row1, textvariable=self.scanner_folder_var, width=60).pack(side="left", padx=5)
-        tk.Button(row1, text="Browse...", command=self._scanner_browse_folder).pack(side="left")
+        self._tb(row1, "common.browse", command=self._scanner_browse_folder).pack(side="left")
 
         row2 = tk.Frame(ctrl_frame)
         row2.pack(fill="x", pady=2)
-        tk.Label(row2, text="Client:").pack(side="left")
+        self._tl(row2, "common.client").pack(side="left")
         self.scanner_client_selector = ttk.Combobox(row2, state="readonly", width=25)
         self.scanner_client_selector.pack(side="left", padx=5)
         self.scanner_client_selector.bind("<<ComboboxSelected>>", lambda e: self._scanner_on_client_changed())
 
-        self.scanner_scan_btn = tk.Button(row2, text="Scan", command=self.scanner_start_scan)
+        self.scanner_scan_btn = self._tb(row2, "common.scan", command=self.scanner_start_scan)
         self.scanner_scan_btn.pack(side="left", padx=5)
 
-        self.scanner_stop_btn = tk.Button(row2, text="Stop", command=self.scanner_stop_scan, state="disabled")
+        self.scanner_stop_btn = self._tb(row2, "common.stop", command=self.scanner_stop_scan, state="disabled")
         self.scanner_stop_btn.pack(side="left", padx=5)
 
-        self.scanner_cache_label = tk.Label(row2, text="List updated: never", fg="gray")
+        self.scanner_cache_label = self._tl(row2, "common.list_updated_never", fg="gray")
         self.scanner_cache_label.pack(side="left", padx=10)
 
         # --- Options ---
@@ -10497,53 +11191,53 @@ SIZE COMPARISON BACKGROUNDS:
         opts_frame.pack(fill="x", padx=10, pady=2)
 
         self.scanner_recursive_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(opts_frame, text="Scan subfolders recursively",
+        self._tcb(opts_frame, "scanner.recursive",
             variable=self.scanner_recursive_var).pack(side="left", padx=5)
 
         self.scanner_use_parent_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(opts_frame, text="Use parent folder as save_path (content lives in /ID/ folder)",
+        self._tcb(opts_frame, "scanner.use_parent",
             variable=self.scanner_use_parent_var).pack(side="left", padx=5)
 
         self.scanner_skip_subid_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(opts_frame, text="Skip subfolders inside /ID/",
+        self._tcb(opts_frame, "scanner.skip_subid",
             variable=self.scanner_skip_subid_var).pack(side="left", padx=5)
 
         self.scanner_start_paused_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(opts_frame, text="Start paused",
+        self._tcb(opts_frame, "scanner.start_paused",
             variable=self.scanner_start_paused_var).pack(side="left", padx=5)
 
         self.scanner_deep_scan_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(opts_frame, text="Deep Scan (Verify Files)",
+        self._tcb(opts_frame, "scanner.deep_scan",
             variable=self.scanner_deep_scan_var, fg="darkblue").pack(side="left", padx=5)
 
         self.scanner_deep_scan_plus_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(opts_frame, text="Deep Scan+ (Verify Hashes)",
+        self._tcb(opts_frame, "scanner.deep_scan_plus",
             variable=self.scanner_deep_scan_plus_var, fg="purple").pack(side="left", padx=5)
 
         # --- Custom Add Options ---
-        custom_frame = tk.LabelFrame(self.scanner_tab, text="Custom Add Options", padx=10, pady=5)
+        custom_frame = self._tlf(self.scanner_tab, "scanner.custom_add", padx=10, pady=5)
         custom_frame.pack(fill="x", padx=10, pady=5)
 
-        fs_frame = tk.LabelFrame(custom_frame, text="Folder Structure", padx=5, pady=5)
+        fs_frame = self._tlf(custom_frame, "adder.folder_structure", padx=5, pady=5)
         fs_frame.pack(fill="x", padx=5, pady=5)
 
         self.scanner_create_cat_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(fs_frame, text="Create Category Subfolder", variable=self.scanner_create_cat_var).pack(anchor="w")
+        self._tcb(fs_frame, "adder.create_cat_subfolder", variable=self.scanner_create_cat_var).pack(anchor="w")
 
         self.scanner_create_id_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(fs_frame, text="Create ID Subfolder", variable=self.scanner_create_id_var).pack(anchor="w")
+        self._tcb(fs_frame, "adder.create_id_subfolder", variable=self.scanner_create_id_var).pack(anchor="w")
 
         path_frame = tk.Frame(custom_frame)
         path_frame.pack(fill="x", padx=5, pady=5)
 
         self.scanner_use_custom_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(path_frame, text="Override Save Path", variable=self.scanner_use_custom_var, command=self._scanner_toggle_custom_options).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        self._tcb(path_frame, "scanner.override_path", variable=self.scanner_use_custom_var, command=self._scanner_toggle_custom_options).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
 
-        tk.Label(path_frame, text="Save Path:").grid(row=1, column=0, sticky="w")
+        self._tl(path_frame, "adder.save_path").grid(row=1, column=0, sticky="w")
         self.scanner_custom_path_entry = tk.Entry(path_frame, width=30)
         self.scanner_custom_path_entry.grid(row=1, column=1, padx=5, pady=2)
 
-        self.scanner_browse_custom_path_btn = tk.Button(path_frame, text="Browse...", command=self._scanner_browse_custom_path, width=10)
+        self.scanner_browse_custom_path_btn = self._tb(path_frame, "common.browse", command=self._scanner_browse_custom_path, width=10)
         self.scanner_browse_custom_path_btn.grid(row=1, column=2, padx=5)
 
         self._scanner_toggle_custom_options()
@@ -10556,7 +11250,7 @@ SIZE COMPARISON BACKGROUNDS:
         self.scanner_progress_label.pack(fill="x", padx=5, pady=(0, 2))
 
         # --- Results Treeview ---
-        results_frame = tk.LabelFrame(self.scanner_tab, text="Scan Results", padx=5, pady=5)
+        results_frame = self._tlf(self.scanner_tab, "scanner.results", padx=5, pady=5)
         results_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
         tree_container = tk.Frame(results_frame)
@@ -10565,33 +11259,33 @@ SIZE COMPARISON BACKGROUNDS:
         cols = ("topic_id", "name", "size", "disk_size", "seeds", "leech", "status", "category", "in_qbit", "extra", "missing", "mismatch", "pieces", "disk_path")
         self.scanner_tree = ttk.Treeview(tree_container, columns=cols, show="headings", selectmode="extended")
 
-        self.scanner_tree.heading("topic_id", text="Topic ID",
+        self._tr_heading(self.scanner_tree, "topic_id", "updater.topic_id",
             command=lambda: self.sort_tree(self.scanner_tree, "topic_id", False))
-        self.scanner_tree.heading("name", text="Name",
+        self._tr_heading(self.scanner_tree, "name", "common.name",
             command=lambda: self.sort_tree(self.scanner_tree, "name", False))
-        self.scanner_tree.heading("size", text="Size",
+        self._tr_heading(self.scanner_tree, "size", "common.size",
             command=lambda: self.sort_tree(self.scanner_tree, "size", False))
-        self.scanner_tree.heading("disk_size", text="Disk Size",
+        self._tr_heading(self.scanner_tree, "disk_size", "scanner.disk_size",
             command=lambda: self.sort_tree(self.scanner_tree, "disk_size", False))
-        self.scanner_tree.heading("seeds", text="Seeds",
+        self._tr_heading(self.scanner_tree, "seeds", "scanner.seeds",
             command=lambda: self.sort_tree(self.scanner_tree, "seeds", False))
-        self.scanner_tree.heading("leech", text="Leech",
+        self._tr_heading(self.scanner_tree, "leech", "scanner.leech",
             command=lambda: self.sort_tree(self.scanner_tree, "leech", False))
-        self.scanner_tree.heading("status", text="RT Status",
+        self._tr_heading(self.scanner_tree, "status", "scanner.rt_status",
             command=lambda: self.sort_tree(self.scanner_tree, "status", False))
-        self.scanner_tree.heading("category", text="Category",
+        self._tr_heading(self.scanner_tree, "category", "common.category",
             command=lambda: self.sort_tree(self.scanner_tree, "category", False))
-        self.scanner_tree.heading("in_qbit", text="In qBit",
+        self._tr_heading(self.scanner_tree, "in_qbit", "scanner.in_qbit",
             command=lambda: self.sort_tree(self.scanner_tree, "in_qbit", False))
-        self.scanner_tree.heading("extra", text="Extra",
+        self._tr_heading(self.scanner_tree, "extra", "scanner.extra",
             command=lambda: self.sort_tree(self.scanner_tree, "extra", False))
-        self.scanner_tree.heading("missing", text="Missing",
+        self._tr_heading(self.scanner_tree, "missing", "scanner.missing",
             command=lambda: self.sort_tree(self.scanner_tree, "missing", False))
-        self.scanner_tree.heading("mismatch", text="Mismatch",
+        self._tr_heading(self.scanner_tree, "mismatch", "scanner.mismatch",
             command=lambda: self.sort_tree(self.scanner_tree, "mismatch", False))
-        self.scanner_tree.heading("pieces", text="Pieces (Bad/Total)",
+        self._tr_heading(self.scanner_tree, "pieces", "scanner.pieces",
             command=lambda: self.sort_tree(self.scanner_tree, "pieces", False))
-        self.scanner_tree.heading("disk_path", text="Disk Path",
+        self._tr_heading(self.scanner_tree, "disk_path", "scanner.disk_path",
             command=lambda: self.sort_tree(self.scanner_tree, "disk_path", False))
 
         self.scanner_tree.column("topic_id", width=70, minwidth=50)
@@ -10626,14 +11320,14 @@ SIZE COMPARISON BACKGROUNDS:
 
         self.scanner_tree.bind("<Double-1>", self._scanner_on_double_click)
 
-        self.scanner_summary_label = tk.Label(results_frame, text="Enter a folder path and click Scan.", fg="gray")
+        self.scanner_summary_label = self._tl(results_frame, "scanner.scan_hint", fg="gray")
         self.scanner_summary_label.pack(anchor="w", padx=5)
 
         # --- Filter ---
         filter_frame = tk.Frame(results_frame)
         filter_frame.pack(anchor="w", padx=5, pady=(2, 0))
         self.scanner_filter_zero_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(filter_frame, text="Show only 0 B on disk",
+        self._tcb(filter_frame, "scanner.show_zero",
             variable=self.scanner_filter_zero_var,
             command=self._scanner_apply_filter).pack(side="left")
         self.scanner_filter_count_label = tk.Label(filter_frame, text="", fg="gray")
@@ -10643,32 +11337,32 @@ SIZE COMPARISON BACKGROUNDS:
         btn_frame = tk.Frame(self.scanner_tab)
         btn_frame.pack(fill="x", padx=10, pady=3)
 
-        self.scanner_add_btn = tk.Button(btn_frame, text="Add Selected to qBit",
+        self.scanner_add_btn = self._tb(btn_frame, "scanner.add_selected",
             command=self._scanner_add_selected, state="disabled")
         self.scanner_add_btn.pack(side="left", padx=3)
 
-        self.scanner_add_all_btn = tk.Button(btn_frame, text="Add All Missing",
+        self.scanner_add_all_btn = self._tb(btn_frame, "scanner.add_all",
             command=self._scanner_add_all_missing, state="disabled")
         self.scanner_add_all_btn.pack(side="left", padx=3)
 
-        self.scanner_dl_btn = tk.Button(btn_frame, text="Download .torrent",
+        self.scanner_dl_btn = self._tb(btn_frame, "common.download_torrent",
             command=self._scanner_download_torrent, state="disabled")
         self.scanner_dl_btn.pack(side="left", padx=3)
 
-        self.scanner_del_qbit_btn = tk.Button(btn_frame, text="Delete from qBit",
+        self.scanner_del_qbit_btn = self._tb(btn_frame, "scanner.del_qbit",
             command=self._scanner_delete_from_qbit, state="disabled")
         self.scanner_del_qbit_btn.pack(side="right", padx=3)
 
         self.scanner_del_data_var = tk.IntVar(value=0)
-        self.scanner_del_data_chk = tk.Checkbutton(btn_frame, text="Delete Data", variable=self.scanner_del_data_var, state="disabled")
+        self.scanner_del_data_chk = self._tcb(btn_frame, "scanner.del_data", variable=self.scanner_del_data_var, state="disabled")
         self.scanner_del_data_chk.pack(side="right", padx=0)
 
-        self.scanner_del_os_btn = tk.Button(btn_frame, text="Delete OS Data",
+        self.scanner_del_os_btn = self._tb(btn_frame, "scanner.del_os",
             command=self._scanner_delete_os_data, state="disabled")
         self.scanner_del_os_btn.pack(side="right", padx=3)
 
         # --- Log ---
-        log_frame = tk.LabelFrame(self.scanner_tab, text="Log", padx=5, pady=5)
+        log_frame = self._tlf(self.scanner_tab, "common.log", padx=5, pady=5)
         log_frame.pack(fill="x", padx=10, pady=5)
 
         self.scanner_log_area = scrolledtext.ScrolledText(log_frame, height=6, state="disabled", wrap="word")

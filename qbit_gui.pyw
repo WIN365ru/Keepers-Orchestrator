@@ -750,7 +750,7 @@ SIZE COMPARISON BACKGROUNDS:
         "settings.name": "Имя:",
         "settings.url": "URL:",
         "settings.base_path": "Базовый путь:",
-        "settings.use_global_auth": "Глобальная авториз.",
+        "settings.use_global_auth": "Глобальная авторизация",
         "settings.client_enabled": "Включён",
         "settings.save_client": "Сохранить клиент",
         "settings.rt_login": "Вход на Rutracker (для скачивания .torrent и резервного получения категорий)",
@@ -784,7 +784,7 @@ SIZE COMPARISON BACKGROUNDS:
         "settings.stats_bitrot": "Проверено на Bitrot: {count}",
         "settings.stats_mover": "Авто-балансировка: {count}",
         # Updater tab
-        "updater.only_unreg": "Только незарег.",
+        "updater.only_unreg": "Только незарегистрированные",
         "updater.unreg_torrents": "Незарегистрированные торренты",
         "updater.torrent_name": "Название торрента",
         "updater.reason": "Причина",
@@ -5433,6 +5433,7 @@ class QBitAdderApp:
 
         # 1. Global Auth Section
         global_frame = self._tlf(self.settings_scrollable_frame, "settings.global_auth", padx=10, pady=10)
+        global_frame.pack(fill="x", padx=10, pady=5)
         self.global_auth_var = tk.BooleanVar(value=self.config["global_auth"]["enabled"])
         self._tcb(global_frame, "settings.global_auth_enable",
                       variable=self.global_auth_var, command=self.toggle_global_auth).pack(anchor="w", padx=5)

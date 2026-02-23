@@ -21,6 +21,7 @@ import subprocess
 import sys
 import base64
 import copy
+import queue
 from requests.adapters import HTTPAdapter
 
 # --- Copyable ScrolledText Monkey-Patch ---
@@ -97,7 +98,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.19.2"
+APP_VERSION = "0.20.0"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -646,6 +647,16 @@ SIZE COMPARISON BACKGROUNDS:
   Light Red    - Rot detected: one or more pieces are corrupt.
   Light Yellow - Currently being checked.
 """,
+        # Auth Gate
+        "auth.title": "Keeper Authentication",
+        "auth.prompt": "Enter your Keeper nickname:",
+        "auth.checking": "Verifying...",
+        "auth.unlock": "Access Granted!",
+        "auth.lock": "Access Denied — Not a Keeper",
+        "auth.fetch_error": "Could not fetch keeper list. Check your connection.",
+        "auth.locked_title": "Session Locked",
+        "auth.locked_msg": "Your nickname was removed from the Keepers list.\nThe application will now close.",
+        "auth.login_btn": "Login",
     },
     "ru": {
         # Window
@@ -1071,6 +1082,16 @@ SIZE COMPARISON BACKGROUNDS:
   Светло-красный  - Обнаружена деградация: одна или несколько частей повреждены.
   Светло-жёлтый   - Проверяется в данный момент.
 """,
+        # Auth Gate
+        "auth.title": "Авторизация хранителя",
+        "auth.prompt": "Введите ваш ник хранителя:",
+        "auth.checking": "Проверка...",
+        "auth.unlock": "Доступ разрешён!",
+        "auth.lock": "Доступ запрещён — Не хранитель",
+        "auth.fetch_error": "Не удалось получить список хранителей. Проверьте соединение.",
+        "auth.locked_title": "Сессия заблокирована",
+        "auth.locked_msg": "Ваш ник был удалён из списка хранителей.\nПриложение будет закрыто.",
+        "auth.login_btn": "Войти",
     },
 }
 
@@ -2741,6 +2762,221 @@ class ToolTip:
         self.tip_window = None
         if tw:
             tw.destroy()
+
+
+class KeeperAuthDialog:
+    """Modal startup dialog — verifies user is an authorized Keeper."""
+
+    KEEPERS_API_URL = "https://api.rutracker.cc/v1/static/keepers_user_data"
+    KEEPER_AUTH_TEMP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_keeper_auth_tmp.json")
+
+    def __init__(self, root, config):
+        self.root = root
+        self.config = config
+        self.authenticated = False
+        self.nickname = ""
+        self.keeper_nicknames_memory = set()
+
+        self.dialog = tk.Toplevel(root)
+        self.dialog.title(t("auth.title"))
+        self.dialog.resizable(False, False)
+        self.dialog.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Center on screen (set size + position in one call)
+        sw = root.winfo_screenwidth()
+        sh = root.winfo_screenheight()
+        dw, dh = 400, 320
+        x = (sw // 2) - (dw // 2)
+        y = (sh // 2) - (dh // 2)
+        self.dialog.geometry(f"{dw}x{dh}+{x}+{y}")
+
+        # Lift to front and grab input focus
+        self.dialog.lift()
+        self.dialog.focus_force()
+        self.dialog.grab_set()
+
+        # Title
+        tk.Label(self.dialog, text=t("auth.title"), font=("Segoe UI", 16, "bold")).pack(pady=(18, 8))
+
+        # Prompt
+        tk.Label(self.dialog, text=t("auth.prompt"), font=("Segoe UI", 10)).pack(pady=(0, 4))
+
+        # Entry
+        self.entry = tk.Entry(self.dialog, font=("Segoe UI", 12), width=28, justify="center")
+        self.entry.pack(pady=(0, 8))
+        self.entry.bind("<Return>", lambda e: self._on_login())
+        self.entry.focus_set()
+
+        # Login button
+        self.login_btn = tk.Button(self.dialog, text=t("auth.login_btn"), font=("Segoe UI", 11, "bold"),
+                                   width=14, command=self._on_login)
+        self.login_btn.pack(pady=(0, 10))
+
+        # Canvas for lock/unlock animation
+        self.canvas = tk.Canvas(self.dialog, width=80, height=80, highlightthickness=0)
+        self.canvas.pack(pady=(0, 4))
+
+        # Status label
+        self.status_label = tk.Label(self.dialog, text="", font=("Segoe UI", 11))
+        self.status_label.pack(pady=(0, 10))
+
+    def _on_close(self):
+        self.authenticated = False
+        self.dialog.destroy()
+
+    def _on_login(self):
+        nickname = self.entry.get().strip()
+        if not nickname:
+            return
+        self.nickname = nickname
+        self.login_btn.config(state="disabled")
+        self.entry.config(state="disabled")
+        self.status_label.config(text=t("auth.checking"), fg="#2196F3")
+        self._result_queue = queue.Queue()
+        threading.Thread(target=self._verify_keeper, daemon=True).start()
+        self._poll_result()
+
+    def _poll_result(self):
+        try:
+            result = self._result_queue.get_nowait()
+        except queue.Empty:
+            self.dialog.after(100, self._poll_result)
+            return
+        kind, value = result
+        if kind == "ok":
+            self._show_result(value)
+        else:
+            self._show_error(value)
+
+    def _verify_keeper(self):
+        try:
+            proxies = self._get_proxies()
+            resp = requests.get(self.KEEPERS_API_URL, proxies=proxies, timeout=30)
+            data = resp.json()
+            result = data.get("result", {})
+
+            # Save to temp file
+            with open(self.KEEPER_AUTH_TEMP_FILE, "w", encoding="utf-8") as f:
+                json.dump(result, f)
+
+            # Store in memory
+            self.keeper_nicknames_memory = {
+                v[0].lower() for v in result.values() if v and len(v) >= 1
+            }
+
+            # Store in DB
+            db = DatabaseManager(DATA_DB_FILE)
+            db.save_keepers_users(result)
+            db_nicknames = db.get_all_keeper_usernames()
+
+            # Erase temp file
+            if os.path.exists(self.KEEPER_AUTH_TEMP_FILE):
+                os.remove(self.KEEPER_AUTH_TEMP_FILE)
+
+            # Check nickname against both sources
+            nick_lower = self.nickname.lower()
+            in_memory = nick_lower in self.keeper_nicknames_memory
+            in_db = nick_lower in db_nicknames
+            is_keeper = in_memory and in_db
+
+            self._result_queue.put(("ok", is_keeper))
+
+        except Exception as e:
+            self._result_queue.put(("error", str(e)))
+
+    def _show_result(self, is_keeper):
+        if is_keeper:
+            self._animate_unlock()
+            self.authenticated = True
+        else:
+            self._animate_lock()
+
+    def _show_error(self, msg):
+        self.status_label.config(text=t("auth.fetch_error"), fg="#F44336")
+        self.login_btn.config(state="normal")
+        self.entry.config(state="normal")
+
+    def _draw_padlock(self, color="#888888", shackle_open=False):
+        c = self.canvas
+        c.delete("all")
+        # Body
+        c.create_rectangle(20, 40, 60, 72, fill=color, outline="#333", width=2)
+        # Keyhole
+        c.create_oval(35, 48, 45, 58, fill="#333", outline="#333")
+        c.create_rectangle(38, 55, 42, 65, fill="#333", outline="#333")
+        # Shackle
+        if shackle_open:
+            c.create_arc(22, 15, 58, 50, start=0, extent=180, style="arc", outline="#333", width=3)
+            c.create_line(58, 32, 58, 20, fill="#333", width=3)
+            c.create_line(22, 32, 22, 42, fill="#333", width=3)
+        else:
+            c.create_arc(25, 15, 55, 45, start=0, extent=180, style="arc", outline="#333", width=3)
+            c.create_line(25, 30, 25, 42, fill="#333", width=3)
+            c.create_line(55, 30, 55, 42, fill="#333", width=3)
+
+    def _animate_unlock(self):
+        self._draw_padlock(color="#4CAF50", shackle_open=True)
+        self.status_label.config(text=f"\u2713 {t('auth.unlock')}", fg="#4CAF50")
+        self._pulse_count = 0
+        self._pulse_unlock()
+
+    def _pulse_unlock(self):
+        colors = ["#4CAF50", "#81C784", "#4CAF50"]
+        if self._pulse_count < len(colors):
+            self._draw_padlock(color=colors[self._pulse_count], shackle_open=True)
+            self._pulse_count += 1
+            self.dialog.after(300, self._pulse_unlock)
+        else:
+            self.dialog.after(600, self.dialog.destroy)
+
+    def _animate_lock(self):
+        self._draw_padlock(color="#F44336", shackle_open=False)
+        self.status_label.config(text=f"\u2717 {t('auth.lock')}", fg="#F44336")
+        self._pulse_count = 0
+        self._shake_count = 0
+        self._pulse_lock()
+
+    def _pulse_lock(self):
+        colors = ["#F44336", "#EF9A9A", "#F44336"]
+        if self._pulse_count < len(colors):
+            self._draw_padlock(color=colors[self._pulse_count], shackle_open=False)
+            self._pulse_count += 1
+            self.dialog.after(300, self._pulse_lock)
+        else:
+            self._do_shake()
+
+    def _do_shake(self):
+        if self._shake_count < 6:
+            geom = self.dialog.geometry()
+            plus_idx = geom.index("+")
+            coords = geom[plus_idx:]
+            parts = coords.split("+")
+            x_pos = int(parts[1])
+            y_pos = int(parts[2])
+            offset = 5 if self._shake_count % 2 == 0 else -5
+            self.dialog.geometry(f"+{x_pos + offset}+{y_pos}")
+            self._shake_count += 1
+            self.dialog.after(60, self._do_shake)
+        else:
+            self.dialog.after(800, self._close_denied)
+
+    def _close_denied(self):
+        messagebox.showerror(t("auth.lock"), t("auth.lock"))
+        self.dialog.destroy()
+        sys.exit()
+
+    def _get_proxies(self):
+        proxy_conf = self.config.get("proxy", {})
+        if proxy_conf.get("enabled") and proxy_conf.get("url"):
+            url = proxy_conf["url"]
+            user = proxy_conf.get("username", "")
+            pwd = proxy_conf.get("password", "")
+            if user and pwd:
+                scheme, rest = url.split("://", 1)
+                return {"http": f"{scheme}://{user}:{pwd}@{rest}",
+                        "https": f"{scheme}://{user}:{pwd}@{rest}"}
+            return {"http": url, "https": url}
+        return None
 
 
 class QBitAdderApp:
@@ -12607,10 +12843,67 @@ class QBitAdderApp:
         self.scanner_log(f"Downloaded {count} .torrent files to {folder}")
         messagebox.showinfo("Download Complete", f"Saved {count} .torrent files to:\n{folder}")
 
+    # ── Keeper periodic re-verification ──────────────────────────────
+
+    def _schedule_keeper_recheck(self):
+        self._keeper_check_interval = 1440 * 60 * 1000  # 24h in ms
+        self.root.after(self._keeper_check_interval, self._recheck_keeper_status)
+
+    def _recheck_keeper_status(self):
+        threading.Thread(target=self._do_keeper_recheck, daemon=True).start()
+
+    def _do_keeper_recheck(self):
+        try:
+            resp = requests.get(KeeperAuthDialog.KEEPERS_API_URL,
+                                proxies=self.get_requests_proxies(), timeout=30)
+            data = resp.json().get("result", {})
+            self.db_manager.save_keepers_users(data)
+            nicknames = {v[0].lower() for v in data.values() if v}
+            db_nicknames = self.db_manager.get_all_keeper_usernames()
+
+            nick_lower = self.keeper_nickname.lower()
+            if nick_lower not in nicknames or nick_lower not in db_nicknames:
+                self.root.after(0, self._lock_application)
+            else:
+                self.root.after(0, self._schedule_keeper_recheck)
+        except Exception:
+            self.root.after(0, self._schedule_keeper_recheck)
+
+    def _lock_application(self):
+        messagebox.showerror(t("auth.locked_title"), t("auth.locked_msg"))
+        self.root.destroy()
+
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = QBitAdderApp(root)
-    root.mainloop()
+    root.withdraw()  # Hide main window during auth
+
+    # Load config early (for proxy & language)
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r") as f:
+            _boot_config = json.load(f)
+        # Uncloak passwords
+        for key in ("proxy",):
+            if key in _boot_config:
+                for field in ("password",):
+                    if field in _boot_config[key]:
+                        _boot_config[key][field] = uncloak(_boot_config[key][field])
+        # Set language
+        _current_lang = _boot_config.get("language", "en")
+    else:
+        _boot_config = DEFAULT_CONFIG.copy()
+
+    # Show auth gate
+    auth = KeeperAuthDialog(root, _boot_config)
+    root.wait_window(auth.dialog)
+
+    if auth.authenticated:
+        root.deiconify()  # Show main window
+        app = QBitAdderApp(root)
+        app.keeper_nickname = auth.nickname
+        app._schedule_keeper_recheck()
+        root.mainloop()
+    else:
+        root.destroy()
 
 

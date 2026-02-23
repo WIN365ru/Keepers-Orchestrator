@@ -89,7 +89,8 @@ DEFAULT_CONFIG = {
     "keepers_preferred_categories": [],
     "theme": "Default",
     "language": "en",
-    "keeper_nickname": ""
+    "keeper_nickname": "",
+    "log_retention_days": 14
 }
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1147,6 +1148,7 @@ def fmt_dt(dt_obj, fmt="datetime"):
 # --- File logging ---
 import logging as _logging
 
+_LOG_RETENTION_DAYS = 14  # default, overridden from config at startup
 _log_lock = threading.Lock()
 _file_loggers = {}
 
@@ -1174,6 +1176,48 @@ def _log_to_file(tab_name, message):
         _get_file_logger(tab_name).info(message)
     except Exception:
         pass
+
+def _write_startup_separator():
+    """Write a visual separator to every existing log file on startup."""
+    sep = f"\n{'=' * 60}\n  Session started  {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{'=' * 60}\n"
+    for name in ("main", "updater", "bitrot", "repair", "mover", "keepers", "scanner"):
+        log_path = os.path.join(_LOGS_DIR, f"{name}.log")
+        if os.path.exists(log_path):
+            try:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(sep)
+            except Exception:
+                pass
+
+def _cleanup_old_logs(retention_days=None):
+    """Delete log files (or trim lines) older than retention_days."""
+    days = retention_days if retention_days is not None else _LOG_RETENTION_DAYS
+    if days <= 0:
+        return
+    cutoff = datetime.datetime.now() - datetime.timedelta(days=days)
+    cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+    for fname in os.listdir(_LOGS_DIR):
+        if not fname.endswith(".log"):
+            continue
+        fpath = os.path.join(_LOGS_DIR, fname)
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            # Keep lines that are recent or non-timestamped (separators, blanks)
+            kept = []
+            for ln in lines:
+                # Timestamped lines start with "YYYY-MM-DD HH:MM:SS"
+                if len(ln) >= 19 and ln[4] == '-' and ln[7] == '-' and ln[10] == ' ':
+                    if ln[:19] >= cutoff_str:
+                        kept.append(ln)
+                else:
+                    # Separator / blank lines — keep if adjacent to kept content
+                    kept.append(ln)
+            if len(kept) < len(lines):
+                with open(fpath, "w", encoding="utf-8") as f:
+                    f.writelines(kept)
+        except Exception:
+            pass
 
 
 # --- Simple Bencode Decoder ---
@@ -4872,6 +4916,7 @@ class QBitAdderApp:
                 if "github_app_auto_update_enabled" not in data: data["github_app_auto_update_enabled"] = False
                 if "keepers_preferred_categories" not in data: data["keepers_preferred_categories"] = []
                 if "theme" not in data: data["theme"] = "Default"
+                if "log_retention_days" not in data: data["log_retention_days"] = 14
 
                 return data
             except Exception as e:
@@ -13488,6 +13533,11 @@ if __name__ == "__main__":
         _current_lang = _boot_config.get("language", "en")
     else:
         _boot_config = DEFAULT_CONFIG.copy()
+
+    # Log maintenance: clean old entries, write session separator
+    _LOG_RETENTION_DAYS = _boot_config.get("log_retention_days", 14)
+    _cleanup_old_logs(_LOG_RETENTION_DAYS)
+    _write_startup_separator()
 
     _saved_nickname = _boot_config.get("keeper_nickname", "")
 

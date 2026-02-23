@@ -71,7 +71,7 @@ Repository: https://github.com/WIN365ru/Keepers-Orchestrator
 - **Auth Management**: Centralized login for Rutracker (with cookie/key extraction).
 - **Rutracker API**: All category lookups use `api.rutracker.cc/v1/` — no HTML scraping, instant responses (unless scraping for Keepers).
 - **Category Cache**: Full forum tree cached locally with 3-month TTL, single API call refresh (<1 second).
-- **SQLite Database Caches**: Uses robust SQLite databases (`q_adder_data.db` and `q_adder_hashes.db`) for caching torrent metadata, file lists, and piece hashes for maximum performance during Deep Scans.
+- **SQLite Database Caches**: Uses robust SQLite databases (`keepers_orchestrator_data.db` and `keepers_orchestrator_hashes.db`) for caching torrent metadata, file lists, and piece hashes for maximum performance during Deep Scans.
 - **Auto-Updates**:
     - **App Updates**: Checks GitHub (`WIN365ru/Keepers-Orchestrator`) for new releases on startup and can auto-install updates directly from GitHub releases.
     - **List Updates**: Auto-refresh torrent lists.
@@ -88,7 +88,7 @@ Repository: https://github.com/WIN365ru/Keepers-Orchestrator
 ## User Manual
 
 ### 1. Initial Setup
-1.  **Launch** the application (`qbit_gui.pyw`).
+1.  **Launch** the application (`keepers_orchestrator.pyw`).
 2.  Go to the **Settings** tab.
 3.  **Clients Config**:
     *   Enter your qBittorrent Web UI URL (e.g., `http://localhost:8080`).

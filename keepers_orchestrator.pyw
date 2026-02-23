@@ -5940,14 +5940,13 @@ class QBitAdderApp:
             self.version_label.bind("<Button-1>", lambda e: webbrowser.open(html_url))
 
     def _download_latest_app_script(self, session, release_data):
-        _SCRIPT_STEMS = ("keepers_orchestrator", "qbit_gui")  # new name first
         assets = release_data.get("assets", []) or []
         for asset in assets:
             name = str(asset.get("name", "")).lower()
             dl_url = asset.get("browser_download_url", "")
             if not dl_url:
                 continue
-            if any(s in name for s in _SCRIPT_STEMS) and (name.endswith(".pyw") or name.endswith(".py")):
+            if "keepers_orchestrator" in name and (name.endswith(".pyw") or name.endswith(".py")):
                 resp = session.get(dl_url, timeout=30)
                 if resp.status_code == 200 and b"class QBitAdderApp" in resp.content:
                     return resp.content, f"asset:{asset.get('name', '')}"
@@ -5960,21 +5959,20 @@ class QBitAdderApp:
                     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
                         for member in zf.namelist():
                             low_member = member.lower()
-                            if low_member.endswith(".pyw") or low_member.endswith(".py"):
-                                if any(s in low_member for s in _SCRIPT_STEMS):
-                                    payload = zf.read(member)
-                                    if b"class QBitAdderApp" in payload:
-                                        return payload, f"zipball:{member}"
+                            if "keepers_orchestrator" in low_member and \
+                               (low_member.endswith(".pyw") or low_member.endswith(".py")):
+                                payload = zf.read(member)
+                                if b"class QBitAdderApp" in payload:
+                                    return payload, f"zipball:{member}"
             except Exception:
                 pass
 
         tag = str(release_data.get("tag_name", "")).strip()
         raw_candidates = []
-        for stem in _SCRIPT_STEMS:
-            if tag:
-                raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag}/{stem}.pyw")
-            raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{stem}.pyw")
-            raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/master/{stem}.pyw")
+        if tag:
+            raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag}/keepers_orchestrator.pyw")
+        raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/keepers_orchestrator.pyw")
+        raw_candidates.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/master/keepers_orchestrator.pyw")
 
         for raw_url in raw_candidates:
             try:

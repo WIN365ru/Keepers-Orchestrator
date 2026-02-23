@@ -95,7 +95,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.19.0"
+APP_VERSION = "0.19.1"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -494,10 +494,160 @@ TRANSLATIONS = {
         "scanner.del_os": "Delete OS Data",
         # Help dialog
         "help.title": "Help & Documentation",
+        "help.content": """# === KEEPERS ORCHESTRATOR - HELP & DOCUMENTATION ===
+
+## APP TABS & FUNCTIONS
+--------------------------------------------------
+[Add Torrents]
+- Takes a Rutracker Topic ID or a Folder Name, searches Rutracker,
+  downloads the active .torrent file, and injects it into qBittorrent
+  pointing to your specified directory.
+- Deep Checkbox searches deeper matches natively.
+
+[Keepers]
+- Fetches all user profiles cached in your 'q_adder_data.db' Keepers
+  list to instantly scan for their latest torrents.
+- Useful for automating downloads from favorite uploaders.
+- Filter by category, size, seeds. Preferred categories can be
+  configured to highlight relevant content.
+
+[Update Torrents]
+- Compares torrents currently in qBittorrent to the live Rutracker API
+  to find newly updated matching topics. Automatically downloads the
+  updated file and points it to the exact same disk location.
+- "Only errored" filter focuses on torrents that failed verification.
+
+[Remove Torrents]
+- Cleans up inactive torrents by comparing qBit against Rutracker API.
+  Flags Dead / Unknown topics for easy deletion.
+- Optional "Also delete content files (DATA)" checkbox.
+
+[Repair Categories]
+- Rescans all Torrents in qBittorrent against the Rutracker Database.
+  Corrects empty or inaccurate Categories.
+- "Also correct save path (move files)" checkbox controls whether
+  files are physically relocated to match the new category folder
+  structure, or only the qBittorrent category label is updated.
+- The repair works even when the configured Base Path does not match
+  the actual torrent paths (fallback folder-segment replacement).
+
+[Move Torrents]
+- Mass-moves actively seeding Torrents between physical drives without
+  manually entering qBittorrent's GUI.
+- Category Mover: migrate all torrents of a category to a new root
+  using dynamic folder naming /{Category}/{Topic_ID}/.
+- Balance Mover: automatically distribute torrents across multiple
+  disks to balance free space evenly.
+
+[Folder Scanner]
+- Scans a physical Windows folder on your drive and maps every
+  sub-directory against the Rutracker API.
+- Use this to detect unseeded collections, identify missing downloads,
+  and re-inject disconnected folders back into qBittorrent.
+- Deep Scan: verifies file names and counts against .torrent metadata.
+- Deep Scan+: full SHA-1 piece hash verification (slow but thorough).
+- "Show only 0 B on disk" filter: instantly isolate empty folders
+  that exist on disk but contain no actual data.
+- Size columns (Size, Disk Size) are sortable by actual byte value.
+
+[Bitrot Scanner]
+- Scans ALL payload files across every active Torrent in qBittorrent
+  and subjects them to cryptographic SHA-1 piece verification.
+  Perfect for discovering silent data corruption or failing drives.
+
+[Search Torrents]
+- Search Rutracker directly from the app by name (scrapes the forum),
+  by Topic ID, or by info-hash (via API).
+- Double-click a result to open its Rutracker page, or inject it
+  into qBittorrent with one click.
+
+[Settings]
+- Proxy: HTTP/HTTPS/SOCKS5 proxy for bypassing regional blocks.
+- Global Authentication: shared login for all qBittorrent clients.
+- Clients: manage multiple qBittorrent instances with individual
+  URLs, credentials, and base save paths. Status traffic lights
+  show connection health at a glance.
+- Rutracker Login: forum credentials, category cache TTL,
+  extracted API keys (ID / BT / API).
+- Private Messages: enable inbox polling, set interval, toggle
+  Windows toast notifications.
+- Appearance: switch between Default, Steel Blue, and Night Mode
+  themes. The change is applied instantly and saved to config.
+- App Updates: auto-update from GitHub releases.
+- Statistics: torrents kept, total size saved, global speeds.
+
+
+## USEFUL COMMANDS & HOTKEYS
+--------------------------------------------------
+<Control-1> through <Control-0>
+  Instantly switch between the 10 application tabs.
+  (1=Adder, 2=Keepers, ... 9=Settings, 0=Search)
+
+<F5>
+  Universal Action Key - starts the primary operation on the
+  current tab:
+    Adder     -> Process Torrent
+    Keepers   -> Start Scan
+    Updater   -> Start Scan
+    Remover   -> Refresh Client List
+    Repair    -> Start Scan
+    Mover     -> Refresh Client List
+    Scanner   -> Start Scan
+    Bitrot    -> Start Scan
+    Search    -> Search Rutracker
+
+<Control-C>
+  Universal Copy - works on EVERY Treeview across the app.
+  Select 1 or 1,000 rows, press Ctrl+C, and paste into Excel
+  or Notepad with tab-separated columns.
+
+Log Highlighting
+  All log consoles are unlocked for text selection. Drag, highlight,
+  and Ctrl+C / Ctrl+V error text freely.
+
+Double-Click Rows
+  Opens the Rutracker forum topic for that torrent in your browser.
+
+Right-Click Rows
+  Context menu on path columns lets you copy the folder path
+  to clipboard instantly.
+
+PM Indicator (bottom-right)
+  Click the PM badge to open the Private Messages inbox.
+  Unread messages trigger a color change on the badge.
+
+
+## TREEVIEW COLOR LEGEND (Folder Scanner)
+--------------------------------------------------
+TEXT COLORS:
+  Dark Green  - Actively mapped / seeding in qBittorrent.
+  Dark Red    - "Missing" - file has missing pieces vs. API.
+  Gray        - "Dead" - topic no longer exists on Rutracker.
+  Default     - Healthy torrent, not connected to your client.
+
+SIZE COMPARISON BACKGROUNDS:
+  Light Red (Pink)   - 0 B on disk. Folder exists but is empty.
+  Light Orange       - Smaller: < 95% of the expected API size.
+  Light Blue         - Larger: > 105% of expected size (extra files).
+
+
+## TREEVIEW COLOR LEGEND (Repair Categories)
+--------------------------------------------------
+  Dark Red    - Category mismatch detected (needs repair).
+  Dark Green  - Successfully repaired.
+  Red         - Repair failed (error).
+
+
+## TREEVIEW COLOR LEGEND (Bitrot Scanner)
+--------------------------------------------------
+  Light Green  - Clean: all pieces passed SHA-1 verification.
+  Light Red    - Rot detected: one or more pieces are corrupt.
+  Light Yellow - Currently being checked.
+""",
     },
     "ru": {
         # Window
-        "app.title": "Keepers Orchestrator",
+        "app.title": "Хранительский Оркестратор",
         # Menu
         "menu.help": "Справка",
         "menu.help.docs": "Документация и цвета",
@@ -763,6 +913,162 @@ TRANSLATIONS = {
         "scanner.del_os": "Удалить с диска",
         # Help dialog
         "help.title": "Справка и документация",
+        "help.content": """# === KEEPERS ORCHESTRATOR — СПРАВКА И ДОКУМЕНТАЦИЯ ===
+
+## ВКЛАДКИ И ФУНКЦИИ ПРИЛОЖЕНИЯ
+--------------------------------------------------
+[Добавление]
+- Принимает ID темы Rutracker или имя папки, ищет на Rutracker,
+  скачивает актуальный .torrent-файл и добавляет его в qBittorrent
+  с указанием нужной директории.
+- Галочка «Глубокий поиск» ищет совпадения глубже.
+
+[Хранители]
+- Загружает все профили пользователей из вашего списка Хранителей
+  в базе данных 'q_adder_data.db' для мгновенного сканирования
+  их последних раздач.
+- Удобно для автоматизации загрузок от избранных раздающих.
+- Фильтр по категории, размеру, сидам. Предпочтительные категории
+  можно настроить для подсветки нужного контента.
+
+[Обновление]
+- Сравнивает торренты в qBittorrent с актуальными данными API Rutracker,
+  чтобы найти обновлённые темы. Автоматически скачивает обновлённый
+  файл и указывает его на прежнее расположение на диске.
+- Фильтр «Только с ошибками» показывает торренты, не прошедшие проверку.
+
+[Удаление]
+- Очищает неактивные торренты путём сравнения qBit с API Rutracker.
+  Помечает мёртвые / неизвестные темы для удобного удаления.
+- Опционально «Также удалить файлы содержимого (DATA)».
+
+[Исправление категорий]
+- Пересканирует все торренты в qBittorrent по базе данных Rutracker.
+  Исправляет пустые или неточные категории.
+- Галочка «Также исправить путь сохранения (переместить файлы)»
+  определяет, будут ли файлы физически перемещены в соответствии
+  с новой структурой папок категории, или только обновлена метка
+  категории в qBittorrent.
+- Исправление работает даже когда настроенный базовый путь
+  не совпадает с фактическими путями торрентов (замена сегмента папки).
+
+[Перемещение]
+- Массовое перемещение активно раздаваемых торрентов между физическими
+  дисками без ручного использования интерфейса qBittorrent.
+- Перемещение по категории: переносит все торренты категории в новый
+  корень с динамическим именованием папок /{Категория}/{ID_темы}/.
+- Балансировка: автоматически распределяет торренты между несколькими
+  дисками для равномерного распределения свободного пространства.
+
+[Сканер папок]
+- Сканирует физическую папку Windows на вашем диске и сопоставляет
+  каждую поддиректорию с API Rutracker.
+- Используйте для обнаружения нераздаваемых коллекций, выявления
+  недостающих загрузок и повторного подключения папок к qBittorrent.
+- Глубокое сканирование: проверяет имена и количество файлов
+  по метаданным .torrent.
+- Глубокое сканирование+: полная проверка хешей SHA-1 (медленно,
+  но тщательно).
+- Фильтр «Показать только 0 Б на диске»: мгновенно выделяет пустые
+  папки, существующие на диске, но не содержащие данных.
+- Столбцы размера (Размер, Размер на диске) сортируются по
+  фактическому значению в байтах.
+
+[Сканер Bitrot]
+- Сканирует ВСЕ файлы каждого активного торрента в qBittorrent
+  и подвергает их криптографической проверке хешей SHA-1.
+  Идеально для обнаружения скрытого повреждения данных или
+  неисправных дисков.
+
+[Поиск]
+- Поиск на Rutracker прямо из приложения: по имени (парсинг форума),
+  по ID темы или по инфо-хешу (через API).
+- Двойной клик по результату открывает страницу на Rutracker,
+  или добавляет в qBittorrent одним нажатием.
+
+[Настройки]
+- Прокси: HTTP/HTTPS/SOCKS5 прокси для обхода региональных блокировок.
+- Глобальная авторизация: общий логин для всех клиентов qBittorrent.
+- Клиенты: управление несколькими экземплярами qBittorrent
+  с индивидуальными URL, учётными данными и базовыми путями.
+  Индикаторы-светофоры показывают состояние подключения.
+- Вход Rutracker: учётные данные форума, TTL кеша категорий,
+  извлечённые API-ключи (ID / BT / API).
+- Личные сообщения: включение опроса входящих, интервал, переключение
+  всплывающих уведомлений Windows.
+- Оформление: переключение между темами Default, Steel Blue
+  и Night Mode. Изменение применяется мгновенно и сохраняется.
+- Обновления: автоматическое обновление с GitHub-релизов.
+- Статистика: сохранённые торренты, общий размер, глобальные скорости.
+
+
+## ПОЛЕЗНЫЕ КОМАНДЫ И ГОРЯЧИЕ КЛАВИШИ
+--------------------------------------------------
+<Control-1> до <Control-0>
+  Мгновенное переключение между 10 вкладками приложения.
+  (1=Добавление, 2=Хранители, ... 9=Настройки, 0=Поиск)
+
+<F5>
+  Универсальная клавиша действия — запускает основную операцию
+  на текущей вкладке:
+    Добавление    -> Обработать торрент
+    Хранители     -> Начать сканирование
+    Обновление    -> Начать сканирование
+    Удаление      -> Обновить список клиентов
+    Исправление   -> Начать сканирование
+    Перемещение   -> Обновить список клиентов
+    Сканер папок  -> Начать сканирование
+    Bitrot        -> Начать сканирование
+    Поиск         -> Искать на Rutracker
+
+<Control-C>
+  Универсальное копирование — работает в КАЖДОЙ таблице приложения.
+  Выберите от 1 до 1 000 строк, нажмите Ctrl+C, и вставьте
+  в Excel или Блокнот с разделением табуляцией.
+
+Выделение в логе
+  Все консоли логов разблокированы для выделения текста. Выделяйте
+  и копируйте текст ошибок через Ctrl+C / Ctrl+V.
+
+Двойной клик по строке
+  Открывает тему Rutracker для этого торрента в вашем браузере.
+
+Правый клик по строке
+  Контекстное меню на столбцах с путями позволяет мгновенно
+  скопировать путь к папке в буфер обмена.
+
+Индикатор ЛС (внизу справа)
+  Нажмите на значок ЛС для открытия входящих сообщений.
+  Непрочитанные сообщения меняют цвет индикатора.
+
+
+## ЦВЕТОВАЯ ЛЕГЕНДА ТАБЛИЦЫ (Сканер папок)
+--------------------------------------------------
+ЦВЕТА ТЕКСТА:
+  Тёмно-зелёный  - Активно подключён / раздаётся в qBittorrent.
+  Тёмно-красный  - «Отсутствует» — файл имеет недостающие части.
+  Серый           - «Мёртвый» — тема больше не существует на Rutracker.
+  По умолчанию    - Здоровый торрент, не подключён к клиенту.
+
+ФОНОВЫЕ ЦВЕТА СРАВНЕНИЯ РАЗМЕРОВ:
+  Светло-красный (розовый) - 0 Б на диске. Папка существует, но пуста.
+  Светло-оранжевый         - Меньше: < 95% ожидаемого размера API.
+  Светло-голубой            - Больше: > 105% ожидаемого размера (лишние файлы).
+
+
+## ЦВЕТОВАЯ ЛЕГЕНДА ТАБЛИЦЫ (Исправление категорий)
+--------------------------------------------------
+  Тёмно-красный  - Обнаружено несоответствие категории (требуется исправление).
+  Тёмно-зелёный  - Успешно исправлено.
+  Красный        - Ошибка исправления.
+
+
+## ЦВЕТОВАЯ ЛЕГЕНДА ТАБЛИЦЫ (Сканер Bitrot)
+--------------------------------------------------
+  Светло-зелёный  - Чисто: все части прошли проверку SHA-1.
+  Светло-красный  - Обнаружена деградация: одна или несколько частей повреждены.
+  Светло-жёлтый   - Проверяется в данный момент.
+""",
     },
 }
 
@@ -2418,12 +2724,12 @@ class QBitAdderApp:
         self.root.geometry("1200x870")
 
         # Global Menu Bar
-        menubar = tk.Menu(self.root)
-        self.root.config(menu=menubar)
+        self._menubar = tk.Menu(self.root)
+        self.root.config(menu=self._menubar)
 
-        help_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label=t("menu.help"), menu=help_menu)
-        help_menu.add_command(label=t("menu.help.docs"), command=self._show_help)
+        self._help_menu = tk.Menu(self._menubar, tearoff=0)
+        self._menubar.add_cascade(label=t("menu.help"), menu=self._help_menu)
+        self._help_menu.add_command(label=t("menu.help.docs"), command=self._show_help)
 
         # Custom progress bar styling
         style = ttk.Style()
@@ -3744,163 +4050,13 @@ class QBitAdderApp:
     def _show_help(self):
         """Displays a Help dialog with feature descriptions, hotkeys, and color legends."""
         help_win = tk.Toplevel(self.root)
-        help_win.title("Help & Documentation")
+        help_win.title(t("help.title"))
         help_win.geometry("900x700")
 
         txt = scrolledtext.ScrolledText(help_win, wrap="word", state="normal", font=("Segoe UI", 10))
         txt.pack(fill="both", expand=True, padx=10, pady=10)
 
-        help_content = """# === KEEPERS ORCHESTRATOR - HELP & DOCUMENTATION ===
-
-## APP TABS & FUNCTIONS
---------------------------------------------------
-[Add Torrents]
-- Takes a Rutracker Topic ID or a Folder Name, searches Rutracker,
-  downloads the active .torrent file, and injects it into qBittorrent
-  pointing to your specified directory.
-- Deep Checkbox searches deeper matches natively.
-
-[Keepers]
-- Fetches all user profiles cached in your 'q_adder_data.db' Keepers
-  list to instantly scan for their latest torrents.
-- Useful for automating downloads from favorite uploaders.
-- Filter by category, size, seeds. Preferred categories can be
-  configured to highlight relevant content.
-
-[Update Torrents]
-- Compares torrents currently in qBittorrent to the live Rutracker API
-  to find newly updated matching topics. Automatically downloads the
-  updated file and points it to the exact same disk location.
-- "Only errored" filter focuses on torrents that failed verification.
-
-[Remove Torrents]
-- Cleans up inactive torrents by comparing qBit against Rutracker API.
-  Flags Dead / Unknown topics for easy deletion.
-- Optional "Also delete content files (DATA)" checkbox.
-
-[Repair Categories]
-- Rescans all Torrents in qBittorrent against the Rutracker Database.
-  Corrects empty or inaccurate Categories.
-- "Also correct save path (move files)" checkbox controls whether
-  files are physically relocated to match the new category folder
-  structure, or only the qBittorrent category label is updated.
-- The repair works even when the configured Base Path does not match
-  the actual torrent paths (fallback folder-segment replacement).
-
-[Move Torrents]
-- Mass-moves actively seeding Torrents between physical drives without
-  manually entering qBittorrent's GUI.
-- Category Mover: migrate all torrents of a category to a new root
-  using dynamic folder naming /{Category}/{Topic_ID}/.
-- Balance Mover: automatically distribute torrents across multiple
-  disks to balance free space evenly.
-
-[Folder Scanner]
-- Scans a physical Windows folder on your drive and maps every
-  sub-directory against the Rutracker API.
-- Use this to detect unseeded collections, identify missing downloads,
-  and re-inject disconnected folders back into qBittorrent.
-- Deep Scan: verifies file names and counts against .torrent metadata.
-- Deep Scan+: full SHA-1 piece hash verification (slow but thorough).
-- "Show only 0 B on disk" filter: instantly isolate empty folders
-  that exist on disk but contain no actual data.
-- Size columns (Size, Disk Size) are sortable by actual byte value.
-
-[Bitrot Scanner]
-- Scans ALL payload files across every active Torrent in qBittorrent
-  and subjects them to cryptographic SHA-1 piece verification.
-  Perfect for discovering silent data corruption or failing drives.
-
-[Search Torrents]
-- Search Rutracker directly from the app by name (scrapes the forum),
-  by Topic ID, or by info-hash (via API).
-- Double-click a result to open its Rutracker page, or inject it
-  into qBittorrent with one click.
-
-[Settings]
-- Proxy: HTTP/HTTPS/SOCKS5 proxy for bypassing regional blocks.
-- Global Authentication: shared login for all qBittorrent clients.
-- Clients: manage multiple qBittorrent instances with individual
-  URLs, credentials, and base save paths. Status traffic lights
-  show connection health at a glance.
-- Rutracker Login: forum credentials, category cache TTL,
-  extracted API keys (ID / BT / API).
-- Private Messages: enable inbox polling, set interval, toggle
-  Windows toast notifications.
-- Appearance: switch between Default, Steel Blue, and Night Mode
-  themes. The change is applied instantly and saved to config.
-- App Updates: auto-update from GitHub releases.
-- Statistics: torrents kept, total size saved, global speeds.
-
-
-## USEFUL COMMANDS & HOTKEYS
---------------------------------------------------
-<Control-1> through <Control-0>
-  Instantly switch between the 10 application tabs.
-  (1=Adder, 2=Keepers, ... 9=Settings, 0=Search)
-
-<F5>
-  Universal Action Key - starts the primary operation on the
-  current tab:
-    Adder     -> Process Torrent
-    Keepers   -> Start Scan
-    Updater   -> Start Scan
-    Remover   -> Refresh Client List
-    Repair    -> Start Scan
-    Mover     -> Refresh Client List
-    Scanner   -> Start Scan
-    Bitrot    -> Start Scan
-    Search    -> Search Rutracker
-
-<Control-C>
-  Universal Copy - works on EVERY Treeview across the app.
-  Select 1 or 1,000 rows, press Ctrl+C, and paste into Excel
-  or Notepad with tab-separated columns.
-
-Log Highlighting
-  All log consoles are unlocked for text selection. Drag, highlight,
-  and Ctrl+C / Ctrl+V error text freely.
-
-Double-Click Rows
-  Opens the Rutracker forum topic for that torrent in your browser.
-
-Right-Click Rows
-  Context menu on path columns lets you copy the folder path
-  to clipboard instantly.
-
-PM Indicator (bottom-right)
-  Click the PM badge to open the Private Messages inbox.
-  Unread messages trigger a color change on the badge.
-
-
-## TREEVIEW COLOR LEGEND (Folder Scanner)
---------------------------------------------------
-TEXT COLORS:
-  Dark Green  - Actively mapped / seeding in qBittorrent.
-  Dark Red    - "Missing" - file has missing pieces vs. API.
-  Gray        - "Dead" - topic no longer exists on Rutracker.
-  Default     - Healthy torrent, not connected to your client.
-
-SIZE COMPARISON BACKGROUNDS:
-  Light Red (Pink)   - 0 B on disk. Folder exists but is empty.
-  Light Orange       - Smaller: < 95% of the expected API size.
-  Light Blue         - Larger: > 105% of expected size (extra files).
-
-
-## TREEVIEW COLOR LEGEND (Repair Categories)
---------------------------------------------------
-  Dark Red    - Category mismatch detected (needs repair).
-  Dark Green  - Successfully repaired.
-  Red         - Repair failed (error).
-
-
-## TREEVIEW COLOR LEGEND (Bitrot Scanner)
---------------------------------------------------
-  Light Green  - Clean: all pieces passed SHA-1 verification.
-  Light Red    - Rot detected: one or more pieces are corrupt.
-  Light Yellow - Currently being checked.
-"""
-        txt.insert("1.0", help_content)
+        txt.insert("1.0", t("help.content"))
         txt.config(state="disabled")
 
     def load_config(self):
@@ -4186,12 +4342,8 @@ SIZE COMPARISON BACKGROUNDS:
 
         # Update menu bar
         try:
-            menu_name = self.root.cget("menu")
-            if menu_name:
-                menubar = self.root.nametowidget(menu_name)
-                menubar.entryconfig(0, label=t("menu.help"))
-                help_menu = menubar.nametowidget(menubar.entrycget(0, "menu"))
-                help_menu.entryconfig(0, label=t("menu.help.docs"))
+            self._menubar.entryconfig(0, label=t("menu.help"))
+            self._help_menu.entryconfig(0, label=t("menu.help.docs"))
         except Exception:
             pass
 

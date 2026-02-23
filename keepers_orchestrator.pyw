@@ -109,7 +109,7 @@ DATA_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_data.db")
 HASHES_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.24.1"
+APP_VERSION = "0.24.2"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -5663,6 +5663,33 @@ class QBitAdderApp:
                     if added_count > 0:
                         import_count += added_count
                         messagebox.showinfo("Import Clients", f"Added {added_count} new clients.", parent=self.root)
+
+            # 4. Subsection categories → Keepers preferred categories
+            found_cats = []
+            for sec in parser.sections():
+                if sec.isdigit():
+                    cat_id = int(sec)
+                    cat_label = parser.get(sec, "label", fallback="").strip('"')
+                    cat_title = parser.get(sec, "title", fallback="").strip('"')
+                    cat_name = html.unescape(cat_label or cat_title or f"Category {cat_id}")
+                    found_cats.append({"id": cat_id, "name": cat_name})
+
+            if found_cats:
+                existing_prefs = self.config.get("keepers_preferred_categories", [])
+                existing_ids = {c["id"] for c in existing_prefs}
+                new_cats = [c for c in found_cats if c["id"] not in existing_ids]
+
+                if new_cats:
+                    cat_lines = "\n".join(f"  • {c['name']} ({c['id']})" for c in new_cats[:25])
+                    if len(new_cats) > 25:
+                        cat_lines += f"\n  ... and {len(new_cats) - 25} more"
+                    msg = f"Found {len(new_cats)} new categories:\n{cat_lines}\n\nAdd to Keepers preferred categories?"
+                    if messagebox.askyesno("Import Categories", msg, parent=self.root):
+                        existing_prefs.extend(new_cats)
+                        self.config["keepers_preferred_categories"] = existing_prefs
+                        import_count += len(new_cats)
+                        if hasattr(self, "keepers_pref_listbox"):
+                            self._keepers_refresh_preferred_list()
 
             if import_count > 0:
                 self.save_config()

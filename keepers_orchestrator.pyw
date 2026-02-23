@@ -105,29 +105,8 @@ CATEGORY_CACHE_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_categories.j
 DATA_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_data.db")
 HASHES_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_hashes.db")
 
-# Legacy filenames (for migration from old versions)
-_LEGACY_FILES = [
-    # (old path, new path)
-    (os.path.join(_APP_DIR, "q_adder_config.json"), CONFIG_FILE),
-    (os.path.join(_APP_DIR, "keepers_orchestrator_config.json"), CONFIG_FILE),
-    (os.path.join(_APP_DIR, "rutracker_categories.json"), CATEGORY_CACHE_FILE),
-    (os.path.join(_APP_DIR, "keepers_orchestrator_categories.json"), CATEGORY_CACHE_FILE),
-    (os.path.join(_APP_DIR, "q_adder_data.db"), DATA_DB_FILE),
-    (os.path.join(_APP_DIR, "keepers_orchestrator_data.db"), DATA_DB_FILE),
-    (os.path.join(_APP_DIR, "q_adder_hashes.db"), HASHES_DB_FILE),
-    (os.path.join(_APP_DIR, "keepers_orchestrator_hashes.db"), HASHES_DB_FILE),
-]
-
-# Auto-migrate legacy filenames → new locations
-for _old, _new in _LEGACY_FILES:
-    if _old != _new and os.path.exists(_old) and not os.path.exists(_new):
-        try:
-            os.rename(_old, _new)
-        except Exception:
-            pass
-
 # App Version & Update Info
-APP_VERSION = "0.22.0"
+APP_VERSION = "0.23.0"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -2936,18 +2915,13 @@ class KeeperAuthDialog:
         try:
             _import_map = {
                 "keepers_orchestrator_config.json": CONFIG_FILE,
-                "q_adder_config.json": CONFIG_FILE,
                 "keepers_orchestrator_categories.json": CATEGORY_CACHE_FILE,
-                "rutracker_categories.json": CATEGORY_CACHE_FILE,
                 "keepers_orchestrator_data.db": DATA_DB_FILE,
-                "q_adder_data.db": DATA_DB_FILE,
                 "keepers_orchestrator_hashes.db": HASHES_DB_FILE,
-                "q_adder_hashes.db": HASHES_DB_FILE,
             }
-            _cfg_names = {"keepers_orchestrator_config.json", "q_adder_config.json"}
             with zipfile.ZipFile(src, "r") as zf:
                 names = zf.namelist()
-                if not _cfg_names.intersection(names):
+                if "keepers_orchestrator_config.json" not in names:
                     messagebox.showerror(t("auth.import_config"),
                                          "ZIP must contain keepers_orchestrator_config.json",
                                          parent=self.dialog)
@@ -3373,7 +3347,7 @@ class KeeperAuthDialog:
         for asset in (release_data.get("assets", []) or []):
             name = str(asset.get("name", "")).lower()
             dl_url = asset.get("browser_download_url", "")
-            if dl_url and ("keepers_orchestrator" in name or "qbit_gui" in name) and \
+            if dl_url and "keepers_orchestrator" in name and \
                (name.endswith(".pyw") or name.endswith(".py")):
                 r = session.get(dl_url, timeout=30)
                 if r.status_code == 200 and b"class QBitAdderApp" in r.content:
@@ -3388,23 +3362,22 @@ class KeeperAuthDialog:
                         for member in zf.namelist():
                             low = member.lower()
                             if low.endswith(".pyw") or low.endswith(".py"):
-                                if "keepers_orchestrator" in low or "qbit_gui" in low:
+                                if "keepers_orchestrator" in low:
                                     payload = zf.read(member)
                                     if b"class QBitAdderApp" in payload:
                                         return payload
             except Exception:
                 pass
         # 3) Raw source
-        for stem in ("keepers_orchestrator.pyw", "qbit_gui.pyw"):
-            for ref in ([tag] if tag else []) + ["main", "master"]:
-                try:
-                    r = session.get(
-                        f"https://raw.githubusercontent.com/{GITHUB_REPO}/{ref}/{stem}",
-                        timeout=20)
-                    if r.status_code == 200 and b"class QBitAdderApp" in r.content:
-                        return r.content
-                except Exception:
-                    continue
+        for ref in ([tag] if tag else []) + ["main", "master"]:
+            try:
+                r = session.get(
+                    f"https://raw.githubusercontent.com/{GITHUB_REPO}/{ref}/keepers_orchestrator.pyw",
+                    timeout=20)
+                if r.status_code == 200 and b"class QBitAdderApp" in r.content:
+                    return r.content
+            except Exception:
+                continue
         return None
 
     def _poll_update(self):
@@ -13401,16 +13374,11 @@ class QBitAdderApp:
         except Exception as e:
             messagebox.showerror(t("settings.export_setup"), str(e))
 
-    # Map any recognized archive name (old or new) → correct destination path
     _IMPORT_MAP = {
         "keepers_orchestrator_config.json": CONFIG_FILE,
-        "q_adder_config.json": CONFIG_FILE,
         "keepers_orchestrator_categories.json": CATEGORY_CACHE_FILE,
-        "rutracker_categories.json": CATEGORY_CACHE_FILE,
         "keepers_orchestrator_data.db": DATA_DB_FILE,
-        "q_adder_data.db": DATA_DB_FILE,
         "keepers_orchestrator_hashes.db": HASHES_DB_FILE,
-        "q_adder_hashes.db": HASHES_DB_FILE,
     }
 
     def import_full_setup(self):
@@ -13423,8 +13391,7 @@ class QBitAdderApp:
         try:
             with zipfile.ZipFile(src, "r") as zf:
                 names = zf.namelist()
-                _cfg_names = {"keepers_orchestrator_config.json", "q_adder_config.json"}
-                if not _cfg_names.intersection(names):
+                if "keepers_orchestrator_config.json" not in names:
                     messagebox.showerror(t("settings.import_setup"),
                                          "ZIP must contain keepers_orchestrator_config.json")
                     return

@@ -1,4 +1,3 @@
-
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 import requests
@@ -26,9 +25,6 @@ import gc
 from PIL import Image as PILImage, ImageTk
 from requests.adapters import HTTPAdapter
 
-# --- Copyable ScrolledText Monkey-Patch ---
-# Tkinter prevents text selection when state="disabled".
-# This overrides the state lock to allow users to copy Log Outputs while still preventing typing.
 original_scrolled_text = scrolledtext.ScrolledText
 
 class CopyableScrolledText(original_scrolled_text):
@@ -86,7 +82,7 @@ DEFAULT_CONFIG = {
     ],
     "last_selected_client_index": 0,
     "torrent_cache_ttl_hours": 6,
-    "pm_polling_enabled": True,
+    "pm_polling_enabled": False,
     "pm_poll_interval_sec": 300,
     "pm_toast_enabled": False,
     "github_app_auto_update_enabled": False,
@@ -3200,7 +3196,24 @@ class QBitAdderApp:
     def __init__(self, root):
         self.root = root
         self.root.title(t("app.title"))
-        self.root.geometry("1200x870")
+        # Center on usable work area (excludes taskbar)
+        _ww, _wh = 1250, 900
+        try:
+            import ctypes
+            from ctypes import wintypes
+            _rect = wintypes.RECT()
+            ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(_rect), 0)
+            _aw = _rect.right - _rect.left
+            _ah = _rect.bottom - _rect.top
+            _ox, _oy = _rect.left, _rect.top
+        except Exception:
+            _aw = self.root.winfo_screenwidth()
+            _ah = self.root.winfo_screenheight()
+            _ox, _oy = 0, 0
+        _wh = min(_wh, _ah)
+        _wx = max(0, _ox + (_aw - _ww) // 2)
+        _wy = max(0, _oy + (_ah - _wh) // 2)
+        self.root.geometry(f"{_ww}x{_wh}+{_wx}+{_wy}")
 
         # Global Menu Bar
         self._menubar = tk.Menu(self.root)
@@ -3504,6 +3517,9 @@ class QBitAdderApp:
         # 3. Client Check for ALL clients
         statuses = []
         for i, client in enumerate(self.config.get("clients", [])):
+            if not client.get("enabled", False):
+                statuses.append("gray")
+                continue
             url = client.get("url", "").rstrip("/")
             if not url:
                 statuses.append("gray")
@@ -3535,11 +3551,15 @@ class QBitAdderApp:
                 selection = self.client_listbox.curselection()
                 self.client_listbox.delete(0, tk.END)
                 for i in range(len(self.config["clients"])):
-                    client_name = self.config["clients"][i].get("name", "Unnamed")
+                    c = self.config["clients"][i]
+                    client_name = c.get("name", "Unnamed")
+                    enabled = c.get("enabled", False)
                     c_status = self.client_statuses[i] if i < len(self.client_statuses) else "gray"
-                    
-                    self.client_listbox.insert(tk.END, f"● {client_name}")
-                    if c_status == "green": self.client_listbox.itemconfig(i, {'fg': '#00b300'}) # darker green for visibility
+                    prefix = "●" if enabled else "○"
+                    self.client_listbox.insert(tk.END, f"{prefix} {client_name}")
+                    if not enabled:
+                        self.client_listbox.itemconfig(i, {'fg': '#bbbbbb'})
+                    elif c_status == "green": self.client_listbox.itemconfig(i, {'fg': '#00b300'})
                     elif c_status == "red": self.client_listbox.itemconfig(i, {'fg': '#e60000'})
                     elif c_status == "yellow": self.client_listbox.itemconfig(i, {'fg': '#cccc00'})
                     else: self.client_listbox.itemconfig(i, {'fg': 'gray'})

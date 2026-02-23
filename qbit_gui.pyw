@@ -98,7 +98,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.21.0"
+APP_VERSION = "0.21.1"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -13248,6 +13248,122 @@ class QBitAdderApp:
             messagebox.showerror(t("settings.import_setup"), str(e))
 
 
+def _first_run_update_check(boot_config):
+    """Check GitHub for updates on first startup. Shows popup with result."""
+    try:
+        session = requests.Session()
+        proxy_conf = boot_config.get("proxy", {})
+        if proxy_conf.get("enabled") and proxy_conf.get("url"):
+            url = proxy_conf["url"]
+            user = proxy_conf.get("username", "")
+            pwd = proxy_conf.get("password", "")
+            if user and pwd:
+                scheme, rest = url.split("://", 1)
+                p = {
+                    "http": f"{scheme}://{user}:{pwd}@{rest}",
+                    "https": f"{scheme}://{user}:{pwd}@{rest}",
+                }
+            else:
+                p = {"http": url, "https": url}
+            session.proxies.update(p)
+
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        resp = session.get(api_url, timeout=10)
+        if resp.status_code != 200:
+            messagebox.showinfo("Update Check", f"version {APP_VERSION}\n\n✓ Latest")
+            return False
+
+        data = resp.json()
+        tag = str(data.get("tag_name", "")).strip()
+        if not tag:
+            messagebox.showinfo("Update Check", f"version {APP_VERSION}\n\n✓ Latest")
+            return False
+
+        curr_v = [int(x) for x in re.findall(r"\d+", APP_VERSION)]
+        new_v = [int(x) for x in re.findall(r"\d+", tag)]
+
+        if new_v <= curr_v:
+            messagebox.showinfo("Update Check", f"version {APP_VERSION}\n\n✓ Latest")
+            return False
+
+        # New version found — attempt to download & apply
+        script_bytes = None
+        assets = data.get("assets", []) or []
+        for asset in assets:
+            name = str(asset.get("name", "")).lower()
+            dl_url = asset.get("browser_download_url", "")
+            if dl_url and "qbit_gui" in name and (name.endswith(".pyw") or name.endswith(".py")):
+                r = session.get(dl_url, timeout=30)
+                if r.status_code == 200 and b"class QBitAdderApp" in r.content:
+                    script_bytes = r.content
+                    break
+
+        if not script_bytes:
+            zip_url = data.get("zipball_url", "")
+            if zip_url:
+                r = session.get(zip_url, timeout=45)
+                if r.status_code == 200:
+                    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+                        for member in zf.namelist():
+                            if member.lower().endswith("/qbit_gui.pyw") or member.lower().endswith("/qbit_gui.py"):
+                                payload = zf.read(member)
+                                if b"class QBitAdderApp" in payload:
+                                    script_bytes = payload
+                                    break
+
+        if not script_bytes:
+            raw_urls = []
+            if tag:
+                raw_urls.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag}/qbit_gui.pyw")
+            raw_urls.append(f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/qbit_gui.pyw")
+            for raw_url in raw_urls:
+                r = session.get(raw_url, timeout=20)
+                if r.status_code == 200 and b"class QBitAdderApp" in r.content:
+                    script_bytes = r.content
+                    break
+
+        if not script_bytes:
+            html_url = data.get("html_url", "")
+            if messagebox.askyesno("Update Available",
+                                   f"New version {tag} available!\n\nCould not auto-download.\nOpen GitHub release page?"):
+                if html_url:
+                    webbrowser.open(html_url)
+            return False
+
+        # Apply update
+        script_path = os.path.abspath(__file__)
+        with open(script_path, "rb") as f:
+            current_bytes = f.read()
+        if current_bytes == script_bytes:
+            messagebox.showinfo("Update Check", f"version {APP_VERSION}\n\n✓ Latest")
+            return False
+
+        tmp_path = script_path + ".new"
+        backup_path = script_path + ".bak"
+        try:
+            with open(tmp_path, "wb") as f:
+                f.write(script_bytes)
+            shutil.copy2(script_path, backup_path)
+            os.replace(tmp_path, script_path)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+
+        if messagebox.askyesno("Update Installed",
+                               f"Updated {APP_VERSION} → {tag}\n\nRestart now?"):
+            subprocess.Popen([sys.executable, script_path],
+                             cwd=os.path.dirname(script_path))
+            return True  # signal caller to exit
+        return False
+
+    except Exception:
+        messagebox.showinfo("Update Check", f"version {APP_VERSION}\n\n✓ Latest")
+        return False
+
+
 if __name__ == "__main__":
     root = tk.Tk()
     root.withdraw()  # Hide main window during auth
@@ -13282,11 +13398,15 @@ if __name__ == "__main__":
         root.wait_window(auth.dialog)
 
         if auth.authenticated:
-            root.deiconify()
-            app = QBitAdderApp(root)
-            app.keeper_nickname = auth.nickname
-            app._schedule_keeper_recheck()
-            root.mainloop()
+            # First startup — check for app updates (blocking popup)
+            if _first_run_update_check(_boot_config):
+                root.destroy()  # update installed & restarting
+            else:
+                root.deiconify()
+                app = QBitAdderApp(root)
+                app.keeper_nickname = auth.nickname
+                app._schedule_keeper_recheck()
+                root.mainloop()
         else:
             root.destroy()
 

@@ -98,7 +98,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.21.2"
+APP_VERSION = "0.21.3"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -2871,8 +2871,10 @@ class KeeperAuthDialog:
                                    font=("Segoe UI", 8), fg="gray")
         self._ver_label.pack(side="bottom", pady=(0, 4))
 
-        # Background update check
+        # Background update check (queue pattern for Python 3.13 thread safety)
+        self._update_queue = queue.Queue()
         threading.Thread(target=self._check_update, daemon=True).start()
+        self._poll_update()
 
     # ── Language ──────────────────────────────────────────────────────
 
@@ -3268,40 +3270,44 @@ class KeeperAuthDialog:
         return None
 
     def _check_update(self):
-        """Background thread: check GitHub for new version, update label."""
+        """Background thread: check GitHub for new version, put result in queue."""
+        txt = f"v{APP_VERSION}"
+        fg = "gray"
+        click_url = None
         try:
             session = requests.Session()
             proxies = self._get_proxies()
             if proxies:
                 session.proxies.update(proxies)
             api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-            resp = session.get(api_url, timeout=10)
-            if resp.status_code != 200:
-                self.dialog.after(0, lambda: self._ver_label.config(
-                    text=f"v{APP_VERSION}  ✓ Latest", fg="green"))
-                return
-            data = resp.json()
-            tag = str(data.get("tag_name", "")).strip()
-            if not tag:
-                self.dialog.after(0, lambda: self._ver_label.config(
-                    text=f"v{APP_VERSION}  ✓ Latest", fg="green"))
-                return
-            curr_v = [int(x) for x in re.findall(r"\d+", APP_VERSION)]
-            new_v = [int(x) for x in re.findall(r"\d+", tag)]
-            if new_v > curr_v:
-                html_url = data.get("html_url", "")
-                self.dialog.after(0, lambda t=tag, u=html_url: self._show_update_available(t, u))
+            resp = session.get(api_url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                tag = str(data.get("tag_name", "")).strip()
+                curr_v = [int(x) for x in re.findall(r"\d+", APP_VERSION)]
+                new_v = [int(x) for x in re.findall(r"\d+", tag)] if tag else curr_v
+                if new_v > curr_v:
+                    txt = f"v{APP_VERSION}  ⬆ Update {tag}"
+                    fg = "red"
+                    click_url = data.get("html_url", "")
+                else:
+                    txt = f"v{APP_VERSION}  ✓ Latest"
+                    fg = "green"
             else:
-                self.dialog.after(0, lambda: self._ver_label.config(
-                    text=f"v{APP_VERSION}  ✓ Latest", fg="green"))
+                txt = f"v{APP_VERSION}  ✓ Latest"
+                fg = "green"
         except Exception:
-            self.dialog.after(0, lambda: self._ver_label.config(
-                text=f"v{APP_VERSION}", fg="gray"))
+            pass
+        self._update_queue.put((txt, fg, click_url))
 
-    def _show_update_available(self, tag, html_url):
-        self._ver_label.config(text=f"v{APP_VERSION}  ⬆ Update {tag}", fg="red", cursor="hand2")
-        if html_url:
-            self._ver_label.bind("<Button-1>", lambda e: webbrowser.open(html_url))
+    def _poll_update(self):
+        try:
+            txt, fg, click_url = self._update_queue.get_nowait()
+            self._ver_label.config(text=txt, fg=fg, cursor="hand2" if click_url else "")
+            if click_url:
+                self._ver_label.bind("<Button-1>", lambda e: webbrowser.open(click_url))
+        except queue.Empty:
+            self.dialog.after(200, self._poll_update)
 
 
 class QBitAdderApp:

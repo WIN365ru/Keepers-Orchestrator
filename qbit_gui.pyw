@@ -19,6 +19,8 @@ import tempfile
 import concurrent.futures
 import subprocess
 import sys
+import base64
+import copy
 from requests.adapters import HTTPAdapter
 
 # --- Copyable ScrolledText Monkey-Patch ---
@@ -95,7 +97,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.19.1"
+APP_VERSION = "0.19.2"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -1116,6 +1118,30 @@ def bdecode(data, idx=0):
         return data[start:start+length], start + length
     else:
         raise ValueError(f"Invalid bencode at index {idx}")
+
+def cloak(text):
+    if not text: return ""
+    try:
+        return base64.b64encode(text.encode('utf-8')).decode('utf-8')
+    except:
+        return text
+
+def uncloak(text):
+    if not isinstance(text, str) or not text:
+        return text
+    
+    # Backward compatibility for 'obf:' prefix
+    if text.startswith("obf:"):
+        try:
+            return base64.b64decode(text[4:]).decode('utf-8')
+        except:
+            pass
+            
+    # Attempt to decode as base64
+    try:
+        return base64.b64decode(text, validate=True).decode('utf-8')
+    except:
+        return text
 
 def format_size(size_bytes):
     """Format bytes to human-readable size."""
@@ -4059,11 +4085,26 @@ class QBitAdderApp:
         txt.insert("1.0", t("help.content"))
         txt.config(state="disabled")
 
+    def _process_config_passwords(self, data, func):
+        if "global_auth" in data and "password" in data["global_auth"]:
+            data["global_auth"]["password"] = func(data["global_auth"]["password"])
+        if "rutracker_auth" in data and "password" in data["rutracker_auth"]:
+            data["rutracker_auth"]["password"] = func(data["rutracker_auth"]["password"])
+        if "proxy" in data and "password" in data["proxy"]:
+            data["proxy"]["password"] = func(data["proxy"]["password"])
+        if "clients" in data:
+            for client in data["clients"]:
+                if "password" in client:
+                    client["password"] = func(client["password"])
+
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, "r") as f:
                     data = json.load(f)
+                
+                # Uncloak passwords for in-memory use
+                self._process_config_passwords(data, uncloak)
                 
                 # Migration: Check if old format (has 'qbit_url' at top level)
                 if "qbit_url" in data:
@@ -4103,8 +4144,12 @@ class QBitAdderApp:
 
     def save_config(self):
         try:
+            # Cloak passwords for storage
+            data_to_save = copy.deepcopy(self.config)
+            self._process_config_passwords(data_to_save, cloak)
+            
             with open(CONFIG_FILE, "w") as f:
-                json.dump(self.config, f, indent=4)
+                json.dump(data_to_save, f, indent=4)
             self.log("Configuration saved.")
             # messagebox.showinfo("Success", "Configuration saved successfully!") 
         except Exception as e:

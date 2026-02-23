@@ -98,7 +98,7 @@ DATA_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder
 HASHES_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "q_adder_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.21.1"
+APP_VERSION = "0.21.2"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -2866,6 +2866,14 @@ class KeeperAuthDialog:
         self.status_label = tk.Label(self.dialog, text="", font=("Segoe UI", 11))
         self.status_label.pack(pady=(0, 10))
 
+        # Version label (bottom)
+        self._ver_label = tk.Label(self.dialog, text=f"v{APP_VERSION}  checking…",
+                                   font=("Segoe UI", 8), fg="gray")
+        self._ver_label.pack(side="bottom", pady=(0, 4))
+
+        # Background update check
+        threading.Thread(target=self._check_update, daemon=True).start()
+
     # ── Language ──────────────────────────────────────────────────────
 
     def _on_lang_change(self, event=None):
@@ -3258,6 +3266,42 @@ class KeeperAuthDialog:
                         "https": f"{scheme}://{user}:{pwd}@{rest}"}
             return {"http": url, "https": url}
         return None
+
+    def _check_update(self):
+        """Background thread: check GitHub for new version, update label."""
+        try:
+            session = requests.Session()
+            proxies = self._get_proxies()
+            if proxies:
+                session.proxies.update(proxies)
+            api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+            resp = session.get(api_url, timeout=10)
+            if resp.status_code != 200:
+                self.dialog.after(0, lambda: self._ver_label.config(
+                    text=f"v{APP_VERSION}  ✓ Latest", fg="green"))
+                return
+            data = resp.json()
+            tag = str(data.get("tag_name", "")).strip()
+            if not tag:
+                self.dialog.after(0, lambda: self._ver_label.config(
+                    text=f"v{APP_VERSION}  ✓ Latest", fg="green"))
+                return
+            curr_v = [int(x) for x in re.findall(r"\d+", APP_VERSION)]
+            new_v = [int(x) for x in re.findall(r"\d+", tag)]
+            if new_v > curr_v:
+                html_url = data.get("html_url", "")
+                self.dialog.after(0, lambda t=tag, u=html_url: self._show_update_available(t, u))
+            else:
+                self.dialog.after(0, lambda: self._ver_label.config(
+                    text=f"v{APP_VERSION}  ✓ Latest", fg="green"))
+        except Exception:
+            self.dialog.after(0, lambda: self._ver_label.config(
+                text=f"v{APP_VERSION}", fg="gray"))
+
+    def _show_update_available(self, tag, html_url):
+        self._ver_label.config(text=f"v{APP_VERSION}  ⬆ Update {tag}", fg="red", cursor="hand2")
+        if html_url:
+            self._ver_label.bind("<Button-1>", lambda e: webbrowser.open(html_url))
 
 
 class QBitAdderApp:

@@ -13911,78 +13911,87 @@ class QBitAdderApp:
             disk_info = []  # list of {"path": str, "free": int}
             total_free = 0
 
-            # Try to get per-disk info
             try:
                 s = self._get_qbit_session(client_conf)
-                if s:
-                    # Fetch torrent list to detect disk bases from save_paths
-                    resp = s.get(f"{url}/api/v2/torrents/info", timeout=15)
-                    if resp.status_code == 200:
-                        torrents = resp.json()
-                        disk_bases = set()
-                        for tor in torrents:
-                            sp = tor.get("save_path", "").replace("\\", "/")
-                            if sp:
-                                disk_base = self._mover_get_disk_base(sp)
-                                disk_bases.add(disk_base)
-
-                        if is_local:
-                            # Local: shutil per disk
-                            for db in sorted(disk_bases):
-                                try:
-                                    usage = shutil.disk_usage(db)
-                                    disk_info.append({"path": db, "free": usage.free})
-                                    total_free += usage.free
-                                    self._ak_log(f"  {name}: {db} — Free: {format_size(usage.free)}")
-                                except Exception as e:
-                                    self._ak_log(f"  {name}: {db} — shutil error: {e}")
-                        else:
-                            # Remote: we can only get global free_space from API
-                            resp2 = s.get(f"{url}/api/v2/sync/maindata", timeout=10)
-                            if resp2.status_code == 200:
-                                ss = resp2.json().get("server_state", {})
-                                api_free = ss.get("free_space_on_disk", 0)
-                                # Show the API-reported free space alongside detected disk bases
-                                if disk_bases:
-                                    for db in sorted(disk_bases):
-                                        # We can't get per-disk free for remote, tag with disk path
-                                        disk_info.append({"path": db, "free": -1})
-                                    # Mark the default save path disk with the API free space
-                                    default_base = self._mover_get_disk_base(base_path) if base_path else ""
-                                    found_default = False
-                                    for di in disk_info:
-                                        if di["path"] == default_base:
-                                            di["free"] = api_free
-                                            found_default = True
-                                            break
-                                    if not found_default and disk_info:
-                                        disk_info[0]["free"] = api_free
-                                    total_free = api_free
-                                    for di in disk_info:
-                                        free_str = format_size(di["free"]) if di["free"] >= 0 else "?"
-                                        self._ak_log(f"  {name}: {di['path']} — Free: {free_str}")
-                                else:
-                                    disk_info.append({"path": base_path or url, "free": api_free})
-                                    total_free = api_free
-                                    self._ak_log(f"  {name}: API — Free: {format_size(api_free)}")
-                            else:
-                                self._ak_log(f"  {name}: API error {resp2.status_code}")
-                    else:
-                        self._ak_log(f"  {name}: torrent list error {resp.status_code}")
-                else:
+                if not s:
                     self._ak_log(f"  {name}: Could not connect.")
+                    self.ak_client_space[name] = {
+                        "free": 0, "disks": [], "base_save_path": base_path,
+                        "is_local": is_local, "conf": client_conf
+                    }
+                    continue
+
+                # Detect unique disk drives from torrent save_paths
+                resp = s.get(f"{url}/api/v2/torrents/info", timeout=15)
+                drive_letters = set()
+                if resp.status_code == 200:
+                    torrents = resp.json()
+                    for tor in torrents:
+                        sp = tor.get("save_path", "").replace("\\", "/")
+                        if sp:
+                            drive = self._ak_get_drive_letter(sp)
+                            if drive:
+                                drive_letters.add(drive)
+                    # Also add base_save_path drive
+                    if base_path:
+                        bp_drive = self._ak_get_drive_letter(base_path.replace("\\", "/"))
+                        if bp_drive:
+                            drive_letters.add(bp_drive)
+
+                if is_local and drive_letters:
+                    # Local: shutil.disk_usage per detected drive
+                    seen_devices = set()  # Deduplicate drives that point to same physical device
+                    for drive in sorted(drive_letters):
+                        try:
+                            usage = shutil.disk_usage(drive)
+                            # Deduplicate by (total, device) to avoid counting same disk twice
+                            dev_key = usage.total
+                            if dev_key in seen_devices:
+                                continue
+                            seen_devices.add(dev_key)
+                            disk_info.append({"path": drive, "free": usage.free})
+                            total_free += usage.free
+                            self._ak_log(f"  {name}: {drive} — Free: {format_size(usage.free)}")
+                        except Exception as e:
+                            self._ak_log(f"  {name}: {drive} — error: {e}")
+                else:
+                    # Remote: qBit API only provides free_space for the default save path
+                    resp2 = s.get(f"{url}/api/v2/sync/maindata", timeout=10)
+                    if resp2.status_code == 200:
+                        ss = resp2.json().get("server_state", {})
+                        api_free = ss.get("free_space_on_disk", 0)
+                        total_free = api_free
+
+                        if drive_letters:
+                            # Show each drive letter, mark default with free space
+                            default_drive = self._ak_get_drive_letter(base_path.replace("\\", "/")) if base_path else ""
+                            for drive in sorted(drive_letters):
+                                if drive == default_drive:
+                                    disk_info.append({"path": drive, "free": api_free})
+                                    self._ak_log(f"  {name}: {drive} — Free: {format_size(api_free)} (default)")
+                                else:
+                                    disk_info.append({"path": drive, "free": -1})
+                                    self._ak_log(f"  {name}: {drive} — Free: N/A (remote)")
+                        else:
+                            # No drive letters detected (Unix with no letter-style paths)
+                            label = base_path.rstrip("/") if base_path else "default"
+                            disk_info.append({"path": label, "free": api_free})
+                            self._ak_log(f"  {name}: Free: {format_size(api_free)}")
+                    else:
+                        self._ak_log(f"  {name}: API error {resp2.status_code}")
+
             except Exception as e:
                 self._ak_log(f"  {name}: error: {e}")
 
-            # Fallback: if nothing detected, try simple approach
-            if not disk_info:
-                if is_local and base_path:
-                    try:
-                        usage = shutil.disk_usage(base_path)
-                        disk_info.append({"path": base_path, "free": usage.free})
-                        total_free = usage.free
-                    except:
-                        pass
+            # Fallback if nothing detected
+            if not disk_info and is_local and base_path:
+                try:
+                    usage = shutil.disk_usage(base_path)
+                    disk_info.append({"path": base_path, "free": usage.free})
+                    total_free = usage.free
+                    self._ak_log(f"  {name}: {base_path} — Free: {format_size(usage.free)}")
+                except:
+                    pass
 
             self.ak_client_space[name] = {
                 "free": total_free,
@@ -13991,29 +14000,43 @@ class QBitAdderApp:
                 "is_local": is_local, "conf": client_conf
             }
 
-            # Update per-disk labels in UI
             disk_frame = info["disk_frame"]
-            self.root.after(0, lambda df=disk_frame, di=disk_info, n=name, tf=total_free:
-                self._ak_update_disk_labels(df, di, n, tf))
+            self.root.after(0, lambda df=disk_frame, di=disk_info:
+                self._ak_update_disk_labels(df, di))
 
         self._ak_log("Disk space refresh complete.")
 
-    def _ak_update_disk_labels(self, disk_frame, disk_info, client_name, total_free):
+    @staticmethod
+    def _ak_get_drive_letter(path):
+        """Extract drive root from a path. Windows: 'D:/' from 'D:/Torrents/...'. Returns None for Unix paths."""
+        p = path.replace("\\", "/")
+        if len(p) >= 3 and p[1] == ':' and p[2] == '/':
+            return p[:3]
+        if len(p) >= 2 and p[1] == ':':
+            return p[:2] + "/"
+        return None
+
+    def _ak_update_disk_labels(self, disk_frame, disk_info):
         """Update the disk labels frame with per-disk free space info."""
         for w in disk_frame.winfo_children():
             w.destroy()
 
         if not disk_info:
-            tk.Label(disk_frame, text="Free: N/A", font=("Segoe UI", 9), fg="#666666").pack(side="left")
+            tk.Label(disk_frame, text="Free: --", font=("Segoe UI", 9), fg="#666666").pack(side="left")
             return
 
         for di in disk_info:
             path_short = di["path"].rstrip("/")
-            if di["free"] >= 0:
+            if di["free"] > 0:
                 text = f"{path_short}: {format_size(di['free'])}"
+                fg = "#55aa55" if di["free"] > 100 * (1024**3) else "#cc8800"
+            elif di["free"] == 0:
+                text = f"{path_short}: 0 B"
+                fg = "#cc3333"
             else:
-                text = f"{path_short}: ?"
-            tk.Label(disk_frame, text=text, font=("Segoe UI", 9), fg="#666666").pack(side="left", padx=(0, 10))
+                text = f"{path_short}: N/A"
+                fg = "#888888"
+            tk.Label(disk_frame, text=text, font=("Segoe UI", 9), fg=fg).pack(side="left", padx=(0, 8))
 
     @staticmethod
     def _ak_is_local_client(url):

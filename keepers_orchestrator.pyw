@@ -4096,7 +4096,7 @@ class QBitAdderApp:
 
     def _tray_update_icon(self, color):
         """Change the tray icon color to reflect overall connection status."""
-        if self._tray_icon is None:
+        if getattr(self, '_tray_icon', None) is None:
             return
         try:
             self._tray_icon.icon = self._tray_make_icon(color)
@@ -5013,16 +5013,476 @@ class QBitAdderApp:
         self.log(f"Copied path to clipboard: {path_str}")
 
     def _show_help(self):
-        """Displays a Help dialog with feature descriptions, hotkeys, and color legends."""
+        """Interactive Help & Documentation window with sidebar navigation and themed styling."""
+        th       = THEMES.get(self.config.get("theme", "Default"), THEMES["Default"])
+        bg       = th["bg"]
+        fg       = th["fg"]
+        ent_bg   = th["entry_bg"]
+        sel_bg   = th["select_bg"]
+        sel_fg   = th["select_fg"]
+        lf_fg    = th["lf_fg"]
+        log_bg   = th.get("log_bg", ent_bg)
+        log_fg   = th.get("log_fg", fg)
+        is_night = "Night" in self.config.get("theme", "")
+
+        # ── window ────────────────────────────────────────────────────
         help_win = tk.Toplevel(self.root)
         help_win.title(t("help.title"))
-        help_win.geometry("900x700")
+        help_win.geometry("980x720")
+        help_win.configure(bg=bg)
+        help_win.resizable(True, True)
 
-        txt = scrolledtext.ScrolledText(help_win, wrap="word", state="normal", font=("Segoe UI", 10))
-        txt.pack(fill="both", expand=True, padx=10, pady=10)
+        outer = tk.Frame(help_win, bg=bg)
+        outer.pack(fill="both", expand=True, padx=8, pady=8)
 
-        txt.insert("1.0", t("help.content"))
-        txt.config(state="disabled")
+        # ─────────────  LEFT SIDEBAR  ────────────────────────────────
+        sidebar = tk.Frame(outer, bg=ent_bg, width=210)
+        sidebar.pack(side="left", fill="y", padx=(0, 8))
+        sidebar.pack_propagate(False)
+
+        tk.Label(sidebar, text="   Navigation",
+                 bg=ent_bg, fg=lf_fg,
+                 font=("Segoe UI", 10, "bold"), anchor="w", pady=9
+                 ).pack(fill="x")
+        tk.Frame(sidebar, height=1, bg=sel_bg).pack(fill="x", padx=4)
+
+        lb_scroll = tk.Scrollbar(sidebar, orient="vertical",
+                                 bg=ent_bg, troughcolor=bg, relief="flat")
+        lb = tk.Listbox(sidebar, bg=ent_bg, fg=fg,
+                        selectbackground=sel_bg, selectforeground=sel_fg,
+                        font=("Segoe UI", 9),
+                        borderwidth=0, highlightthickness=0,
+                        activestyle="none",
+                        yscrollcommand=lb_scroll.set,
+                        exportselection=False)
+        lb_scroll.config(command=lb.yview)
+        lb_scroll.pack(side="right", fill="y")
+        lb.pack(fill="both", expand=True)
+
+        # ─────────────  RIGHT CONTENT PANEL  ─────────────────────────
+        right = tk.Frame(outer, bg=bg)
+        right.pack(side="left", fill="both", expand=True)
+
+        txt_scroll = tk.Scrollbar(right, orient="vertical",
+                                  bg=ent_bg, troughcolor=bg, relief="flat")
+        txt = tk.Text(right,
+                      wrap="word", state="disabled",
+                      bg=log_bg, fg=log_fg,
+                      font=("Segoe UI", 10),
+                      borderwidth=0,
+                      highlightthickness=1, highlightbackground=sel_bg,
+                      padx=18, pady=14,
+                      yscrollcommand=txt_scroll.set,
+                      insertbackground=fg,
+                      selectbackground=sel_bg, selectforeground=sel_fg,
+                      relief="flat")
+        txt_scroll.config(command=txt.yview)
+        txt_scroll.pack(side="right", fill="y")
+        txt.pack(side="left", fill="both", expand=True)
+
+        # ── text tags ──────────────────────────────────────────────────
+        txt.tag_configure("h1",
+                          font=("Segoe UI", 16, "bold"),
+                          foreground=sel_fg, background=sel_bg,
+                          spacing1=6, spacing3=6)
+        txt.tag_configure("h2",
+                          font=("Segoe UI", 11, "bold"),
+                          foreground=lf_fg,
+                          spacing1=10, spacing3=3)
+        txt.tag_configure("body",
+                          font=("Segoe UI", 10),
+                          foreground=log_fg,
+                          spacing1=2, spacing3=2)
+        txt.tag_configure("kbd",
+                          font=("Consolas", 10, "bold"),
+                          foreground=sel_fg, background=sel_bg,
+                          spacing1=3, spacing3=3)
+        txt.tag_configure("tip",
+                          font=("Segoe UI", 10, "italic"),
+                          foreground=lf_fg,
+                          spacing1=5, spacing3=5)
+
+        # swatch colors — brighter variants for Night Mode
+        _sw = {
+            "green":   "#50c878" if is_night else "#007a3d",
+            "dkred":   "#cc4444" if is_night else "#8b0000",
+            "red":     "#ff6b6b" if is_night else "#cc2222",
+            "orange":  "#ffaa44" if is_night else "#cc6600",
+            "blue":    "#6cacff" if is_night else "#0055cc",
+            "gray":    "#9898b0" if is_night else "#888888",
+        }
+        _bg_sw = {
+            "pink":    ("#ffb3b3", "#1a1a1a"),
+            "lorange": ("#ffe0b2", "#1a1a1a"),
+            "lblue":   ("#bbdefb", "#1a1a1a"),
+            "lgreen":  ("#b9f0c8" if is_night else "#c8e6c9", "#1a1a1a"),
+            "lred":    ("#ffb3b3" if is_night else "#ffcdd2", "#1a1a1a"),
+            "lyellow": ("#fff9c4", "#1a1a1a"),
+        }
+        for key, color in _sw.items():
+            txt.tag_configure(f"sw_{key}", foreground=color,
+                              font=("Segoe UI", 13, "bold"))
+        for key, (color, cfg) in _bg_sw.items():
+            txt.tag_configure(f"bg_{key}", background=color, foreground=cfg,
+                              font=("Segoe UI", 9, "bold"))
+
+        # ── helper: render content in right panel ──────────────────────
+        def show(pairs):
+            txt.config(state="normal")
+            txt.delete("1.0", "end")
+            for text, tag in pairs:
+                txt.insert("end", text, tag)
+            txt.config(state="disabled")
+            txt.yview_moveto(0)
+
+        S = "   "    # standard left indent for body lines
+
+        # ── section definitions ────────────────────────────────────────
+        SECTIONS = []   # list of (sidebar_label, render_fn | None)
+
+        def s_overview():
+            show([
+                ("  Keepers Orchestrator  \n", "h1"),
+                ("\n", "body"),
+                ("Overview\n", "h2"),
+                (S + "Keepers Orchestrator is a multi-tool for managing torrents via\n"
+                 + S + "qBittorrent and Rutracker. It automates the full lifecycle: add,\n"
+                 + S + "update, repair, move, scan, and remove — all from one window.\n\n", "body"),
+                ("Key Capabilities\n", "h2"),
+                (S + "•  Manage multiple qBittorrent clients simultaneously\n", "body"),
+                (S + "•  Download & inject torrents from Rutracker automatically\n", "body"),
+                (S + "•  Track the Keepers programme — favourite uploaders' latest releases\n", "body"),
+                (S + "•  Detect and re-download updated torrent files automatically\n", "body"),
+                (S + "•  Mass-move content across drives without interrupting seeding\n", "body"),
+                (S + "•  Map filesystem folders to Rutracker topics\n", "body"),
+                (S + "•  Detect silent bitrot via SHA-1 piece verification\n", "body"),
+                (S + "•  Monitor Rutracker Private Messages with Windows toast alerts\n\n", "body"),
+                (S + "💡  Use Ctrl+1 … Ctrl+0 to jump between any tab instantly.\n", "tip"),
+            ])
+        SECTIONS.append(("🏠  Overview", s_overview))
+
+        def s_dashboard():
+            show([
+                ("  Dashboard  \n", "h1"),
+                ("\n", "body"),
+                ("What it shows\n", "h2"),
+                (S + "Real-time overview of your entire setup across all connected clients:\n\n", "body"),
+                (S + "•  Torrents  — total count, seeding, downloading, errored\n", "body"),
+                (S + "•  Transfer  — current upload/download speeds and session totals\n", "body"),
+                (S + "•  Database  — kept torrents, total preserved size, categories tracked\n", "body"),
+                (S + "•  Storage   — disk usage bars for each client's save path drive\n", "body"),
+                (S + "•  Activity  — last operations logged (adds, repairs, moves)\n\n", "body"),
+                ("Refreshing\n", "h2"),
+                (S + "The dashboard auto-refreshes when you switch to it.\n"
+                 + S + "Hit the  ⟳ Refresh  button at any time for an instant update.\n\n", "body"),
+                (S + "💡  Select a specific client or 'All Clients' to scope the stats.\n", "tip"),
+            ])
+        SECTIONS.append(("📊  Dashboard", s_dashboard))
+
+        def s_add():
+            show([
+                ("  Add Torrents  \n", "h1"),
+                ("\n", "body"),
+                ("How to add\n", "h2"),
+                (S + "Enter a Rutracker Topic ID (number) or a Folder Name, then\n"
+                 + S + "press Process Torrent or F5. The app will:\n\n", "body"),
+                (S + "  1.  Search Rutracker for the topic\n", "body"),
+                (S + "  2.  Download the active .torrent file\n", "body"),
+                (S + "  3.  Inject it into qBittorrent at your configured Base Save Path\n\n", "body"),
+                ("Options\n", "h2"),
+                (S + "•  Deep Checkbox  — searches deeper nested matches natively\n", "body"),
+                (S + "•  Client selector — choose which qBittorrent instance to target\n\n", "body"),
+                (S + "💡  Bulk-add by pasting multiple Topic IDs separated by commas or newlines.\n", "tip"),
+            ])
+        SECTIONS.append(("➕  Add Torrents", s_add))
+
+        def s_keepers():
+            show([
+                ("  Keepers  \n", "h1"),
+                ("\n", "body"),
+                ("What is the Keepers Programme?\n", "h2"),
+                (S + "Keepers are dedicated Rutracker uploaders who commit to long-term\n"
+                 + S + "seeding of specific content. This tab scans all keeper profiles\n"
+                 + S + "cached in your local database and shows their latest torrents.\n\n", "body"),
+                ("Workflow\n", "h2"),
+                (S + "  1.  Click Start Scan — fetches fresh data for all profiles\n", "body"),
+                (S + "  2.  Browse results, filter by category / size / seeds\n", "body"),
+                (S + "  3.  Select rows → click Add Selected to inject into qBittorrent\n\n", "body"),
+                ("Filtering\n", "h2"),
+                (S + "•  Category filter — narrow to a single Rutracker forum section\n", "body"),
+                (S + "•  Min Seeds       — show only well-seeded torrents\n", "body"),
+                (S + "•  Preferred categories are highlighted in the results list\n\n", "body"),
+                (S + "💡  A toast notification fires after a successful batch add.\n", "tip"),
+            ])
+        SECTIONS.append(("🗂  Keepers", s_keepers))
+
+        def s_update():
+            show([
+                ("  Update Torrents  \n", "h1"),
+                ("\n", "body"),
+                ("Purpose\n", "h2"),
+                (S + "Compares every torrent in qBittorrent against the live Rutracker API.\n"
+                 + S + "If the topic was re-uploaded (new version), the app downloads the\n"
+                 + S + "updated .torrent and re-points it to the same disk location.\n"
+                 + S + "No files are moved.\n\n", "body"),
+                ("Filter: Only errored\n", "h2"),
+                (S + "Enable to focus exclusively on torrents in an error state in\n"
+                 + S + "qBittorrent (missing files, mismatched hashes). Faster for\n"
+                 + S + "targeted repairs.\n\n", "body"),
+                (S + "💡  Run after a Rutracker release wave to keep all tracked content current.\n", "tip"),
+            ])
+        SECTIONS.append(("🔄  Update Torrents", s_update))
+
+        def s_remove():
+            show([
+                ("  Remove Torrents  \n", "h1"),
+                ("\n", "body"),
+                ("Purpose\n", "h2"),
+                (S + "Cleans up torrents that are no longer active on Rutracker.\n"
+                 + S + "The scanner compares every torrent in qBittorrent against the\n"
+                 + S + "API and flags:\n\n", "body"),
+                (S + "•  Dead    — topic deleted or closed on Rutracker\n", "body"),
+                (S + "•  Unknown — topic status cannot be determined\n\n", "body"),
+                ("Options\n", "h2"),
+                (S + "•  Also delete content files (DATA) — physically removes files from\n"
+                 + S + "   disk in addition to removing the torrent from qBittorrent\n\n", "body"),
+                (S + "💡  Always preview the list carefully — DATA deletion is irreversible.\n", "tip"),
+            ])
+        SECTIONS.append(("🗑  Remove Torrents", s_remove))
+
+        def s_repair():
+            show([
+                ("  Repair Categories  \n", "h1"),
+                ("\n", "body"),
+                ("Purpose\n", "h2"),
+                (S + "Rescans all torrents in qBittorrent against the Rutracker database\n"
+                 + S + "and corrects empty or inaccurate category labels.\n\n", "body"),
+                ("Path Correction\n", "h2"),
+                (S + "•  'Also correct save path (move files)' — files are physically\n"
+                 + S + "   relocated to match the structure:  /{Category}/{Topic_ID}/\n", "body"),
+                (S + "•  When disabled — only the qBittorrent category label is updated\n", "body"),
+                (S + "•  Works even when Base Path doesn't match actual torrent paths\n\n", "body"),
+                ("Color Feedback\n", "h2"),
+                ("   ", "body"), ("■  ", "sw_dkred"), ("Dark Red    — category mismatch detected\n", "body"),
+                ("   ", "body"), ("■  ", "sw_green"), ("Dark Green  — successfully repaired\n", "body"),
+                ("   ", "body"), ("■  ", "sw_red"),   ("Red         — repair failed (error)\n", "body"),
+            ])
+        SECTIONS.append(("🔧  Repair Categories", s_repair))
+
+        def s_move():
+            show([
+                ("  Move Torrents  \n", "h1"),
+                ("\n", "body"),
+                ("Purpose\n", "h2"),
+                (S + "Mass-moves actively seeding torrents between physical drives without\n"
+                 + S + "interrupting seeding. qBittorrent's save location is updated automatically.\n\n", "body"),
+                ("Category Mover\n", "h2"),
+                (S + "Migrates all torrents of a selected category to a new root drive.\n"
+                 + S + "Files are placed into  /{Category}/{Topic_ID}/  automatically.\n\n", "body"),
+                ("Balance Mover\n", "h2"),
+                (S + "Automatically distributes torrents across multiple disks to equalize\n"
+                 + S + "free space. Useful after adding a new drive to your storage array.\n\n", "body"),
+                (S + "💡  Mover operations run in the background — monitor progress in the log panel.\n", "tip"),
+            ])
+        SECTIONS.append(("📦  Move Torrents", s_move))
+
+        def s_scanner():
+            show([
+                ("  Folder Scanner  \n", "h1"),
+                ("\n", "body"),
+                ("Purpose\n", "h2"),
+                (S + "Scans a physical Windows folder and maps every sub-directory against\n"
+                 + S + "the Rutracker API. Use this to detect unseeded collections, identify\n"
+                 + S + "missing downloads, and re-inject disconnected folders.\n\n", "body"),
+                ("Scan Modes\n", "h2"),
+                (S + "•  Normal      — fast name-based folder → topic matching\n", "body"),
+                (S + "•  Deep Scan   — verifies file names and counts against .torrent metadata\n", "body"),
+                (S + "•  Deep Scan+  — full SHA-1 piece hash verification (slow, very thorough)\n\n", "body"),
+                ("Useful Filters\n", "h2"),
+                (S + "•  Show only 0 B on disk — isolate empty folders with no actual data\n", "body"),
+                (S + "•  Size / Disk Size columns are sortable by actual byte value\n\n", "body"),
+                ("Text Colors\n", "h2"),
+                ("   ", "body"), ("■  ", "sw_green"), ("Dark Green — actively seeding in qBittorrent\n", "body"),
+                ("   ", "body"), ("■  ", "sw_dkred"), ("Dark Red   — 'Missing' — file has missing pieces vs API\n", "body"),
+                ("   ", "body"), ("■  ", "sw_gray"),  ("Gray       — 'Dead' — topic no longer on Rutracker\n", "body"),
+                ("   ", "body"), ("■  ", "body"),     ("Default    — healthy torrent, not connected to client\n", "body"),
+                ("\n", "body"),
+                ("Row Backgrounds\n", "h2"),
+                ("   ", "body"), (" Pink / Light Red ", "bg_pink"),    ("  — 0 B on disk; folder exists but is empty\n", "body"),
+                ("   ", "body"), (" Light Orange ",     "bg_lorange"), ("  — smaller than expected (< 95% of API size)\n", "body"),
+                ("   ", "body"), (" Light Blue ",       "bg_lblue"),   ("  — larger than expected (> 105% of API size)\n", "body"),
+            ])
+        SECTIONS.append(("🔍  Folder Scanner", s_scanner))
+
+        def s_bitrot():
+            show([
+                ("  Bitrot Scanner  \n", "h1"),
+                ("\n", "body"),
+                ("Purpose\n", "h2"),
+                (S + "Scans ALL payload files across every active torrent in qBittorrent\n"
+                 + S + "and subjects them to cryptographic SHA-1 piece verification.\n"
+                 + S + "Perfect for discovering silent data corruption or failing drives.\n\n", "body"),
+                ("How It Works\n", "h2"),
+                (S + "  1.  Retrieves .torrent metadata for each seeded item\n", "body"),
+                (S + "  2.  Reads each file piece-by-piece from disk\n", "body"),
+                (S + "  3.  Computes SHA-1 hash and compares against the torrent's piece hashes\n", "body"),
+                (S + "  4.  Any mismatch is flagged as potential bitrot\n\n", "body"),
+                ("Row Background Colors\n", "h2"),
+                ("   ", "body"), (" Light Green  ", "bg_lgreen"),  ("  — clean, all SHA-1 checks passed\n", "body"),
+                ("   ", "body"), (" Light Red    ", "bg_lred"),    ("  — rot detected, one or more pieces corrupt\n", "body"),
+                ("   ", "body"), (" Light Yellow ", "bg_lyellow"), ("  — currently being verified\n", "body"),
+                ("\n", "body"),
+                (S + "💡  A toast notification fires when the scan finishes and errors are found.\n", "tip"),
+            ])
+        SECTIONS.append(("🦠  Bitrot Scanner", s_bitrot))
+
+        def s_search():
+            show([
+                ("  Search Torrents  \n", "h1"),
+                ("\n", "body"),
+                ("Search Modes\n", "h2"),
+                (S + "•  By Name      — scrapes the Rutracker forum search results\n", "body"),
+                (S + "•  By Topic ID  — direct lookup by numeric Rutracker ID\n", "body"),
+                (S + "•  By Info-Hash — lookup via the Rutracker API\n\n", "body"),
+                ("Actions on Results\n", "h2"),
+                (S + "•  Double-click a result — opens Rutracker topic page in your browser\n", "body"),
+                (S + "•  Click Inject — adds the torrent directly into qBittorrent\n", "body"),
+            ])
+        SECTIONS.append(("🔎  Search Torrents", s_search))
+
+        def s_settings():
+            show([
+                ("  Settings  \n", "h1"),
+                ("\n", "body"),
+                ("Proxy\n", "h2"),
+                (S + "HTTP / HTTPS / SOCKS5 proxy for bypassing regional blocks on Rutracker.\n\n", "body"),
+                ("Global Authentication\n", "h2"),
+                (S + "Shared login credentials applied to all qBittorrent clients at once.\n\n", "body"),
+                ("Clients\n", "h2"),
+                (S + "Manage multiple qBittorrent instances with individual URLs, credentials,\n"
+                 + S + "and base save paths. Traffic light indicators show connection health.\n\n", "body"),
+                ("Rutracker Login\n", "h2"),
+                (S + "Forum credentials, category cache TTL, extracted API keys (ID / BT / API).\n\n", "body"),
+                ("Private Messages\n", "h2"),
+                (S + "Enable inbox polling, configure interval, toggle Windows toast notifications.\n\n", "body"),
+                ("Tray & Notifications\n", "h2"),
+                (S + "•  Enable system tray icon   — keeps app alive after closing the window\n", "body"),
+                (S + "•  Minimize to tray on close — the X button hides window instead of quitting\n", "body"),
+                (S + "•  Event notifications       — toast alerts for PM, Keepers adds, Bitrot\n\n", "body"),
+                ("Appearance\n", "h2"),
+                (S + "Switch between Default, Steel Blue, and Night Mode themes.\n"
+                 + S + "Changes apply instantly and are saved to your config.\n\n", "body"),
+                ("App Updates\n", "h2"),
+                (S + "Auto-update from GitHub releases.\n\n", "body"),
+                ("Statistics\n", "h2"),
+                (S + "Torrents kept, total size saved, global upload/download speeds.\n", "body"),
+            ])
+        SECTIONS.append(("⚙  Settings", s_settings))
+
+        # ── divider ────────────────────────────────────────────────────
+        SECTIONS.append(("", None))
+
+        def s_hotkeys():
+            show([
+                ("  Keyboard Shortcuts  \n", "h1"),
+                ("\n", "body"),
+                ("Tab Navigation\n", "h2"),
+                ("   Ctrl+1  …  Ctrl+0\n", "kbd"),
+                (S + "Switch between the 10 application tabs.\n"
+                 + S + "(1=Add Torrents, 2=Keepers, … 9=Settings, 0=Search)\n\n", "body"),
+                ("Universal Action Key\n", "h2"),
+                ("   F5\n", "kbd"),
+                (S + "Starts the primary operation on the current tab:\n\n", "body"),
+                (S + "  Adder    →  Process Torrent\n", "body"),
+                (S + "  Keepers  →  Start Scan\n", "body"),
+                (S + "  Updater  →  Start Scan\n", "body"),
+                (S + "  Remover  →  Refresh Client List\n", "body"),
+                (S + "  Repair   →  Start Scan\n", "body"),
+                (S + "  Mover    →  Refresh Client List\n", "body"),
+                (S + "  Scanner  →  Start Scan\n", "body"),
+                (S + "  Bitrot   →  Start Scan\n", "body"),
+                (S + "  Search   →  Search Rutracker\n\n", "body"),
+                ("Universal Copy\n", "h2"),
+                ("   Ctrl+C\n", "kbd"),
+                (S + "Works on EVERY Treeview across the app.\n"
+                 + S + "Select any number of rows → paste into Excel / Notepad\n"
+                 + S + "with tab-separated columns.\n\n", "body"),
+                ("Other Interactions\n", "h2"),
+                (S + "•  Double-click any Treeview row    — opens Rutracker topic in browser\n", "body"),
+                (S + "•  Right-click a path column cell   — copies folder path to clipboard\n", "body"),
+                (S + "•  Click PM badge (bottom-right)    — opens Private Messages inbox\n", "body"),
+            ])
+        SECTIONS.append(("⌨  Keyboard Shortcuts", s_hotkeys))
+
+        def s_colors():
+            show([
+                ("  Color Guide  \n", "h1"),
+                ("\n", "body"),
+                ("Folder Scanner — Text Colors\n", "h2"),
+                ("   ", "body"), ("■  ", "sw_green"), ("Dark Green  — actively seeding in qBittorrent\n", "body"),
+                ("   ", "body"), ("■  ", "sw_dkred"), ("Dark Red    — 'Missing' — file has missing pieces\n", "body"),
+                ("   ", "body"), ("■  ", "sw_gray"),  ("Gray        — 'Dead' — topic no longer on Rutracker\n", "body"),
+                ("   ", "body"), ("■  ", "body"),     ("Default     — healthy torrent, not connected to client\n", "body"),
+                ("\n", "body"),
+                ("Folder Scanner — Row Backgrounds\n", "h2"),
+                ("   ", "body"), (" Pink / Light Red ", "bg_pink"),    ("  — 0 B on disk; folder exists but empty\n", "body"),
+                ("   ", "body"), (" Light Orange ",     "bg_lorange"), ("  — smaller than expected (< 95% of size)\n", "body"),
+                ("   ", "body"), (" Light Blue ",       "bg_lblue"),   ("  — larger than expected (> 105% of size)\n", "body"),
+                ("\n", "body"),
+                ("Repair Categories — Text Colors\n", "h2"),
+                ("   ", "body"), ("■  ", "sw_dkred"), ("Dark Red    — category mismatch detected\n", "body"),
+                ("   ", "body"), ("■  ", "sw_green"), ("Dark Green  — successfully repaired\n", "body"),
+                ("   ", "body"), ("■  ", "sw_red"),   ("Red         — repair failed (error)\n", "body"),
+                ("\n", "body"),
+                ("Bitrot Scanner — Row Backgrounds\n", "h2"),
+                ("   ", "body"), (" Light Green  ", "bg_lgreen"),  ("  — clean, all SHA-1 checks passed\n", "body"),
+                ("   ", "body"), (" Light Red    ", "bg_lred"),    ("  — rot detected; pieces are corrupt\n", "body"),
+                ("   ", "body"), (" Light Yellow ", "bg_lyellow"), ("  — currently being verified\n", "body"),
+                ("\n", "body"),
+                ("Dashboard — Storage Bars\n", "h2"),
+                ("   ", "body"), ("■  ", "sw_green"),  ("Green  — drive usage below 75%\n", "body"),
+                ("   ", "body"), ("■  ", "sw_orange"), ("Amber  — drive usage 75–90%\n", "body"),
+                ("   ", "body"), ("■  ", "sw_red"),    ("Red    — drive usage above 90% (critical)\n", "body"),
+                ("\n", "body"),
+                ("Connection Status Lights\n", "h2"),
+                ("   ", "body"), ("●  ", "sw_green"),  ("Green  — connected and responding\n", "body"),
+                ("   ", "body"), ("●  ", "sw_orange"), ("Orange — connection issue or unknown status\n", "body"),
+                ("   ", "body"), ("●  ", "sw_red"),    ("Red    — error / unreachable\n", "body"),
+                ("   ", "body"), ("●  ", "sw_gray"),   ("Gray   — not configured\n", "body"),
+            ])
+        SECTIONS.append(("🎨  Color Guide", s_colors))
+
+        # ── populate sidebar ───────────────────────────────────────────
+        for label, fn in SECTIONS:
+            lb.insert("end", ("  " + label) if label else ("  " + "─" * 22))
+
+        # dim the divider row
+        for i, (label, fn) in enumerate(SECTIONS):
+            if fn is None:
+                lb.itemconfig(i, fg=sel_bg,
+                              selectbackground=ent_bg, selectforeground=ent_bg)
+
+        # ── sidebar selection handler ──────────────────────────────────
+        def on_select(event=None):
+            sel = lb.curselection()
+            if not sel:
+                return
+            idx = sel[0]
+            label, fn = SECTIONS[idx]
+            if fn is None:
+                nxt = idx + 1 if idx + 1 < len(SECTIONS) else idx - 1
+                lb.selection_clear(0, "end")
+                lb.selection_set(nxt)
+                lb.event_generate("<<ListboxSelect>>")
+                return
+            fn()
+
+        lb.bind("<<ListboxSelect>>", on_select)
+
+        # ── open on Overview ──────────────────────────────────────────
+        lb.selection_set(0)
+        s_overview()
+        help_win.focus_set()
 
     def _process_config_passwords(self, data, func):
         if "global_auth" in data and "password" in data["global_auth"]:

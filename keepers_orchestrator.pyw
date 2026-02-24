@@ -109,7 +109,7 @@ DATA_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_data.db")
 HASHES_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.24.2"
+APP_VERSION = "0.24.3"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -483,6 +483,11 @@ TRANSLATIONS = {
         "keepers.col_priority": "Priority",
         "keepers.col_last_seen": "Last Seen",
         "keepers.col_poster": "Poster",
+        "keepers.col_tor_status": "Topic Status",
+        "keepers.col_reg_time": "Registered",
+        "keepers.max_leech": "Max Leech:",
+        "keepers.min_reg_days": "Min age (days):",
+        "keepers.hide_my_kept": "Hide kept by me",
         "keepers.start_paused": "Start Paused",
         "keepers.add_selected": "Add Selected",
         "keepers.export_csv": "Export to CSV",
@@ -923,6 +928,11 @@ SIZE COMPARISON BACKGROUNDS:
         "keepers.col_priority": "Приоритет",
         "keepers.col_last_seen": "Посл. визит",
         "keepers.col_poster": "Автор",
+        "keepers.col_tor_status": "Статус темы",
+        "keepers.col_reg_time": "Зарегистрирован",
+        "keepers.max_leech": "Макс. личей:",
+        "keepers.min_reg_days": "Мин. возраст (дней):",
+        "keepers.hide_my_kept": "Скрыть мои хранимые",
         "keepers.start_paused": "Добавить на паузе",
         "keepers.add_selected": "Добавить выбранные",
         "keepers.export_csv": "Экспорт в CSV",
@@ -3514,7 +3524,7 @@ class QBitAdderApp:
         self.root = root
         self.root.title(t("app.title"))
         # Center on usable work area (excludes taskbar)
-        _ww, _wh = 1250, 900
+        _ww, _wh = 1300, 900
         try:
             import ctypes
             from ctypes import wintypes
@@ -11004,6 +11014,19 @@ class QBitAdderApp:
         keepers_spin = tk.Spinbox(top_frame, from_=-1, to=100, textvariable=self.keepers_max_keepers, width=5)
         keepers_spin.pack(side="left")
 
+        self._tl(top_frame, "keepers.max_leech").pack(side="left", padx=5)
+        self.keepers_max_leech = tk.IntVar(value=-1)
+        leech_spin = tk.Spinbox(top_frame, from_=-1, to=1000, textvariable=self.keepers_max_leech, width=5)
+        leech_spin.pack(side="left")
+
+        self._tl(top_frame, "keepers.min_reg_days").pack(side="left", padx=5)
+        self.keepers_min_reg_days = tk.IntVar(value=-1)
+        reg_spin = tk.Spinbox(top_frame, from_=-1, to=9999, textvariable=self.keepers_min_reg_days, width=5)
+        reg_spin.pack(side="left")
+
+        self.keepers_hide_my_kept = tk.BooleanVar(value=False)
+        self._tcb(top_frame, "keepers.hide_my_kept", variable=self.keepers_hide_my_kept).pack(side="left", padx=(10, 0))
+
         self.keepers_scan_btn = self._tb(top_frame, "common.scan", command=self.keepers_start_scan, bg="#dddddd")
         self.keepers_scan_btn.pack(side="left", padx=5)
 
@@ -11099,7 +11122,7 @@ class QBitAdderApp:
         tree_frame = tk.Frame(self.keepers_tab)
         tree_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
-        cols = ("id", "name", "size", "seeds", "leech", "status", "link", "k_count", "priority", "last_seen", "poster")
+        cols = ("id", "name", "size", "seeds", "leech", "status", "link", "k_count", "priority", "last_seen", "poster", "tor_status", "reg_time")
         self.keepers_tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
         self._tr_heading(self.keepers_tree, "id", "keepers.col_id", command=lambda: self.sort_tree(self.keepers_tree, "id", False))
         self._tr_heading(self.keepers_tree, "name", "common.name", command=lambda: self.sort_tree(self.keepers_tree, "name", False))
@@ -11112,6 +11135,8 @@ class QBitAdderApp:
         self._tr_heading(self.keepers_tree, "priority", "keepers.col_priority", command=lambda: self.sort_tree(self.keepers_tree, "priority", False))
         self._tr_heading(self.keepers_tree, "last_seen", "keepers.col_last_seen", command=lambda: self.sort_tree(self.keepers_tree, "last_seen", False))
         self._tr_heading(self.keepers_tree, "poster", "keepers.col_poster", command=lambda: self.sort_tree(self.keepers_tree, "poster", False))
+        self._tr_heading(self.keepers_tree, "tor_status", "keepers.col_tor_status", command=lambda: self.sort_tree(self.keepers_tree, "tor_status", False))
+        self._tr_heading(self.keepers_tree, "reg_time", "keepers.col_reg_time", command=lambda: self.sort_tree(self.keepers_tree, "reg_time", False))
 
         self.keepers_tree.column("id", width=60)
         self.keepers_tree.column("name", width=350)
@@ -11124,6 +11149,8 @@ class QBitAdderApp:
         self.keepers_tree.column("priority", width=80)
         self.keepers_tree.column("last_seen", width=120)
         self.keepers_tree.column("poster", width=80)
+        self.keepers_tree.column("tor_status", width=80)
+        self.keepers_tree.column("reg_time", width=100)
 
         # Bind double-click to open link or profile
         self.keepers_tree.bind("<Double-1>", self._keepers_on_double_click)
@@ -11321,6 +11348,15 @@ class QBitAdderApp:
             max_keepers = self.keepers_max_keepers.get()
         except:
             max_keepers = -1
+        try:
+            max_leech = self.keepers_max_leech.get()
+        except:
+            max_leech = -1
+        try:
+            min_reg_days = self.keepers_min_reg_days.get()
+        except:
+            min_reg_days = -1
+        hide_my_kept = self.keepers_hide_my_kept.get()
 
         client_idx = self.keepers_client_combo.current()
         if client_idx < 0: client_idx = 0
@@ -11345,11 +11381,11 @@ class QBitAdderApp:
         self.keepers_progress_label.config(text="Scanning all preferred categories...")
 
         t = threading.Thread(target=self._keepers_scan_all_thread,
-                             args=(prefs, max_seeds, max_keepers, client_conf))
+                             args=(prefs, max_seeds, max_keepers, client_conf, max_leech, min_reg_days, hide_my_kept))
         t.daemon = True
         t.start()
 
-    def _keepers_scan_all_thread(self, prefs, max_seeds, max_keepers, client_conf):
+    def _keepers_scan_all_thread(self, prefs, max_seeds, max_keepers, client_conf, max_leech=-1, min_reg_days=-1, hide_my_kept=False):
         """Iterate through preferred categories and scan each one."""
         total = len(prefs)
         grand_total = 0
@@ -11387,7 +11423,7 @@ class QBitAdderApp:
                     text=f"Scanning category {idx}/{tot}: {n}..."))
 
             # Run the existing scan thread logic (synchronously within this thread)
-            self._keepers_scan_thread(cat_id, max_seeds, max_keepers, client_conf)
+            self._keepers_scan_thread(cat_id, max_seeds, max_keepers, client_conf, max_leech, min_reg_days, hide_my_kept)
 
             # After scan, check if PVC showed 0 B and skip was enabled
             # (for categories with no prior cache, check after first fetch)
@@ -11450,6 +11486,16 @@ class QBitAdderApp:
         except:
             max_keepers = 0
 
+        try:
+            max_leech = self.keepers_max_leech.get()
+        except:
+            max_leech = -1
+        try:
+            min_reg_days = self.keepers_min_reg_days.get()
+        except:
+            min_reg_days = -1
+        hide_my_kept = self.keepers_hide_my_kept.get()
+
         # Get selected client
         client_idx = self.keepers_client_combo.current()
         if client_idx < 0: client_idx = 0
@@ -11474,7 +11520,7 @@ class QBitAdderApp:
         self.keepers_progress.start(15)
         self.keepers_progress_label.config(text="Scanning...")
 
-        t = threading.Thread(target=self._keepers_scan_thread, args=(cat_id, max_seeds, max_keepers, client_conf))
+        t = threading.Thread(target=self._keepers_scan_thread, args=(cat_id, max_seeds, max_keepers, client_conf, max_leech, min_reg_days, hide_my_kept))
         t.daemon = True
         t.start()
 
@@ -11542,7 +11588,7 @@ class QBitAdderApp:
         return topics
 
 
-    def _keepers_scan_thread(self, cat_id, max_seeds, max_keepers, client_conf):
+    def _keepers_scan_thread(self, cat_id, max_seeds, max_keepers, client_conf, max_leech=-1, min_reg_days=-1, hide_my_kept=False):
         # 0. Fetch Client Data (in thread)
         client_data = {}
         try:
@@ -11604,7 +11650,9 @@ class QBitAdderApp:
                     if len(vals) >= 10:
                         kf_list = vals[5] if isinstance(vals[5], list) else []
                         self.keepers_pvc_data[tid_int] = {
+                            "tor_status": vals[0],
                             "seeds": vals[1],
+                            "reg_time": vals[2],
                             "size_bytes": vals[3],
                             "keeping_priority": vals[4],
                             "keepers_count": len(kf_list),
@@ -11624,7 +11672,7 @@ class QBitAdderApp:
             total_leechers = sum(d.get('leechers', 0) for d in self.keepers_pvc_data.values())
             avg_seeds = total_seeds / total_topics if total_topics > 0 else 0.0
 
-            # Filtered stats (seeds <= max_seeds, keepers <= max_keepers, skip 0 B)
+            # Filtered stats (seeds <= max_seeds, keepers <= max_keepers, leech, age, skip 0 B)
             skip_zero = self.keepers_skip_zero_topics.get()
             def _pvc_matches(d):
                 if skip_zero and d.get('size_bytes', 0) <= 0:
@@ -11633,6 +11681,13 @@ class QBitAdderApp:
                     return False
                 if max_keepers >= 0 and d.get('keepers_count', 0) > max_keepers:
                     return False
+                if max_leech >= 0 and d.get('leechers', 0) > max_leech:
+                    return False
+                if min_reg_days >= 0:
+                    reg_ts = d.get('reg_time', 0)
+                    if reg_ts and reg_ts > 0:
+                        if (time.time() - reg_ts) / 86400 < min_reg_days:
+                            return False
                 return True
 
             filtered_items = [d for d in self.keepers_pvc_data.values() if _pvc_matches(d)]
@@ -11774,19 +11829,40 @@ class QBitAdderApp:
                                 c['raw_size'] = pvc_size
                                 c['size_str'] = format_size(pvc_size)
 
-                    # Filter by seeds, keepers count, and zero-size AFTER enrichment
+                    # Filter by seeds, keepers count, leechers, age, "my kept" AFTER enrichment
                     skip_zero = self.keepers_skip_zero_topics.get()
+                    _nick_lower = self.keeper_nickname.lower() if hide_my_kept and getattr(self, 'keeper_nickname', '') else ""
+                    # Pre-build user_id→nickname map for "hide my kept" filter
+                    _my_uid_set = set()
+                    if _nick_lower and hasattr(self, 'keepers_pvc_data'):
+                        for _pd in self.keepers_pvc_data.values():
+                            for _kid in _pd.get('keepers_list', []):
+                                if self.db_manager.get_keepers_user(_kid).lower() == _nick_lower:
+                                    _my_uid_set.add(_kid)
+                                    break  # found my UID, no need to keep searching
+
                     def _matches_filter(c):
                         if skip_zero and c.get('raw_size', 0) <= 0:
                             return False
                         if c['seeds'] > max_seeds:
                             return False
+                        if max_leech >= 0 and c.get('leech', 0) > max_leech:
+                            return False
+                        tid_int = int(c['id'])
+                        pvc = self.keepers_pvc_data.get(tid_int) if hasattr(self, 'keepers_pvc_data') else None
                         if max_keepers >= 0:
-                            tid_int = int(c['id'])
-                            k_count = 0
-                            if hasattr(self, 'keepers_pvc_data') and tid_int in self.keepers_pvc_data:
-                                k_count = self.keepers_pvc_data[tid_int].get('keepers_count', 0)
+                            k_count = pvc.get('keepers_count', 0) if pvc else 0
                             if k_count > max_keepers:
+                                return False
+                        if min_reg_days >= 0 and pvc:
+                            reg_ts = pvc.get('reg_time', 0)
+                            if reg_ts and reg_ts > 0:
+                                age_days = (time.time() - reg_ts) / 86400
+                                if age_days < min_reg_days:
+                                    return False
+                        if _my_uid_set and pvc:
+                            k_list = pvc.get('keepers_list', [])
+                            if _my_uid_set.intersection(k_list):
                                 return False
                         return True
 
@@ -11794,6 +11870,12 @@ class QBitAdderApp:
                     filter_desc = f"seeds <= {max_seeds}"
                     if max_keepers >= 0:
                         filter_desc += f", keepers <= {max_keepers}"
+                    if max_leech >= 0:
+                        filter_desc += f", leech <= {max_leech}"
+                    if min_reg_days >= 0:
+                        filter_desc += f", age >= {min_reg_days}d"
+                    if _nick_lower:
+                        filter_desc += ", hide my kept"
                     if skip_zero:
                         filter_desc += ", size > 0"
                     self.keepers_log(f"  {len(filtered)} match criteria ({filter_desc}).")
@@ -11802,7 +11884,7 @@ class QBitAdderApp:
                     for t in filtered:
                          if self.keepers_stop_event.is_set(): break
                          
-                         status = "Normal"
+                         status = "Not Kept"
                          if self.db_manager.is_torrent_kept(t['id']):
                              status = "Kept (DB)"
                          
@@ -11855,13 +11937,15 @@ class QBitAdderApp:
         
         # Pull generated hover data if we fetched PVC payload
         k_count, priority, str_last_seen, poster = 0, "", "", ""
+        str_tor_status, str_reg_time = "", ""
+        _TOR_STATUS_SYMBOLS = {0: "∗", 2: "√", 3: "?", 8: "#"}
         if hasattr(self, 'keepers_pvc_data'):
             try:
                 tid_int = int(t['id'])
                 if tid_int in self.keepers_pvc_data:
                     d = self.keepers_pvc_data[tid_int]
                     k_count = d.get('keepers_count', 0)
-                    
+
                     p_num = d.get('keeping_priority', 0)
                     if p_num == 0:
                         priority = "0 (Low)"
@@ -11871,20 +11955,29 @@ class QBitAdderApp:
                         priority = "2 (High)"
                     else:
                         priority = str(p_num)
-                    
+
                     poster = str(d.get('topic_poster', ''))
-                    
+
                     last_seen_ts = d.get("seeder_last_seen", 0)
                     if last_seen_ts > 0:
                         str_last_seen = fmt_dt(datetime.datetime.fromtimestamp(last_seen_ts), "datetime_sec")
                     else:
                         str_last_seen = "Never"
+
+                    ts = d.get("tor_status", -1)
+                    str_tor_status = _TOR_STATUS_SYMBOLS.get(ts, "—")
+
+                    reg_ts = d.get("reg_time", 0)
+                    if reg_ts and reg_ts > 0:
+                        str_reg_time = fmt_dt(datetime.datetime.fromtimestamp(reg_ts), "date")
+                    else:
+                        str_reg_time = ""
             except:
                 pass
-                
+
         self.keepers_tree.insert("", "end", values=(
             t['id'], t['name'], t['size_str'], t['seeds'], t['leech'], status, link,
-            k_count, priority, str_last_seen, poster
+            k_count, priority, str_last_seen, poster, str_tor_status, str_reg_time
         ))
 
     def _keepers_toggle_cat_input(self):

@@ -22,7 +22,7 @@ import base64
 import copy
 import queue
 import gc
-from PIL import Image as PILImage, ImageTk
+from PIL import Image as PILImage, ImageTk, ImageDraw
 from requests.adapters import HTTPAdapter
 
 original_scrolled_text = scrolledtext.ScrolledText
@@ -85,6 +85,9 @@ DEFAULT_CONFIG = {
     "pm_polling_enabled": False,
     "pm_poll_interval_sec": 300,
     "pm_toast_enabled": False,
+    "tray_enabled": True,
+    "minimize_to_tray": True,
+    "tray_notifications_enabled": True,
     "github_app_auto_update_enabled": False,
     "keepers_preferred_categories": [],
     "theme": "Default",
@@ -109,7 +112,7 @@ DATA_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_data.db")
 HASHES_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.25.0"
+APP_VERSION = "0.26.0"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -251,6 +254,12 @@ TRANSLATIONS = {
         # Tab names
         "tab.dashboard": "Dashboard",
         "tab.add_torrents": "Add Torrents",
+        # Tray settings
+        "settings.tray": "Tray & Notifications",
+        "settings.tray_enable": "Enable system tray icon",
+        "settings.tray_minimize": "Minimize to tray on close",
+        "settings.tray_notifications": "Event notifications",
+        "settings.save_tray": "Save",
         "tab.keepers": "Keepers",
         "tab.update_torrents": "Update Torrents",
         "tab.remove_torrents": "Remove Torrents",
@@ -697,6 +706,12 @@ SIZE COMPARISON BACKGROUNDS:
         # Tab names
         "tab.dashboard": "Обзор",
         "tab.add_torrents": "Добавление",
+        # Tray settings
+        "settings.tray": "Трей и уведомления",
+        "settings.tray_enable": "Иконка в трее",
+        "settings.tray_minimize": "Сворачивать в трей",
+        "settings.tray_notifications": "Уведомления о событиях",
+        "settings.save_tray": "Сохранить",
         "tab.keepers": "Хранители",
         "tab.update_torrents": "Обновление",
         "tab.remove_torrents": "Удаление",
@@ -3746,6 +3761,10 @@ class QBitAdderApp:
         # Start PM polling
         self._pm_start_polling()
 
+        # System tray icon (must be after is_initializing = False)
+        self._tray_icon = None
+        self._tray_setup()
+
         # Auto-scan when switching to Update tab
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
@@ -3787,7 +3806,19 @@ class QBitAdderApp:
         """Thread-safe update of the traffic light canvases."""
         with self.status_lock:
             self.status_data[key] = color
-            
+
+        # Update tray icon color to reflect overall health
+        statuses = list(self.status_data.values())
+        if "red" in statuses:
+            tray_color = "#f44336"
+        elif all(s == "gray" for s in statuses):
+            tray_color = "#9e9e9e"
+        elif "green" in statuses:
+            tray_color = "#4caf50"
+        else:
+            tray_color = "#ff9800"
+        self._tray_update_icon(tray_color)
+
         def _update():
             try:
                 if key == "proxy" and hasattr(self, 'canvas_proxy_status'):
@@ -3974,6 +4005,104 @@ class QBitAdderApp:
             return user, pwd
         return None, None
 
+    # ======== System Tray Methods ========
+
+    def _tray_make_icon(self, color="#9e9e9e"):
+        """Create a 64x64 colored circle image for the tray icon."""
+        img = PILImage.new("RGBA", (64, 64), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        # Outer circle (main)
+        draw.ellipse([4, 4, 60, 60], fill=color)
+        # Small inner highlight for depth
+        draw.ellipse([16, 10, 34, 26], fill="#ffffff44")
+        return img
+
+    def _tray_setup(self):
+        """Create and run the system tray icon. Gracefully skips if pystray unavailable."""
+        if not self.config.get("tray_enabled", True):
+            return
+        try:
+            import pystray
+            from pystray import MenuItem as Item
+        except ImportError:
+            self.log("pystray not installed — system tray disabled. Run: pip install pystray")
+            return
+
+        img = self._tray_make_icon()
+        menu = pystray.Menu(
+            Item("Show Keepers Orchestrator", self._tray_show_window, default=True),
+            pystray.Menu.SEPARATOR,
+            Item("Exit", self._tray_quit),
+        )
+        self._tray_icon = pystray.Icon(
+            "Keepers Orchestrator",
+            img,
+            "Keepers Orchestrator",
+            menu,
+        )
+        self._tray_icon.run_detached()
+
+        # Override close button: hide to tray instead of quitting
+        if self.config.get("minimize_to_tray", True):
+            self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
+
+    def _on_window_close(self):
+        """Called when the user clicks the window X button."""
+        if self.config.get("minimize_to_tray", True) and self._tray_icon is not None:
+            self.root.withdraw()  # Hide window, keep running
+        else:
+            self._tray_quit()
+
+    def _tray_show_window(self, icon=None, item=None):
+        """Restore the main window from the tray (called from pystray bg thread)."""
+        self.root.after(0, self._do_show_window)
+
+    def _do_show_window(self):
+        """Show and raise the main window (must run on main thread)."""
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def _tray_quit(self, icon=None, item=None):
+        """Clean shutdown: stop background loops, stop tray, destroy window."""
+        self.status_loop_active = False
+        self.pm_poll_active = False
+        if self._tray_icon is not None:
+            try:
+                self._tray_icon.stop()
+            except Exception:
+                pass
+        self.root.after(0, self.root.destroy)
+
+    def _tray_notify(self, title, body):
+        """Send a Windows toast notification. Central dispatcher for all events."""
+        if not self.config.get("tray_notifications_enabled", True):
+            return
+        if not getattr(self, '_pm_toast_available', True):
+            return
+        try:
+            from winotify import Notification
+            toast = Notification(
+                app_id="Keepers Orchestrator",
+                title=title,
+                msg=body,
+                duration="short",
+            )
+            toast.show()
+        except ImportError:
+            self._pm_toast_available = False
+        except Exception as exc:
+            self.log(f"Notification error: {exc}")
+
+    def _tray_update_icon(self, color):
+        """Change the tray icon color to reflect overall connection status."""
+        if self._tray_icon is None:
+            return
+        try:
+            self._tray_icon.icon = self._tray_make_icon(color)
+        except Exception:
+            pass
+
     # ======== PM Inbox Methods ========
 
     def _pm_check_winotify(self):
@@ -4069,35 +4198,20 @@ class QBitAdderApp:
             pass
 
     def _pm_send_toast(self, new_messages):
-        """Windows toast notification for new PMs."""
+        """Windows toast notification for new PMs — delegates to _tray_notify."""
         if not self._pm_toast_available:
             return
-        try:
-            from winotify import Notification
-
-            if len(new_messages) == 1:
-                msg = new_messages[0]
-                title = f"New PM from {msg['sender']}"
-                body = msg['subject']
-            else:
-                title = f"{len(new_messages)} new private messages"
-                senders = ", ".join(m['sender'] for m in new_messages[:3])
-                body = f"From: {senders}"
-                if len(new_messages) > 3:
-                    body += f" (+{len(new_messages) - 3} more)"
-
-            toast = Notification(
-                app_id="Keepers Orchestrator",
-                title=title,
-                msg=body,
-                duration="short"
-            )
-            toast.show()
-        except ImportError:
-            self._pm_toast_available = False
-            self.log("Toast notifications unavailable (install winotify: pip install winotify)")
-        except Exception as e:
-            self.log(f"Toast notification error: {e}")
+        if len(new_messages) == 1:
+            msg = new_messages[0]
+            title = f"New PM from {msg['sender']}"
+            body = msg['subject']
+        else:
+            title = f"{len(new_messages)} new private messages"
+            senders = ", ".join(m['sender'] for m in new_messages[:3])
+            body = f"From: {senders}"
+            if len(new_messages) > 3:
+                body += f" (+{len(new_messages) - 3} more)"
+        self._tray_notify(title, body)
 
     def _pm_open_inbox_dialog(self):
         """Open the PM inbox popup dialog."""
@@ -4721,6 +4835,20 @@ class QBitAdderApp:
         elif not self.config["pm_polling_enabled"] and self.pm_poll_active:
             self.pm_poll_active = False
             self._pm_update_indicator("#e0e0e0", "  PM  ")
+
+    def _save_tray_settings(self):
+        """Save system tray and notification settings."""
+        self.config["tray_enabled"] = self.tray_enabled_var.get()
+        self.config["minimize_to_tray"] = self.tray_minimize_var.get()
+        self.config["tray_notifications_enabled"] = self.tray_notif_var.get()
+        self.save_config()
+        self.log("Tray settings saved. Restart app to apply tray enable/disable changes.")
+        # Apply minimize_to_tray immediately without restart
+        if self._tray_icon is not None:
+            if self.config["minimize_to_tray"]:
+                self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
+            else:
+                self.root.protocol("WM_DELETE_WINDOW", self._tray_quit)
 
     # ======== End PM Methods ========
 
@@ -6001,7 +6129,29 @@ class QBitAdderApp:
 
         self._tb(pm_row1, "settings.save_pm", command=self._save_pm_settings).pack(side="left", padx=10)
 
-        # 4. Data Sources Section
+        # 4. Tray & Notifications Section
+        tray_settings_frame = self._tlf(self.settings_scrollable_frame, "settings.tray")
+        tray_settings_frame.pack(fill="x", padx=10, pady=5)
+
+        tray_row = tk.Frame(tray_settings_frame)
+        tray_row.pack(fill="x", padx=5, pady=5)
+
+        self.tray_enabled_var = tk.BooleanVar(value=self.config.get("tray_enabled", True))
+        self._tcb(tray_row, "settings.tray_enable",
+                  variable=self.tray_enabled_var).pack(side="left")
+
+        self.tray_minimize_var = tk.BooleanVar(value=self.config.get("minimize_to_tray", True))
+        self._tcb(tray_row, "settings.tray_minimize",
+                  variable=self.tray_minimize_var).pack(side="left", padx=(15, 0))
+
+        self.tray_notif_var = tk.BooleanVar(value=self.config.get("tray_notifications_enabled", True))
+        self._tcb(tray_row, "settings.tray_notifications",
+                  variable=self.tray_notif_var).pack(side="left", padx=(15, 0))
+
+        self._tb(tray_row, "settings.save_tray",
+                 command=self._save_tray_settings).pack(side="left", padx=10)
+
+        # 5. Data Sources Section
         data_frame = self._tlf(self.settings_scrollable_frame, "settings.data_sources")
         data_frame.pack(fill="x", padx=10, pady=5)
 
@@ -8791,6 +8941,17 @@ class QBitAdderApp:
         self.bitrot_cancel_btn.config(state=tk.DISABLED)
         self.bitrot_progress_lbl.configure(text="Ready")
         self.bitrot_progress.configure(value=0)
+        # Notify if bitrot was detected
+        try:
+            rot_items = self.bitrot_tree.tag_has("rot")
+            rot_count = len(rot_items) if rot_items else 0
+            if rot_count > 0:
+                self._tray_notify(
+                    "Bitrot Scanner: Errors Detected",
+                    f"{rot_count} torrent{'s' if rot_count != 1 else ''} with potential bitrot detected.",
+                )
+        except Exception:
+            pass
 
     def bitrot_cancel_check(self):
         self.bitrot_cancel_btn.config(state=tk.DISABLED)
@@ -12770,6 +12931,13 @@ class QBitAdderApp:
 
         # Update stats
         self.refresh_statistics()
+
+        # Notify if any torrents were added
+        if count > 0:
+            self._tray_notify(
+                "Keepers: Torrents Added",
+                f"{count} torrent{'s' if count != 1 else ''} added to client successfully.",
+            )
 
     def _keepers_download_torrent(self):
         selected = self.keepers_tree.selection()

@@ -4996,7 +4996,16 @@ class QBitAdderApp:
         style.configure("TScrollbar", background=th["btn_bg"], troughcolor=th["trough"])
         style.configure("TCombobox",
                         fieldbackground=th["entry_bg"],
-                        background=th["btn_bg"], foreground=th["entry_fg"])
+                        background=th["btn_bg"], foreground=th["entry_fg"],
+                        selectbackground=th["select_bg"], selectforeground=th["select_fg"])
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", th["entry_bg"])],
+                  foreground=[("readonly", th["entry_fg"])])
+        # Theme combobox dropdown listbox
+        self.root.option_add("*TCombobox*Listbox.background", th["entry_bg"])
+        self.root.option_add("*TCombobox*Listbox.foreground", th["entry_fg"])
+        self.root.option_add("*TCombobox*Listbox.selectBackground", th["select_bg"])
+        self.root.option_add("*TCombobox*Listbox.selectForeground", th["select_fg"])
         style.configure("TCheckbutton", background=th["bg"], foreground=th["fg"])
         style.configure("TLabel", background=th["bg"], foreground=th["fg"])
         style.configure("TFrame", background=th["bg"])
@@ -5091,8 +5100,22 @@ class QBitAdderApp:
                 new_fg = self._resolve_fg(str(widget.cget("fg")), th)
                 if new_fg:
                     widget.configure(fg=new_fg)
+            elif cls == "Radiobutton":
+                widget.configure(bg=th["bg"], activebackground=th["bg"],
+                                selectcolor=th["cb_select"])
+                new_fg = self._resolve_fg(str(widget.cget("fg")), th)
+                if new_fg:
+                    widget.configure(fg=new_fg)
+            elif cls == "Spinbox":
+                widget.configure(bg=th["entry_bg"], fg=th["entry_fg"],
+                                buttonbackground=th["btn_bg"],
+                                insertbackground=th["insert"])
             elif cls == "Scrollbar":
                 widget.configure(bg=th["btn_bg"], troughcolor=th["trough"])
+            elif cls == "Menu":
+                widget.configure(bg=th["menu_bg"], fg=th["menu_fg"],
+                                activebackground=th["select_bg"],
+                                activeforeground=th["select_fg"])
         except tk.TclError:
             pass
 

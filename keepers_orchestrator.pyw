@@ -13897,6 +13897,11 @@ class QBitAdderApp:
         threading.Thread(target=self._ak_refresh_disk_space_thread, daemon=True).start()
 
     def _ak_refresh_disk_space_thread(self):
+        """Refresh per-disk free space for each target client.
+        Strategy: detect drive letters from torrent save_paths, then temporarily
+        set qBit's default save path to each drive to read free_space_on_disk
+        from the API, then revert to original save path.
+        """
         self._ak_log("Refreshing disk space for target clients...")
         self.ak_client_space = {}
 
@@ -13906,7 +13911,6 @@ class QBitAdderApp:
             client_conf = info["conf"]
             url = client_conf["url"].rstrip("/")
             base_path = client_conf.get("base_save_path", "")
-            is_local = self._ak_is_local_client(url)
 
             disk_info = []  # list of {"path": str, "free": int}
             total_free = 0
@@ -13916,105 +13920,97 @@ class QBitAdderApp:
                 if not s:
                     self._ak_log(f"  {name}: Could not connect.")
                     self.ak_client_space[name] = {
-                        "free": 0, "disks": [], "base_save_path": base_path,
-                        "is_local": is_local, "conf": client_conf
+                        "free": 0, "disks": [], "base_save_path": base_path, "conf": client_conf
                     }
                     continue
 
-                # Detect unique disk drives from torrent save_paths
+                # Step 1: Detect disk bases from torrent save_paths
                 resp = s.get(f"{url}/api/v2/torrents/info", timeout=15)
-                drive_letters = set()
+                disk_bases = set()
+
                 if resp.status_code == 200:
                     torrents = resp.json()
                     for tor in torrents:
                         sp = tor.get("save_path", "").replace("\\", "/")
                         if sp:
-                            drive = self._ak_get_drive_letter(sp)
-                            if drive:
-                                drive_letters.add(drive)
-                    # Also add base_save_path drive
-                    if base_path:
-                        bp_drive = self._ak_get_drive_letter(base_path.replace("\\", "/"))
-                        if bp_drive:
-                            drive_letters.add(bp_drive)
+                            base = self._mover_get_disk_base(sp)
+                            disk_bases.add(base)
 
-                if is_local and drive_letters:
-                    # Local: shutil.disk_usage per detected drive
-                    seen_devices = set()  # Deduplicate drives that point to same physical device
-                    for drive in sorted(drive_letters):
-                        try:
-                            usage = shutil.disk_usage(drive)
-                            # Deduplicate by (total, device) to avoid counting same disk twice
-                            dev_key = usage.total
-                            if dev_key in seen_devices:
-                                continue
-                            seen_devices.add(dev_key)
-                            disk_info.append({"path": drive, "free": usage.free})
-                            total_free += usage.free
-                            self._ak_log(f"  {name}: {drive} — Free: {format_size(usage.free)}")
-                        except Exception as e:
-                            self._ak_log(f"  {name}: {drive} — error: {e}")
-                else:
-                    # Remote: qBit API only provides free_space for the default save path
-                    resp2 = s.get(f"{url}/api/v2/sync/maindata", timeout=10)
-                    if resp2.status_code == 200:
-                        ss = resp2.json().get("server_state", {})
-                        api_free = ss.get("free_space_on_disk", 0)
-                        total_free = api_free
+                # Also include base_save_path disk
+                if base_path:
+                    bp_base = self._mover_get_disk_base(base_path.replace("\\", "/"))
+                    if bp_base:
+                        disk_bases.add(bp_base)
 
-                        if drive_letters:
-                            # Show each drive letter, mark default with free space
-                            default_drive = self._ak_get_drive_letter(base_path.replace("\\", "/")) if base_path else ""
-                            for drive in sorted(drive_letters):
-                                if drive == default_drive:
-                                    disk_info.append({"path": drive, "free": api_free})
-                                    self._ak_log(f"  {name}: {drive} — Free: {format_size(api_free)} (default)")
-                                else:
-                                    disk_info.append({"path": drive, "free": -1})
-                                    self._ak_log(f"  {name}: {drive} — Free: N/A (remote)")
+                if not disk_bases:
+                    self._ak_log(f"  {name}: No disks detected.")
+                    continue
+
+                # Step 2: Save original default save path from qBit preferences
+                original_save_path = None
+                try:
+                    pref_resp = s.get(f"{url}/api/v2/app/preferences", timeout=10)
+                    if pref_resp.status_code == 200:
+                        original_save_path = pref_resp.json().get("save_path", "")
+                except Exception as e:
+                    self._ak_log(f"  {name}: Could not read preferences: {e}")
+
+                # Step 3: For each disk, temporarily set default save path → read free space
+                self._ak_log(f"  {name}: Probing {len(disk_bases)} disk(s)...")
+                for disk_path in sorted(disk_bases):
+                    if self.ak_stop_event.is_set():
+                        break
+                    try:
+                        # Temporarily set default save path to this disk
+                        set_resp = s.post(f"{url}/api/v2/app/setPreferences",
+                            data={"json": json.dumps({"save_path": disk_path})}, timeout=10)
+                        if set_resp.status_code != 200:
+                            self._ak_log(f"  {name}: {disk_path} — setPreferences error {set_resp.status_code}")
+                            continue
+
+                        time.sleep(0.3)  # Brief pause for qBit to update
+
+                        # Read free space (now reports for the new default save path disk)
+                        md_resp = s.get(f"{url}/api/v2/sync/maindata", timeout=10)
+                        if md_resp.status_code == 200:
+                            free_bytes = md_resp.json().get("server_state", {}).get("free_space_on_disk", 0)
+                            if free_bytes and free_bytes > 0:
+                                disk_info.append({"path": disk_path, "free": free_bytes})
+                                total_free += free_bytes
+                                self._ak_log(f"  {name}: {disk_path} — Free: {format_size(free_bytes)}")
+                            else:
+                                self._ak_log(f"  {name}: {disk_path} — Free: N/A")
                         else:
-                            # No drive letters detected (Unix with no letter-style paths)
-                            label = base_path.rstrip("/") if base_path else "default"
-                            disk_info.append({"path": label, "free": api_free})
-                            self._ak_log(f"  {name}: Free: {format_size(api_free)}")
-                    else:
-                        self._ak_log(f"  {name}: API error {resp2.status_code}")
+                            self._ak_log(f"  {name}: {disk_path} — maindata error {md_resp.status_code}")
+                    except Exception as e:
+                        self._ak_log(f"  {name}: {disk_path} — error: {e}")
+
+                # Step 4: Revert to original save path
+                if original_save_path is not None:
+                    try:
+                        s.post(f"{url}/api/v2/app/setPreferences",
+                            data={"json": json.dumps({"save_path": original_save_path})}, timeout=10)
+                        self._ak_log(f"  {name}: Reverted save path to: {original_save_path}")
+                    except Exception as e:
+                        self._ak_log(f"  {name}: WARNING — Could not revert save path: {e}")
 
             except Exception as e:
                 self._ak_log(f"  {name}: error: {e}")
 
-            # Fallback if nothing detected
-            if not disk_info and is_local and base_path:
-                try:
-                    usage = shutil.disk_usage(base_path)
-                    disk_info.append({"path": base_path, "free": usage.free})
-                    total_free = usage.free
-                    self._ak_log(f"  {name}: {base_path} — Free: {format_size(usage.free)}")
-                except:
-                    pass
+            if not disk_info:
+                self._ak_log(f"  {name}: No disk info available.")
 
             self.ak_client_space[name] = {
                 "free": total_free,
                 "disks": disk_info,
-                "base_save_path": base_path,
-                "is_local": is_local, "conf": client_conf
+                "base_save_path": base_path, "conf": client_conf
             }
 
             disk_frame = info["disk_frame"]
-            self.root.after(0, lambda df=disk_frame, di=disk_info:
+            self.root.after(0, lambda df=disk_frame, di=list(disk_info):
                 self._ak_update_disk_labels(df, di))
 
         self._ak_log("Disk space refresh complete.")
-
-    @staticmethod
-    def _ak_get_drive_letter(path):
-        """Extract drive root from a path. Windows: 'D:/' from 'D:/Torrents/...'. Returns None for Unix paths."""
-        p = path.replace("\\", "/")
-        if len(p) >= 3 and p[1] == ':' and p[2] == '/':
-            return p[:3]
-        if len(p) >= 2 and p[1] == ':':
-            return p[:2] + "/"
-        return None
 
     def _ak_update_disk_labels(self, disk_frame, disk_info):
         """Update the disk labels frame with per-disk free space info."""
@@ -14027,25 +14023,22 @@ class QBitAdderApp:
 
         for di in disk_info:
             path_short = di["path"].rstrip("/")
-            if di["free"] > 0:
-                text = f"{path_short}: {format_size(di['free'])}"
-                fg = "#55aa55" if di["free"] > 100 * (1024**3) else "#cc8800"
-            elif di["free"] == 0:
+            free = di["free"]
+            total = di.get("total", 0)
+            if free > 0 and total > 0:
+                pct = int(free / total * 100)
+                text = f"{path_short}: {format_size(free)} ({pct}%)"
+                fg = "#55aa55" if pct > 20 else "#cc8800" if pct > 5 else "#cc3333"
+            elif free > 0:
+                text = f"{path_short}: {format_size(free)}"
+                fg = "#55aa55"
+            elif free == 0 and total > 0:
                 text = f"{path_short}: 0 B"
                 fg = "#cc3333"
             else:
                 text = f"{path_short}: N/A"
                 fg = "#888888"
             tk.Label(disk_frame, text=text, font=("Segoe UI", 9), fg=fg).pack(side="left", padx=(0, 8))
-
-    @staticmethod
-    def _ak_is_local_client(url):
-        try:
-            # Simple hostname extraction
-            host_part = url.split("://")[-1].split("/")[0].split(":")[0]
-            return host_part in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
-        except:
-            return False
 
     # --- Auto Keeper: Scan & Plan ---
 

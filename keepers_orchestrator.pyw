@@ -93,7 +93,17 @@ DEFAULT_CONFIG = {
     "theme": "Default",
     "language": "en",
     "keeper_nickname": "",
-    "log_retention_days": 14
+    "log_retention_days": 14,
+    "auto_keeper": {
+        "categories": [],
+        "target_clients": [],
+        "qbit_category": "AutoKeeper",
+        "start_paused": True,
+        "disk_reserve_gb": 50,
+        "max_total_size_gb": 500,
+        "skip_already_kept": True,
+        "skip_zero_size": True
+    }
 }
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -112,7 +122,7 @@ DATA_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_data.db")
 HASHES_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.26.0"
+APP_VERSION = "0.27.0"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -501,6 +511,26 @@ TRANSLATIONS = {
         "keepers.start_paused": "Start Paused",
         "keepers.add_selected": "Add Selected",
         "keepers.export_csv": "Export to CSV",
+        # Keepers sub-tabs
+        "keepers.sub_scanner": "Scanner",
+        "keepers.sub_auto_keeper": "Auto Keeper",
+        # Auto Keeper
+        "autokeeper.categories": "Category Configuration",
+        "autokeeper.add_cat": "+ Add",
+        "autokeeper.remove_cat": "Remove",
+        "autokeeper.edit_thresholds": "Edit Thresholds",
+        "autokeeper.target_clients": "Target Clients",
+        "autokeeper.refresh_disk": "Refresh Disk Space",
+        "autokeeper.reserve_gb": "Reserve per client:",
+        "autokeeper.max_total_size": "Max total plan size:",
+        "autokeeper.scan_plan": "Scan && Plan",
+        "autokeeper.distribution_preview": "Distribution Preview",
+        "autokeeper.approve_add": "Approve && Add",
+        "autokeeper.clear_plan": "Clear Plan",
+        "autokeeper.col_client": "Client",
+        "autokeeper.col_save_path": "Save Path",
+        "common.gb": "GB",
+        "common.enabled": "Enabled",
         # Scanner tab
         "scanner.folder": "Folder:",
         "scanner.recursive": "Scan subfolders recursively",
@@ -953,6 +983,26 @@ SIZE COMPARISON BACKGROUNDS:
         "keepers.start_paused": "Добавить на паузе",
         "keepers.add_selected": "Добавить выбранные",
         "keepers.export_csv": "Экспорт в CSV",
+        # Keepers sub-tabs
+        "keepers.sub_scanner": "Сканер",
+        "keepers.sub_auto_keeper": "Авто Хранитель",
+        # Auto Keeper
+        "autokeeper.categories": "Конфигурация категорий",
+        "autokeeper.add_cat": "+ Доб.",
+        "autokeeper.remove_cat": "Убрать",
+        "autokeeper.edit_thresholds": "Редактировать пороги",
+        "autokeeper.target_clients": "Целевые клиенты",
+        "autokeeper.refresh_disk": "Обновить место на диске",
+        "autokeeper.reserve_gb": "Резерв на клиент:",
+        "autokeeper.max_total_size": "Макс. размер плана:",
+        "autokeeper.scan_plan": "Сканировать и планировать",
+        "autokeeper.distribution_preview": "Предпросмотр распределения",
+        "autokeeper.approve_add": "Подтвердить и добавить",
+        "autokeeper.clear_plan": "Очистить план",
+        "autokeeper.col_client": "Клиент",
+        "autokeeper.col_save_path": "Путь сохранения",
+        "common.gb": "ГБ",
+        "common.enabled": "Вкл",
         # Scanner tab
         "scanner.folder": "Папка:",
         "scanner.recursive": "Сканировать подпапки рекурсивно",
@@ -1531,6 +1581,17 @@ class DatabaseManager:
                         filtered_seeds INTEGER
                     )
                 """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS auto_keeper_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp REAL,
+                        topic_id INTEGER,
+                        client_name TEXT,
+                        category_id INTEGER,
+                        size_bytes INTEGER,
+                        status TEXT
+                    )
+                """)
         except Exception as e:
             print(f"DB Init Error: {e}")
 
@@ -1673,6 +1734,32 @@ class DatabaseManager:
             with self._get_conn() as conn:
                 cu = conn.execute("SELECT 1 FROM kept_torrents WHERE topic_id=?", (topic_id,))
                 return cu.fetchone() is not None
+        except:
+            return False
+
+    def save_auto_keeper_batch(self, entries):
+        """Save a batch of auto keeper plan entries.
+        entries: list of (topic_id, client_name, category_id, size_bytes, status)
+        """
+        try:
+            with self._get_conn() as conn:
+                conn.executemany("""
+                    INSERT INTO auto_keeper_history
+                    (timestamp, topic_id, client_name, category_id, size_bytes, status)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, [(time.time(), *e) for e in entries])
+        except Exception as e:
+            print(f"DB Error (auto_keeper_batch): {e}")
+
+    def is_auto_keeper_planned(self, topic_id):
+        """Check if a topic was already processed by auto keeper."""
+        try:
+            with self._get_conn() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM auto_keeper_history WHERE topic_id=? AND status='added'",
+                    (topic_id,)
+                ).fetchone()
+                return row is not None
         except:
             return False
 
@@ -3708,9 +3795,13 @@ class QBitAdderApp:
         self._pm_current_folder = "inbox"
         self._pm_window = None
 
-        self.create_keepers_ui()
+        self._create_keepers_sub_notebook()
 
-
+        # Auto Keeper state
+        self.ak_stop_event = threading.Event()
+        self.ak_scan_active = False
+        self.ak_distribution_plan = []
+        self.ak_client_space = {}
 
         # Mover tab state
         self.mover_all_torrents = []
@@ -5535,6 +5626,7 @@ class QBitAdderApp:
                 if "keepers_preferred_categories" not in data: data["keepers_preferred_categories"] = []
                 if "theme" not in data: data["theme"] = "Default"
                 if "log_retention_days" not in data: data["log_retention_days"] = 14
+                if "auto_keeper" not in data: data["auto_keeper"] = DEFAULT_CONFIG["auto_keeper"]
 
                 return data
             except Exception as e:
@@ -12099,9 +12191,23 @@ class QBitAdderApp:
     # KEEPERS TAB
     # ===================================================================
 
+    def _create_keepers_sub_notebook(self):
+        """Create a sub-notebook inside the Keepers tab with Scanner and Auto Keeper sub-tabs."""
+        self.keepers_sub_notebook = ttk.Notebook(self.keepers_tab)
+        self.keepers_sub_notebook.pack(fill="both", expand=True)
+
+        self.keepers_scanner_frame = tk.Frame(self.keepers_sub_notebook)
+        self.keepers_sub_notebook.add(self.keepers_scanner_frame, text=t("keepers.sub_scanner"))
+
+        self.keepers_auto_frame = tk.Frame(self.keepers_sub_notebook)
+        self.keepers_sub_notebook.add(self.keepers_auto_frame, text=t("keepers.sub_auto_keeper"))
+
+        self.create_keepers_ui()
+        self._create_auto_keeper_ui()
+
     def create_keepers_ui(self):
         # Top controls
-        top_frame = tk.Frame(self.keepers_tab)
+        top_frame = tk.Frame(self.keepers_scanner_frame)
         top_frame.pack(fill="x", padx=5, pady=5)
 
         self._tl(top_frame, "common.category").pack(side="left")
@@ -12140,7 +12246,7 @@ class QBitAdderApp:
         self.keepers_client_combo.pack(side="left")
 
         # Category Options
-        cat_frame = tk.Frame(self.keepers_tab)
+        cat_frame = tk.Frame(self.keepers_scanner_frame)
         cat_frame.pack(fill="x", padx=5, pady=2)
         
         self._tl(cat_frame, "keepers.save_category").pack(side="left", padx=5)
@@ -12189,7 +12295,7 @@ class QBitAdderApp:
         self.keepers_stop_btn.pack(side="left")
 
         # --- Preferred Categories ---
-        pref_frame = self._tlf(self.keepers_tab, "keepers.preferred_cats", padx=5, pady=3)
+        pref_frame = self._tlf(self.keepers_scanner_frame, "keepers.preferred_cats", padx=5, pady=3)
         pref_frame.pack(fill="x", padx=5, pady=(3, 0))
 
         pref_inner = tk.Frame(pref_frame)
@@ -12226,7 +12332,7 @@ class QBitAdderApp:
         self._keepers_refresh_preferred_list()
 
         # --- Keepers Progress (hidden until scanning) ---
-        self.keepers_prog_frame = tk.Frame(self.keepers_tab)
+        self.keepers_prog_frame = tk.Frame(self.keepers_scanner_frame)
         self.keepers_progress = ttk.Progressbar(self.keepers_prog_frame, mode='indeterminate',
             style="blue.Horizontal.TProgressbar")
         self.keepers_progress.pack(fill="x", padx=5, pady=(2, 0))
@@ -12235,7 +12341,7 @@ class QBitAdderApp:
         self.keepers_progress_label.pack(fill="x", padx=5, pady=(0, 2))
 
         # --- Category Statistics Bar ---
-        self.keepers_stats_frame = tk.Frame(self.keepers_tab, relief="groove", bd=1)
+        self.keepers_stats_frame = tk.Frame(self.keepers_scanner_frame, relief="groove", bd=1)
         self.keepers_stats_frame.pack(fill="x", padx=5, pady=(2, 0))
 
         stats_inner = tk.Frame(self.keepers_stats_frame)
@@ -12274,7 +12380,7 @@ class QBitAdderApp:
         self.keepers_stats_lbl_cached.pack(side="right", padx=(0, 8))
 
         # Results Treeview
-        tree_frame = tk.Frame(self.keepers_tab)
+        tree_frame = tk.Frame(self.keepers_scanner_frame)
         tree_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
         cols = ("id", "name", "size", "seeds", "leech", "status", "link", "k_count", "priority", "last_seen", "poster", "tor_status", "reg_time")
@@ -12325,7 +12431,7 @@ class QBitAdderApp:
         self.keepers_tree.pack(side="left", fill="both", expand=True)
 
         # Bottom Actions
-        action_frame = tk.Frame(self.keepers_tab)
+        action_frame = tk.Frame(self.keepers_scanner_frame)
         action_frame.pack(fill="x", padx=5, pady=5)
 
         self.keepers_paused_var = tk.BooleanVar(value=True)
@@ -12341,7 +12447,7 @@ class QBitAdderApp:
         self.keepers_csv_btn.pack(side="right", padx=5)
 
         # Log
-        self.keepers_log_area = scrolledtext.ScrolledText(self.keepers_tab, height=6, state='disabled')
+        self.keepers_log_area = scrolledtext.ScrolledText(self.keepers_scanner_frame, height=6, state='disabled')
         self.keepers_log_area.pack(fill="x", padx=5, pady=5)
 
     def _keepers_filter_cats(self, event):
@@ -12531,7 +12637,7 @@ class QBitAdderApp:
         self.keepers_log_area.delete(1.0, tk.END)
         self.keepers_log_area.config(state='disabled')
 
-        self.keepers_prog_frame.pack(fill="x", padx=5, after=self.keepers_tab.winfo_children()[0])
+        self.keepers_prog_frame.pack(fill="x", padx=5, after=self.keepers_scanner_frame.winfo_children()[0])
         self.keepers_progress.start(15)
         self.keepers_progress_label.config(text="Scanning all preferred categories...")
 
@@ -12671,7 +12777,7 @@ class QBitAdderApp:
         self.keepers_log_area.config(state='disabled')
 
         # Show indeterminate progress
-        self.keepers_prog_frame.pack(fill="x", padx=5, after=self.keepers_tab.winfo_children()[0])
+        self.keepers_prog_frame.pack(fill="x", padx=5, after=self.keepers_scanner_frame.winfo_children()[0])
         self.keepers_progress.start(15)
         self.keepers_progress_label.config(text="Scanning...")
 
@@ -13430,8 +13536,827 @@ class QBitAdderApp:
                  os.startfile(temp_dir)
              except: pass
 
+    # ================================================================
+    # AUTO KEEPER — Automated multi-client distribution
+    # ================================================================
 
+    def _create_auto_keeper_ui(self):
+        parent = self.keepers_auto_frame
 
+        # --- Category Configuration ---
+        cat_lf = self._tlf(parent, "autokeeper.categories", padx=5, pady=3)
+        cat_lf.pack(fill="x", padx=5, pady=(5, 2))
+
+        cat_tree_frame = tk.Frame(cat_lf)
+        cat_tree_frame.pack(fill="x", padx=3, pady=3)
+
+        ak_cat_cols = ("id", "name", "max_seeds", "max_keepers", "max_leech", "min_reg_days", "enabled")
+        self.ak_cat_tree = ttk.Treeview(cat_tree_frame, columns=ak_cat_cols, show="headings", height=5)
+        self.ak_cat_tree.heading("id", text=t("keepers.col_id"))
+        self.ak_cat_tree.heading("name", text=t("common.name"))
+        self.ak_cat_tree.heading("max_seeds", text=t("keepers.max_seeds"))
+        self.ak_cat_tree.heading("max_keepers", text=t("keepers.max_keepers"))
+        self.ak_cat_tree.heading("max_leech", text=t("keepers.max_leech"))
+        self.ak_cat_tree.heading("min_reg_days", text=t("keepers.min_reg_days"))
+        self.ak_cat_tree.heading("enabled", text=t("common.enabled"))
+
+        self.ak_cat_tree.column("id", width=60)
+        self.ak_cat_tree.column("name", width=280)
+        self.ak_cat_tree.column("max_seeds", width=80)
+        self.ak_cat_tree.column("max_keepers", width=90)
+        self.ak_cat_tree.column("max_leech", width=80)
+        self.ak_cat_tree.column("min_reg_days", width=90)
+        self.ak_cat_tree.column("enabled", width=60)
+
+        ak_cat_scroll = ttk.Scrollbar(cat_tree_frame, orient="vertical", command=self.ak_cat_tree.yview)
+        self.ak_cat_tree.configure(yscrollcommand=ak_cat_scroll.set)
+        ak_cat_scroll.pack(side="right", fill="y")
+        self.ak_cat_tree.pack(side="left", fill="x", expand=True)
+
+        # Double-click to edit thresholds
+        self.ak_cat_tree.bind("<Double-1>", lambda e: self._ak_edit_thresholds())
+
+        cat_btn_frame = tk.Frame(cat_lf)
+        cat_btn_frame.pack(fill="x", padx=3, pady=(0, 3))
+
+        self.ak_cat_var = tk.StringVar()
+        self.ak_cat_combo = ttk.Combobox(cat_btn_frame, textvariable=self.ak_cat_var, width=40)
+        cats = self.cat_manager.cache.get("categories", {})
+        self.ak_all_cats = sorted(
+            [f"{name} ({cid})" for cid, name in cats.items() if not str(cid).startswith("c")],
+            key=lambda x: x.lower()
+        )
+        self.ak_cat_combo['values'] = self.ak_all_cats
+        self.ak_cat_combo.pack(side="left", padx=(0, 5))
+        self.ak_cat_combo.bind('<KeyRelease>', self._ak_filter_cats)
+
+        self._tb(cat_btn_frame, "autokeeper.add_cat", command=self._ak_add_category).pack(side="left", padx=2)
+        self._tb(cat_btn_frame, "autokeeper.remove_cat", command=self._ak_remove_category).pack(side="left", padx=2)
+        self._tb(cat_btn_frame, "autokeeper.edit_thresholds", command=self._ak_edit_thresholds).pack(side="left", padx=2)
+
+        # --- Target Clients ---
+        client_lf = self._tlf(parent, "autokeeper.target_clients", padx=5, pady=3)
+        client_lf.pack(fill="x", padx=5, pady=2)
+
+        self.ak_client_checks = {}
+        self.ak_client_frame = tk.Frame(client_lf)
+        self.ak_client_frame.pack(fill="x", padx=3, pady=3)
+        self._ak_build_client_checkboxes()
+
+        client_btn_frame = tk.Frame(client_lf)
+        client_btn_frame.pack(fill="x", padx=3, pady=(0, 3))
+
+        self._tb(client_btn_frame, "autokeeper.refresh_disk", command=self._ak_refresh_disk_space).pack(side="left", padx=2)
+
+        tk.Label(client_btn_frame, text=t("autokeeper.reserve_gb")).pack(side="left", padx=(15, 5))
+        self.ak_reserve_var = tk.IntVar(value=self.config.get("auto_keeper", {}).get("disk_reserve_gb", 50))
+        tk.Spinbox(client_btn_frame, from_=0, to=5000, textvariable=self.ak_reserve_var, width=6).pack(side="left")
+        tk.Label(client_btn_frame, text=t("common.gb")).pack(side="left", padx=2)
+
+        # --- Scan & Plan Row ---
+        scan_frame = tk.Frame(parent)
+        scan_frame.pack(fill="x", padx=5, pady=5)
+
+        self.ak_scan_btn = self._tb(scan_frame, "autokeeper.scan_plan", command=self._ak_start_scan, bg="#dddddd")
+        self.ak_scan_btn.pack(side="left", padx=5)
+
+        self.ak_stop_btn = self._tb(scan_frame, "common.stop", command=self._ak_stop_scan, state="disabled")
+        self.ak_stop_btn.pack(side="left", padx=2)
+
+        tk.Label(scan_frame, text=t("autokeeper.max_total_size")).pack(side="left", padx=(15, 5))
+        self.ak_max_total_var = tk.IntVar(value=self.config.get("auto_keeper", {}).get("max_total_size_gb", 500))
+        tk.Spinbox(scan_frame, from_=1, to=99999, textvariable=self.ak_max_total_var, width=7).pack(side="left")
+        tk.Label(scan_frame, text=t("common.gb")).pack(side="left", padx=2)
+
+        # --- Progress Bar (hidden) ---
+        self.ak_prog_frame = tk.Frame(parent)
+        self.ak_progress = ttk.Progressbar(self.ak_prog_frame, mode='determinate')
+        self.ak_progress.pack(fill="x", padx=5, pady=(2, 0))
+        self.ak_progress_label = tk.Label(self.ak_prog_frame, text="", fg="#333333", font=("Segoe UI", 9))
+        self.ak_progress_label.pack(fill="x", padx=5, pady=(0, 2))
+
+        # --- Distribution Preview ---
+        preview_lf = self._tlf(parent, "autokeeper.distribution_preview", padx=5, pady=3)
+        preview_lf.pack(fill="both", expand=True, padx=5, pady=2)
+
+        preview_tree_frame = tk.Frame(preview_lf)
+        preview_tree_frame.pack(fill="both", expand=True, padx=3, pady=3)
+
+        preview_cols = ("topic_id", "name", "size", "seeds", "keepers", "cat_name", "client", "save_path")
+        self.ak_preview_tree = ttk.Treeview(preview_tree_frame, columns=preview_cols, show="headings")
+        self.ak_preview_tree.heading("topic_id", text=t("keepers.col_id"))
+        self.ak_preview_tree.heading("name", text=t("common.name"))
+        self.ak_preview_tree.heading("size", text=t("common.size"))
+        self.ak_preview_tree.heading("seeds", text=t("keepers.col_seeds"))
+        self.ak_preview_tree.heading("keepers", text=t("keepers.col_k_count"))
+        self.ak_preview_tree.heading("cat_name", text=t("common.category"))
+        self.ak_preview_tree.heading("client", text=t("autokeeper.col_client"))
+        self.ak_preview_tree.heading("save_path", text=t("autokeeper.col_save_path"))
+
+        self.ak_preview_tree.column("topic_id", width=60)
+        self.ak_preview_tree.column("name", width=300)
+        self.ak_preview_tree.column("size", width=70)
+        self.ak_preview_tree.column("seeds", width=50)
+        self.ak_preview_tree.column("keepers", width=60)
+        self.ak_preview_tree.column("cat_name", width=120)
+        self.ak_preview_tree.column("client", width=100)
+        self.ak_preview_tree.column("save_path", width=150)
+
+        prev_scroll_y = ttk.Scrollbar(preview_tree_frame, orient="vertical", command=self.ak_preview_tree.yview)
+        prev_scroll_x = ttk.Scrollbar(preview_tree_frame, orient="horizontal", command=self.ak_preview_tree.xview)
+        self.ak_preview_tree.configure(yscrollcommand=prev_scroll_y.set, xscrollcommand=prev_scroll_x.set)
+        prev_scroll_y.pack(side="right", fill="y")
+        prev_scroll_x.pack(side="bottom", fill="x")
+        self.ak_preview_tree.pack(side="left", fill="both", expand=True)
+
+        # Summary label
+        self.ak_summary_label = tk.Label(parent, text="", font=("Segoe UI", 9, "italic"), fg="#555555")
+        self.ak_summary_label.pack(fill="x", padx=10, pady=(0, 2))
+
+        # --- Approve & Add Row ---
+        approve_frame = tk.Frame(parent)
+        approve_frame.pack(fill="x", padx=5, pady=3)
+
+        self.ak_approve_btn = self._tb(approve_frame, "autokeeper.approve_add",
+            command=self._ak_approve_and_add, state="disabled", bg="#dddddd")
+        self.ak_approve_btn.pack(side="left", padx=5)
+
+        self.ak_paused_var = tk.BooleanVar(value=self.config.get("auto_keeper", {}).get("start_paused", True))
+        self._tcb(approve_frame, "keepers.start_paused", variable=self.ak_paused_var).pack(side="left", padx=5)
+
+        self._tb(approve_frame, "autokeeper.clear_plan", command=self._ak_clear_plan).pack(side="left", padx=5)
+
+        # --- Log Area ---
+        self.ak_log_area = scrolledtext.ScrolledText(parent, height=6, state='disabled')
+        self.ak_log_area.pack(fill="x", padx=5, pady=5)
+
+        # Load saved category config into tree
+        self._ak_refresh_cat_tree()
+
+    # --- Auto Keeper: Logging ---
+
+    def _ak_log(self, msg):
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {msg}"
+        _log_to_file("auto_keeper", msg)
+        def _log():
+            try:
+                self.ak_log_area.config(state='normal')
+                self.ak_log_area.insert(tk.END, line + "\n")
+                self.ak_log_area.see(tk.END)
+                self.ak_log_area.config(state='disabled')
+            except: pass
+        self.root.after(0, _log)
+
+    # --- Auto Keeper: Category Management ---
+
+    def _ak_filter_cats(self, event):
+        typed = self.ak_cat_var.get().lower()
+        if not typed:
+            self.ak_cat_combo['values'] = self.ak_all_cats
+        else:
+            filtered = [c for c in self.ak_all_cats if typed in c.lower()]
+            self.ak_cat_combo['values'] = filtered
+
+    def _ak_add_category(self):
+        cat_str = self.ak_cat_combo.get()
+        if not cat_str:
+            return
+        match = re.search(r'\((\d+)\)$', cat_str)
+        if not match:
+            return
+        cat_id = int(match.group(1))
+        cat_name = cat_str[:match.start()].strip()
+
+        ak_conf = self.config.setdefault("auto_keeper", {})
+        cats = ak_conf.setdefault("categories", [])
+        if any(c['id'] == cat_id for c in cats):
+            return
+
+        cats.append({
+            "id": cat_id, "name": cat_name,
+            "max_seeds": 3, "max_keepers": 0,
+            "max_leech": -1, "min_reg_days": -1,
+            "enabled": True
+        })
+        self.save_config()
+        self._ak_refresh_cat_tree()
+
+    def _ak_remove_category(self):
+        sel = self.ak_cat_tree.selection()
+        if not sel:
+            return
+        cat_id = int(self.ak_cat_tree.item(sel[0], "values")[0])
+        ak_cats = self.config.get("auto_keeper", {}).get("categories", [])
+        self.config["auto_keeper"]["categories"] = [c for c in ak_cats if c['id'] != cat_id]
+        self.save_config()
+        self._ak_refresh_cat_tree()
+
+    def _ak_edit_thresholds(self):
+        sel = self.ak_cat_tree.selection()
+        if not sel:
+            return
+        cat_id = int(self.ak_cat_tree.item(sel[0], "values")[0])
+        ak_cats = self.config.get("auto_keeper", {}).get("categories", [])
+        cat_entry = next((c for c in ak_cats if c['id'] == cat_id), None)
+        if not cat_entry:
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title(f"Edit Thresholds: {cat_entry['name']}")
+        dlg.geometry("350x260")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        fields = [
+            ("Max Seeds:", "max_seeds", 0, 100, cat_entry.get("max_seeds", 3)),
+            ("Max Keepers:", "max_keepers", -1, 100, cat_entry.get("max_keepers", 0)),
+            ("Max Leechers:", "max_leech", -1, 1000, cat_entry.get("max_leech", -1)),
+            ("Min Age (days):", "min_reg_days", -1, 9999, cat_entry.get("min_reg_days", -1)),
+        ]
+        vars_dict = {}
+        for i, (label, key, from_, to_, default) in enumerate(fields):
+            tk.Label(dlg, text=label).grid(row=i, column=0, padx=10, pady=5, sticky="w")
+            var = tk.IntVar(value=default)
+            tk.Spinbox(dlg, from_=from_, to=to_, textvariable=var, width=8).grid(row=i, column=1, padx=10, pady=5)
+            vars_dict[key] = var
+
+        enabled_var = tk.BooleanVar(value=cat_entry.get("enabled", True))
+        tk.Checkbutton(dlg, text="Enabled", variable=enabled_var).grid(row=len(fields), column=0, columnspan=2, pady=5)
+
+        def _save():
+            for key, var in vars_dict.items():
+                cat_entry[key] = var.get()
+            cat_entry["enabled"] = enabled_var.get()
+            self.save_config()
+            self._ak_refresh_cat_tree()
+            dlg.destroy()
+
+        tk.Button(dlg, text="Save", command=_save, width=10).grid(row=len(fields)+1, column=0, columnspan=2, pady=10)
+
+    def _ak_refresh_cat_tree(self):
+        for item in self.ak_cat_tree.get_children():
+            self.ak_cat_tree.delete(item)
+        for cat in self.config.get("auto_keeper", {}).get("categories", []):
+            self.ak_cat_tree.insert("", "end", values=(
+                cat['id'], cat['name'], cat.get('max_seeds', 3),
+                cat.get('max_keepers', 0), cat.get('max_leech', -1),
+                cat.get('min_reg_days', -1),
+                "Yes" if cat.get('enabled', True) else "No"
+            ))
+
+    # --- Auto Keeper: Client Checkboxes & Disk Space ---
+
+    def _ak_build_client_checkboxes(self):
+        for w in self.ak_client_frame.winfo_children():
+            w.destroy()
+        self.ak_client_checks = {}
+
+        target_names = self.config.get("auto_keeper", {}).get("target_clients", [])
+
+        for client_conf in self.config.get("clients", []):
+            if not client_conf.get("enabled", True):
+                continue
+            name = client_conf["name"]
+            var = tk.BooleanVar(value=(name in target_names))
+            row = tk.Frame(self.ak_client_frame)
+            row.pack(fill="x", pady=1)
+
+            cb = tk.Checkbutton(row, text=f"{name} ({client_conf['url']})", variable=var,
+                command=self._ak_save_target_clients)
+            cb.pack(side="left")
+
+            space_lbl = tk.Label(row, text="Free: --", font=("Segoe UI", 9), fg="#666666")
+            space_lbl.pack(side="left", padx=(15, 0))
+
+            self.ak_client_checks[name] = {
+                "var": var, "label": space_lbl, "conf": client_conf
+            }
+
+    def _ak_save_target_clients(self):
+        selected = [name for name, info in self.ak_client_checks.items() if info["var"].get()]
+        self.config.setdefault("auto_keeper", {})["target_clients"] = selected
+        self.save_config()
+
+    def _ak_refresh_disk_space(self):
+        threading.Thread(target=self._ak_refresh_disk_space_thread, daemon=True).start()
+
+    def _ak_refresh_disk_space_thread(self):
+        self._ak_log("Refreshing disk space for target clients...")
+        self.ak_client_space = {}
+
+        for name, info in self.ak_client_checks.items():
+            if not info["var"].get():
+                continue
+            client_conf = info["conf"]
+            url = client_conf["url"].rstrip("/")
+            base_path = client_conf.get("base_save_path", "")
+            is_local = self._ak_is_local_client(url)
+
+            free_bytes = 0
+
+            if is_local and base_path:
+                try:
+                    usage = shutil.disk_usage(base_path)
+                    free_bytes = usage.free
+                    self._ak_log(f"  {name}: Local disk — Free: {format_size(free_bytes)}")
+                except Exception as e:
+                    self._ak_log(f"  {name}: shutil error: {e}, falling back to API...")
+                    is_local = False
+
+            if not is_local or free_bytes == 0:
+                try:
+                    s = self._get_qbit_session(client_conf)
+                    if s:
+                        resp = s.get(f"{url}/api/v2/sync/maindata", timeout=10)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            server_state = data.get("server_state", {})
+                            free_bytes = server_state.get("free_space_on_disk", 0)
+                            self._ak_log(f"  {name}: API — Free: {format_size(free_bytes)}")
+                        else:
+                            self._ak_log(f"  {name}: API error {resp.status_code}")
+                    else:
+                        self._ak_log(f"  {name}: Could not connect.")
+                except Exception as e:
+                    self._ak_log(f"  {name}: API error: {e}")
+
+            self.ak_client_space[name] = {
+                "free": free_bytes,
+                "base_save_path": base_path,
+                "is_local": is_local, "conf": client_conf
+            }
+
+            lbl = info["label"]
+            free_str = format_size(free_bytes) if free_bytes > 0 else "N/A"
+            self.root.after(0, lambda l=lbl, s=free_str: l.config(text=f"Free: {s}"))
+
+        self._ak_log("Disk space refresh complete.")
+
+    @staticmethod
+    def _ak_is_local_client(url):
+        try:
+            # Simple hostname extraction
+            host_part = url.split("://")[-1].split("/")[0].split(":")[0]
+            return host_part in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+        except:
+            return False
+
+    # --- Auto Keeper: Scan & Plan ---
+
+    def _ak_start_scan(self):
+        ak_cats = [c for c in self.config.get("auto_keeper", {}).get("categories", []) if c.get("enabled", True)]
+        if not ak_cats:
+            messagebox.showwarning("Auto Keeper", "No enabled categories configured.")
+            return
+
+        targets = [name for name, info in self.ak_client_checks.items() if info["var"].get()]
+        if not targets:
+            messagebox.showwarning("Auto Keeper", "No target clients selected.")
+            return
+
+        if not self.ak_client_space:
+            messagebox.showwarning("Auto Keeper", "Please refresh disk space first.")
+            return
+
+        self._ak_clear_plan()
+        self.ak_stop_event.clear()
+        self.ak_scan_active = True
+        self.ak_scan_btn.config(state="disabled")
+        self.ak_stop_btn.config(state="normal")
+        self.ak_approve_btn.config(state="disabled")
+
+        self.ak_prog_frame.pack(fill="x", padx=5, pady=2)
+        self.ak_progress['value'] = 0
+        self.ak_progress_label.config(text="Starting scan...")
+
+        threading.Thread(target=self._ak_scan_plan_thread, args=(ak_cats, targets), daemon=True).start()
+
+    def _ak_stop_scan(self):
+        self.ak_stop_event.set()
+        self._ak_log("Stop requested...")
+
+    def _ak_scan_plan_thread(self, ak_cats, target_client_names):
+        all_candidates = []
+        total_cats = len(ak_cats)
+        skip_kept = self.config.get("auto_keeper", {}).get("skip_already_kept", True)
+        skip_zero = self.config.get("auto_keeper", {}).get("skip_zero_size", True)
+
+        # Phase 1: Scan all categories via PVC
+        for i, cat_conf in enumerate(ak_cats):
+            if self.ak_stop_event.is_set():
+                break
+
+            cat_id = cat_conf['id']
+            cat_name = cat_conf['name']
+            max_seeds = cat_conf.get('max_seeds', 3)
+            max_keepers = cat_conf.get('max_keepers', 0)
+            max_leech = cat_conf.get('max_leech', -1)
+            min_reg_days = cat_conf.get('min_reg_days', -1)
+
+            progress_pct = int((i / total_cats) * 50)
+            self.root.after(0, lambda p=progress_pct, n=cat_name, idx=i+1, tot=total_cats: [
+                self.ak_progress.configure(value=p),
+                self.ak_progress_label.config(text=f"Scanning {idx}/{tot}: {n}...")
+            ])
+
+            self._ak_log(f"Scanning category: {cat_name} ({cat_id})...")
+
+            pvc_data = self._ak_fetch_pvc(cat_id)
+            if not pvc_data:
+                self._ak_log(f"  No PVC data for {cat_name}. Skipping.")
+                continue
+
+            cat_candidates = []
+            for tid_str, d in pvc_data.items():
+                tid = int(tid_str)
+
+                size_bytes = d.get('size_bytes', 0)
+                if skip_zero and size_bytes <= 0:
+                    continue
+
+                seeds = d.get('seeds', 0)
+                if seeds > max_seeds:
+                    continue
+
+                keepers_count = d.get('keepers_count', 0)
+                if max_keepers >= 0 and keepers_count > max_keepers:
+                    continue
+
+                leechers = d.get('leechers', 0)
+                if max_leech >= 0 and leechers > max_leech:
+                    continue
+
+                if min_reg_days >= 0:
+                    reg_ts = d.get('reg_time', 0)
+                    if reg_ts and reg_ts > 0:
+                        if (time.time() - reg_ts) / 86400 < min_reg_days:
+                            continue
+
+                if skip_kept and self.db_manager.is_torrent_kept(tid):
+                    continue
+
+                if self.db_manager.is_auto_keeper_planned(tid):
+                    continue
+
+                cat_candidates.append({
+                    "topic_id": tid,
+                    "name": f"Topic #{tid}",
+                    "size_bytes": size_bytes,
+                    "seeds": seeds,
+                    "keepers_count": keepers_count,
+                    "leechers": leechers,
+                    "cat_id": cat_id,
+                    "cat_name": cat_name,
+                    "keeping_priority": d.get('keeping_priority', 0)
+                })
+
+            self._ak_log(f"  {len(cat_candidates)} candidates from {cat_name} (of {len(pvc_data)} total).")
+            all_candidates.extend(cat_candidates)
+
+            if not self.ak_stop_event.is_set():
+                time.sleep(0.5)
+
+        if self.ak_stop_event.is_set():
+            self._ak_log("Scan stopped by user.")
+            self._ak_finish_scan()
+            return
+
+        self._ak_log(f"Total candidates across all categories: {len(all_candidates)}")
+
+        if not all_candidates:
+            self._ak_log("No candidates found matching filters.")
+            self._ak_finish_scan()
+            return
+
+        # Phase 2: Hydrate topic names via API
+        self.root.after(0, lambda: [
+            self.ak_progress.configure(value=55),
+            self.ak_progress_label.config(text="Fetching topic names...")
+        ])
+
+        all_tids = [str(c['topic_id']) for c in all_candidates]
+        tid_to_name = {}
+        for chunk_start in range(0, len(all_tids), 100):
+            if self.ak_stop_event.is_set():
+                break
+            chunk = all_tids[chunk_start:chunk_start + 100]
+            try:
+                resp = self.cat_manager.session.get(
+                    "https://api.rutracker.cc/v1/get_tor_topic_data",
+                    params={"by": "topic_id", "val": ",".join(chunk)},
+                    proxies=self.get_requests_proxies(),
+                    timeout=15
+                )
+                if resp.status_code == 200:
+                    result = resp.json().get("result", {})
+                    for tid_str, info in result.items():
+                        if info and info.get("topic_title"):
+                            tid_to_name[int(tid_str)] = html.unescape(info["topic_title"])
+            except Exception as e:
+                self._ak_log(f"  Name fetch error: {e}")
+            time.sleep(0.3)
+
+        for c in all_candidates:
+            if c['topic_id'] in tid_to_name:
+                c['name'] = tid_to_name[c['topic_id']]
+
+        # Phase 3: Sort by urgency
+        all_candidates.sort(key=lambda c: (c['seeds'], c['keepers_count'], -c.get('keeping_priority', 0)))
+
+        # Phase 4: Distribute proportionally across clients
+        self.root.after(0, lambda: [
+            self.ak_progress.configure(value=70),
+            self.ak_progress_label.config(text="Computing distribution plan...")
+        ])
+
+        max_total_bytes = self.ak_max_total_var.get() * (1024 ** 3)
+        reserve_bytes = self.ak_reserve_var.get() * (1024 ** 3)
+
+        client_avail = {}
+        for cname in target_client_names:
+            cinfo = self.ak_client_space.get(cname)
+            if cinfo:
+                avail = max(0, cinfo["free"] - reserve_bytes)
+                if avail > 0:
+                    client_avail[cname] = avail
+
+        total_avail = sum(client_avail.values())
+        if total_avail <= 0:
+            self._ak_log("No available space on any target client after reserve. Aborting.")
+            self._ak_finish_scan()
+            return
+
+        client_weights = {name: avail / total_avail for name, avail in client_avail.items()}
+
+        client_assigned_bytes = {name: 0 for name in client_avail}
+        plan = []
+        total_planned_bytes = 0
+
+        for candidate in all_candidates:
+            if self.ak_stop_event.is_set():
+                break
+
+            size = candidate['size_bytes']
+            if total_planned_bytes + size > max_total_bytes:
+                break
+
+            best_client = None
+            best_deficit = -float('inf')
+
+            for cname in client_avail:
+                if client_assigned_bytes[cname] + size > client_avail[cname]:
+                    continue
+                ideal_share = client_weights[cname] * (total_planned_bytes + size)
+                deficit = ideal_share - client_assigned_bytes[cname]
+                if deficit > best_deficit:
+                    best_deficit = deficit
+                    best_client = cname
+
+            if best_client is None:
+                continue
+
+            client_conf = self.ak_client_checks[best_client]["conf"]
+            base_path = client_conf.get("base_save_path", "/").rstrip("/")
+            qbit_cat = self.config.get("auto_keeper", {}).get("qbit_category", "AutoKeeper")
+            save_path = f"{base_path}/{qbit_cat}".replace("\\", "/")
+
+            plan_entry = {
+                **candidate,
+                "client_name": best_client,
+                "save_path": save_path
+            }
+            plan.append(plan_entry)
+            client_assigned_bytes[best_client] += size
+            total_planned_bytes += size
+
+        self.ak_distribution_plan = plan
+
+        # Phase 5: Populate preview treeview
+        self.root.after(0, lambda: [
+            self.ak_progress.configure(value=90),
+            self.ak_progress_label.config(text="Building preview...")
+        ])
+
+        for entry in plan:
+            self.root.after(0, lambda e=entry: self.ak_preview_tree.insert("", "end", values=(
+                e['topic_id'], e['name'], format_size(e['size_bytes']),
+                e['seeds'], e['keepers_count'], e['cat_name'],
+                e['client_name'], e['save_path']
+            )))
+
+        per_client = {}
+        for e in plan:
+            cn = e['client_name']
+            per_client.setdefault(cn, {"count": 0, "size": 0})
+            per_client[cn]["count"] += 1
+            per_client[cn]["size"] += e['size_bytes']
+
+        summary_parts = [f"{cn}: {info['count']} topics ({format_size(info['size'])})" for cn, info in per_client.items()]
+        summary = f"{len(plan)} topics, {format_size(total_planned_bytes)} total  |  " + "  |  ".join(summary_parts)
+
+        self._ak_log(f"Distribution plan ready: {summary}")
+        self.root.after(0, lambda s=summary: self.ak_summary_label.config(text=s))
+
+        if plan:
+            self.root.after(0, lambda: self.ak_approve_btn.config(state="normal"))
+
+        self._ak_finish_scan()
+
+    def _ak_finish_scan(self):
+        self.ak_scan_active = False
+        def _finish():
+            self.ak_progress.configure(value=100)
+            self.ak_prog_frame.pack_forget()
+            self.ak_scan_btn.config(state="normal")
+            self.ak_stop_btn.config(state="disabled")
+        self.root.after(0, _finish)
+
+    def _ak_fetch_pvc(self, cat_id):
+        """Fetch PVC data for a category, with cache. Returns dict {tid_str: parsed_dict} or None."""
+        pvc_cache = self.db_manager.get_pvc_data(cat_id)
+        raw_result = {}
+
+        if pvc_cache:
+            json_str, ts = pvc_cache
+            if time.time() - ts < 21600:  # 6 hours
+                try:
+                    raw_result = json.loads(json_str)
+                except:
+                    pass
+
+        if not raw_result:
+            try:
+                resp = self.cat_manager.session.get(
+                    f"https://api.rutracker.cc/v1/static/pvc/f/{cat_id}",
+                    proxies=self.get_requests_proxies(),
+                    timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_result = data.get("result", {})
+                    if raw_result:
+                        self.db_manager.save_pvc_data(cat_id, json.dumps(raw_result))
+            except Exception as e:
+                self._ak_log(f"  PVC fetch error: {e}")
+                return None
+
+        if not raw_result:
+            return None
+
+        parsed = {}
+        for tid_str, vals in raw_result.items():
+            try:
+                if isinstance(vals, list) and len(vals) >= 10:
+                    kf_list = vals[5] if isinstance(vals[5], list) else []
+                    parsed[tid_str] = {
+                        "tor_status": vals[0],
+                        "seeds": vals[1],
+                        "reg_time": vals[2],
+                        "size_bytes": vals[3],
+                        "keeping_priority": vals[4],
+                        "keepers_count": len(kf_list),
+                        "keepers_list": kf_list,
+                        "seeder_last_seen": vals[6],
+                        "topic_poster": vals[8],
+                        "leechers": vals[9]
+                    }
+            except:
+                pass
+
+        return parsed
+
+    # --- Auto Keeper: Approve & Add ---
+
+    def _ak_approve_and_add(self):
+        if not self.ak_distribution_plan:
+            return
+
+        count = len(self.ak_distribution_plan)
+        client_count = len(set(e['client_name'] for e in self.ak_distribution_plan))
+        total_size = sum(e['size_bytes'] for e in self.ak_distribution_plan)
+
+        if not messagebox.askyesno("Auto Keeper",
+            f"Add {count} torrents ({format_size(total_size)}) to {client_count} client(s)?"):
+            return
+
+        self.ak_approve_btn.config(state="disabled")
+        self.ak_scan_btn.config(state="disabled")
+        self.ak_stop_event.clear()
+
+        self.ak_prog_frame.pack(fill="x", padx=5, pady=2)
+        self.ak_progress['value'] = 0
+
+        threading.Thread(target=self._ak_add_thread, daemon=True).start()
+
+    def _ak_add_thread(self):
+        plan = self.ak_distribution_plan
+        total = len(plan)
+        success = 0
+        failed = 0
+
+        # Pre-create sessions per client
+        client_sessions = {}
+        for entry in plan:
+            cn = entry['client_name']
+            if cn not in client_sessions:
+                conf = self.ak_client_checks[cn]["conf"]
+                s = self._get_qbit_session(conf)
+                if s:
+                    client_sessions[cn] = (s, conf)
+                else:
+                    self._ak_log(f"Could not connect to {cn}. Its torrents will be skipped.")
+
+        paused = self.ak_paused_var.get()
+        qbit_cat = self.config.get("auto_keeper", {}).get("qbit_category", "AutoKeeper")
+        db_entries = []
+
+        for i, entry in enumerate(plan):
+            if self.ak_stop_event.is_set():
+                self._ak_log("Add process stopped by user.")
+                break
+
+            tid = entry['topic_id']
+            cn = entry['client_name']
+            self._ak_log(f"[{i+1}/{total}] Adding topic {tid} to {cn}...")
+
+            pct = int((i / total) * 100)
+            self.root.after(0, lambda p=pct, idx=i+1, tot=total: [
+                self.ak_progress.configure(value=p),
+                self.ak_progress_label.config(text=f"Adding {idx}/{tot}...")
+            ])
+
+            if cn not in client_sessions:
+                self._ak_log(f"  Skipped (no session for {cn}).")
+                db_entries.append((tid, cn, entry['cat_id'], entry['size_bytes'], 'failed'))
+                failed += 1
+                continue
+
+            s, conf = client_sessions[cn]
+            url = conf["url"].rstrip("/")
+
+            t_content = self._download_torrent_content(tid, log_func=self._ak_log)
+            if not t_content:
+                db_entries.append((tid, cn, entry['cat_id'], entry['size_bytes'], 'failed'))
+                failed += 1
+                continue
+
+            files = {'torrents': (f'{tid}.torrent', t_content, 'application/x-bittorrent')}
+            data = {
+                'savepath': entry['save_path'],
+                'category': qbit_cat,
+                'paused': 'true' if paused else 'false',
+                'tags': 'AutoKeeper'
+            }
+
+            try:
+                resp = s.post(f"{url}/api/v2/torrents/add", files=files, data=data, timeout=30)
+                if resp.status_code == 200:
+                    self._ak_log(f"  Added successfully to {cn}.")
+                    success += 1
+                    db_entries.append((tid, cn, entry['cat_id'], entry['size_bytes'], 'added'))
+
+                    t_info = parse_torrent_info(t_content)
+                    real_size = t_info.get('total_size', entry['size_bytes'])
+                    self.db_manager.add_kept_torrent(
+                        tid, "", entry['name'], real_size,
+                        entry['seeds'], entry.get('leechers', 0), entry['cat_id']
+                    )
+                else:
+                    self._ak_log(f"  qBit error: {resp.status_code} {resp.text}")
+                    db_entries.append((tid, cn, entry['cat_id'], entry['size_bytes'], 'failed'))
+                    failed += 1
+            except Exception as e:
+                self._ak_log(f"  Error: {e}")
+                db_entries.append((tid, cn, entry['cat_id'], entry['size_bytes'], 'failed'))
+                failed += 1
+
+            time.sleep(0.3)
+
+        if db_entries:
+            self.db_manager.save_auto_keeper_batch(db_entries)
+
+        self._ak_log(f"Auto Keeper complete: {success} added, {failed} failed out of {total} planned.")
+
+        if success > 0:
+            self._tray_notify(
+                "Auto Keeper: Torrents Added",
+                f"{success} torrent{'s' if success != 1 else ''} distributed across clients."
+            )
+
+        self.refresh_statistics()
+
+        def _done():
+            self.ak_approve_btn.config(state="disabled")
+            self.ak_scan_btn.config(state="normal")
+            self.ak_prog_frame.pack_forget()
+        self.root.after(0, _done)
+
+    def _ak_clear_plan(self):
+        self.ak_distribution_plan = []
+        for item in self.ak_preview_tree.get_children():
+            self.ak_preview_tree.delete(item)
+        self.ak_summary_label.config(text="")
+        self.ak_approve_btn.config(state="disabled")
 
     def refresh_statistics(self):
         count, size = self.db_manager.get_kept_stats()

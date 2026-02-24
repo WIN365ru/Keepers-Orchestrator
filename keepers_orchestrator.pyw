@@ -102,7 +102,9 @@ DEFAULT_CONFIG = {
         "disk_reserve_gb": 50,
         "max_total_size_gb": 500,
         "skip_already_kept": True,
-        "skip_zero_size": True
+        "skip_zero_size": True,
+        "create_cat_folder": True,
+        "create_id_folder": True
     }
 }
 
@@ -122,7 +124,7 @@ DATA_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_data.db")
 HASHES_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.27.0"
+APP_VERSION = "0.27.1"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -527,6 +529,10 @@ TRANSLATIONS = {
         "autokeeper.distribution_preview": "Distribution Preview",
         "autokeeper.approve_add": "Approve && Add",
         "autokeeper.clear_plan": "Clear Plan",
+        "autokeeper.add_all_pref": "Add All Preferred",
+        "autokeeper.path_structure": "Path Structure:",
+        "autokeeper.create_cat_folder": "Category folder",
+        "autokeeper.create_id_folder": "Topic ID folder",
         "autokeeper.col_client": "Client",
         "autokeeper.col_save_path": "Save Path",
         "common.gb": "GB",
@@ -999,6 +1005,10 @@ SIZE COMPARISON BACKGROUNDS:
         "autokeeper.distribution_preview": "Предпросмотр распределения",
         "autokeeper.approve_add": "Подтвердить и добавить",
         "autokeeper.clear_plan": "Очистить план",
+        "autokeeper.add_all_pref": "Добавить все избранные",
+        "autokeeper.path_structure": "Структура пути:",
+        "autokeeper.create_cat_folder": "Папка категории",
+        "autokeeper.create_id_folder": "Папка ID темы",
         "autokeeper.col_client": "Клиент",
         "autokeeper.col_save_path": "Путь сохранения",
         "common.gb": "ГБ",
@@ -13591,6 +13601,7 @@ class QBitAdderApp:
         self.ak_cat_combo.bind('<KeyRelease>', self._ak_filter_cats)
 
         self._tb(cat_btn_frame, "autokeeper.add_cat", command=self._ak_add_category).pack(side="left", padx=2)
+        self._tb(cat_btn_frame, "autokeeper.add_all_pref", command=self._ak_add_all_preferred).pack(side="left", padx=2)
         self._tb(cat_btn_frame, "autokeeper.remove_cat", command=self._ak_remove_category).pack(side="left", padx=2)
         self._tb(cat_btn_frame, "autokeeper.edit_thresholds", command=self._ak_edit_thresholds).pack(side="left", padx=2)
 
@@ -13612,6 +13623,16 @@ class QBitAdderApp:
         self.ak_reserve_var = tk.IntVar(value=self.config.get("auto_keeper", {}).get("disk_reserve_gb", 50))
         tk.Spinbox(client_btn_frame, from_=0, to=5000, textvariable=self.ak_reserve_var, width=6).pack(side="left")
         tk.Label(client_btn_frame, text=t("common.gb")).pack(side="left", padx=2)
+
+        # --- Path Options ---
+        path_frame = tk.Frame(parent)
+        path_frame.pack(fill="x", padx=5, pady=(2, 0))
+
+        tk.Label(path_frame, text=t("autokeeper.path_structure")).pack(side="left", padx=(5, 5))
+        self.ak_create_cat_var = tk.BooleanVar(value=self.config.get("auto_keeper", {}).get("create_cat_folder", True))
+        self._tcb(path_frame, "autokeeper.create_cat_folder", variable=self.ak_create_cat_var).pack(side="left", padx=5)
+        self.ak_create_id_var = tk.BooleanVar(value=self.config.get("auto_keeper", {}).get("create_id_folder", True))
+        self._tcb(path_frame, "autokeeper.create_id_folder", variable=self.ak_create_id_var).pack(side="left", padx=5)
 
         # --- Scan & Plan Row ---
         scan_frame = tk.Frame(parent)
@@ -13742,6 +13763,35 @@ class QBitAdderApp:
         self.save_config()
         self._ak_refresh_cat_tree()
 
+    def _ak_add_all_preferred(self):
+        """Add all preferred categories from the Scanner tab to Auto Keeper list."""
+        prefs = self.config.get("keepers_preferred_categories", [])
+        if not prefs:
+            messagebox.showinfo("Auto Keeper", "No preferred categories in Scanner tab. Add some there first.")
+            return
+
+        ak_conf = self.config.setdefault("auto_keeper", {})
+        cats = ak_conf.setdefault("categories", [])
+        existing_ids = {c['id'] for c in cats}
+        added = 0
+
+        for pref in prefs:
+            if pref['id'] not in existing_ids:
+                cats.append({
+                    "id": pref['id'], "name": pref['name'],
+                    "max_seeds": 3, "max_keepers": 0,
+                    "max_leech": -1, "min_reg_days": -1,
+                    "enabled": True
+                })
+                added += 1
+
+        if added > 0:
+            self.save_config()
+            self._ak_refresh_cat_tree()
+            self._ak_log(f"Added {added} preferred categories.")
+        else:
+            self._ak_log("All preferred categories already in list.")
+
     def _ak_remove_category(self):
         sel = self.ak_cat_tree.selection()
         if not sel:
@@ -13826,11 +13876,16 @@ class QBitAdderApp:
                 command=self._ak_save_target_clients)
             cb.pack(side="left")
 
-            space_lbl = tk.Label(row, text="Free: --", font=("Segoe UI", 9), fg="#666666")
-            space_lbl.pack(side="left", padx=(15, 0))
+            # Container for per-disk labels (will be populated by _ak_refresh_disk_space)
+            disk_labels_frame = tk.Frame(row)
+            disk_labels_frame.pack(side="left", padx=(15, 0))
+
+            # Default single label (replaced with per-disk on refresh)
+            default_lbl = tk.Label(disk_labels_frame, text="Free: --", font=("Segoe UI", 9), fg="#666666")
+            default_lbl.pack(side="left")
 
             self.ak_client_checks[name] = {
-                "var": var, "label": space_lbl, "conf": client_conf
+                "var": var, "disk_frame": disk_labels_frame, "conf": client_conf
             }
 
     def _ak_save_target_clients(self):
@@ -13853,45 +13908,112 @@ class QBitAdderApp:
             base_path = client_conf.get("base_save_path", "")
             is_local = self._ak_is_local_client(url)
 
-            free_bytes = 0
+            disk_info = []  # list of {"path": str, "free": int}
+            total_free = 0
 
-            if is_local and base_path:
-                try:
-                    usage = shutil.disk_usage(base_path)
-                    free_bytes = usage.free
-                    self._ak_log(f"  {name}: Local disk — Free: {format_size(free_bytes)}")
-                except Exception as e:
-                    self._ak_log(f"  {name}: shutil error: {e}, falling back to API...")
-                    is_local = False
+            # Try to get per-disk info
+            try:
+                s = self._get_qbit_session(client_conf)
+                if s:
+                    # Fetch torrent list to detect disk bases from save_paths
+                    resp = s.get(f"{url}/api/v2/torrents/info", timeout=15)
+                    if resp.status_code == 200:
+                        torrents = resp.json()
+                        disk_bases = set()
+                        for tor in torrents:
+                            sp = tor.get("save_path", "").replace("\\", "/")
+                            if sp:
+                                disk_base = self._mover_get_disk_base(sp)
+                                disk_bases.add(disk_base)
 
-            if not is_local or free_bytes == 0:
-                try:
-                    s = self._get_qbit_session(client_conf)
-                    if s:
-                        resp = s.get(f"{url}/api/v2/sync/maindata", timeout=10)
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            server_state = data.get("server_state", {})
-                            free_bytes = server_state.get("free_space_on_disk", 0)
-                            self._ak_log(f"  {name}: API — Free: {format_size(free_bytes)}")
+                        if is_local:
+                            # Local: shutil per disk
+                            for db in sorted(disk_bases):
+                                try:
+                                    usage = shutil.disk_usage(db)
+                                    disk_info.append({"path": db, "free": usage.free})
+                                    total_free += usage.free
+                                    self._ak_log(f"  {name}: {db} — Free: {format_size(usage.free)}")
+                                except Exception as e:
+                                    self._ak_log(f"  {name}: {db} — shutil error: {e}")
                         else:
-                            self._ak_log(f"  {name}: API error {resp.status_code}")
+                            # Remote: we can only get global free_space from API
+                            resp2 = s.get(f"{url}/api/v2/sync/maindata", timeout=10)
+                            if resp2.status_code == 200:
+                                ss = resp2.json().get("server_state", {})
+                                api_free = ss.get("free_space_on_disk", 0)
+                                # Show the API-reported free space alongside detected disk bases
+                                if disk_bases:
+                                    for db in sorted(disk_bases):
+                                        # We can't get per-disk free for remote, tag with disk path
+                                        disk_info.append({"path": db, "free": -1})
+                                    # Mark the default save path disk with the API free space
+                                    default_base = self._mover_get_disk_base(base_path) if base_path else ""
+                                    found_default = False
+                                    for di in disk_info:
+                                        if di["path"] == default_base:
+                                            di["free"] = api_free
+                                            found_default = True
+                                            break
+                                    if not found_default and disk_info:
+                                        disk_info[0]["free"] = api_free
+                                    total_free = api_free
+                                    for di in disk_info:
+                                        free_str = format_size(di["free"]) if di["free"] >= 0 else "?"
+                                        self._ak_log(f"  {name}: {di['path']} — Free: {free_str}")
+                                else:
+                                    disk_info.append({"path": base_path or url, "free": api_free})
+                                    total_free = api_free
+                                    self._ak_log(f"  {name}: API — Free: {format_size(api_free)}")
+                            else:
+                                self._ak_log(f"  {name}: API error {resp2.status_code}")
                     else:
-                        self._ak_log(f"  {name}: Could not connect.")
-                except Exception as e:
-                    self._ak_log(f"  {name}: API error: {e}")
+                        self._ak_log(f"  {name}: torrent list error {resp.status_code}")
+                else:
+                    self._ak_log(f"  {name}: Could not connect.")
+            except Exception as e:
+                self._ak_log(f"  {name}: error: {e}")
+
+            # Fallback: if nothing detected, try simple approach
+            if not disk_info:
+                if is_local and base_path:
+                    try:
+                        usage = shutil.disk_usage(base_path)
+                        disk_info.append({"path": base_path, "free": usage.free})
+                        total_free = usage.free
+                    except:
+                        pass
 
             self.ak_client_space[name] = {
-                "free": free_bytes,
+                "free": total_free,
+                "disks": disk_info,
                 "base_save_path": base_path,
                 "is_local": is_local, "conf": client_conf
             }
 
-            lbl = info["label"]
-            free_str = format_size(free_bytes) if free_bytes > 0 else "N/A"
-            self.root.after(0, lambda l=lbl, s=free_str: l.config(text=f"Free: {s}"))
+            # Update per-disk labels in UI
+            disk_frame = info["disk_frame"]
+            self.root.after(0, lambda df=disk_frame, di=disk_info, n=name, tf=total_free:
+                self._ak_update_disk_labels(df, di, n, tf))
 
         self._ak_log("Disk space refresh complete.")
+
+    def _ak_update_disk_labels(self, disk_frame, disk_info, client_name, total_free):
+        """Update the disk labels frame with per-disk free space info."""
+        for w in disk_frame.winfo_children():
+            w.destroy()
+
+        if not disk_info:
+            tk.Label(disk_frame, text="Free: N/A", font=("Segoe UI", 9), fg="#666666").pack(side="left")
+            return
+
+        for di in disk_info:
+            path_short = di["path"].rstrip("/")
+            if di["free"] >= 0:
+                text = f"{path_short}: {format_size(di['free'])}"
+            else:
+                text = f"{path_short}: ?"
+            tk.Label(disk_frame, text=text, font=("Segoe UI", 9), fg="#666666").pack(side="left", padx=(0, 10))
 
     @staticmethod
     def _ak_is_local_client(url):
@@ -14119,7 +14241,14 @@ class QBitAdderApp:
             client_conf = self.ak_client_checks[best_client]["conf"]
             base_path = client_conf.get("base_save_path", "/").rstrip("/")
             qbit_cat = self.config.get("auto_keeper", {}).get("qbit_category", "AutoKeeper")
-            save_path = f"{base_path}/{qbit_cat}".replace("\\", "/")
+
+            # Build path: base / [category_name] / [topic_id]
+            path_parts = [base_path]
+            if self.ak_create_cat_var.get():
+                path_parts.append(candidate.get('cat_name', qbit_cat))
+            if self.ak_create_id_var.get():
+                path_parts.append(str(candidate['topic_id']))
+            save_path = "/".join(path_parts).replace("\\", "/")
 
             plan_entry = {
                 **candidate,

@@ -109,7 +109,7 @@ DATA_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_data.db")
 HASHES_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.24.3"
+APP_VERSION = "0.25.0"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -249,6 +249,7 @@ TRANSLATIONS = {
         # Status bar
         "status.ready": "Ready",
         # Tab names
+        "tab.dashboard": "Dashboard",
         "tab.add_torrents": "Add Torrents",
         "tab.keepers": "Keepers",
         "tab.update_torrents": "Update Torrents",
@@ -694,6 +695,7 @@ SIZE COMPARISON BACKGROUNDS:
         # Status bar
         "status.ready": "Готов",
         # Tab names
+        "tab.dashboard": "Обзор",
         "tab.add_torrents": "Добавление",
         "tab.keepers": "Хранители",
         "tab.update_torrents": "Обновление",
@@ -3604,6 +3606,7 @@ class QBitAdderApp:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=5, pady=5)
 
+        self.dashboard_tab = tk.Frame(self.notebook)
         self.adder_tab = tk.Frame(self.notebook)
         self.keepers_tab = tk.Frame(self.notebook) # New Tab
         self.updater_tab = tk.Frame(self.notebook)
@@ -3614,6 +3617,7 @@ class QBitAdderApp:
         self.bitrot_tab = tk.Frame(self.notebook)
         self.settings_tab = tk.Frame(self.notebook)
 
+        self.notebook.add(self.dashboard_tab, text=t("tab.dashboard"))
         self.notebook.add(self.adder_tab, text=t("tab.add_torrents"))
         self.notebook.add(self.keepers_tab, text=t("tab.keepers"))
         self.notebook.add(self.updater_tab, text=t("tab.update_torrents"))
@@ -3628,6 +3632,12 @@ class QBitAdderApp:
         # Structure: {client_name: {"torrents": [...], "timestamp": float}}
         self.torrent_cache = {}
         self._cache_load_from_disk()
+
+        # Dashboard state
+        self.dashboard_refresh_active = False
+        self._dash_cat_data = []
+        self._dash_stor_data = []
+        self.create_dashboard_ui()
 
         self.create_adder_ui()
 
@@ -5021,6 +5031,15 @@ class QBitAdderApp:
         self.root.configure(bg=th["bg"])
         self._apply_theme_to_widget(self.root, th)
 
+        # --- Dashboard canvas redraws ---
+        if hasattr(self, 'dash_cat_canvas'):
+            self._dash_redraw_cat_chart()
+        if hasattr(self, 'dash_stor_canvas'):
+            self._dash_redraw_stor_chart()
+        if hasattr(self, 'dash_activity_list'):
+            self.dash_activity_list.configure(
+                bg=th["entry_bg"], fg=th["entry_fg"])
+
         # --- Menu bar ---
         try:
             menu_name = self.root.cget("menu")
@@ -5192,6 +5211,7 @@ class QBitAdderApp:
 
         # Update notebook tab titles
         tab_keys = [
+            ("tab.dashboard", self.dashboard_tab),
             ("tab.add_torrents", self.adder_tab),
             ("tab.keepers", self.keepers_tab),
             ("tab.update_torrents", self.updater_tab),
@@ -6649,6 +6669,487 @@ class QBitAdderApp:
         # self.toggle_client_auth_fields() # This is not defined in the current context
 
 
+    # --- Dashboard Tab UI ---
+
+    def create_dashboard_ui(self):
+        """Build the Dashboard overview tab."""
+        th = THEMES.get(self.config.get("theme", "Default"), THEMES["Default"])
+
+        # ── Top bar ──────────────────────────────────────────────────
+        top_bar = tk.Frame(self.dashboard_tab)
+        top_bar.pack(fill="x", padx=10, pady=(8, 4))
+
+        tk.Label(top_bar, text="Client:").pack(side="left")
+        self.dash_client_var = tk.StringVar(value="All")
+        client_names = ["All"] + [c["name"] for c in self.config.get("clients", [])]
+        self.dash_client_combo = ttk.Combobox(
+            top_bar, textvariable=self.dash_client_var,
+            values=client_names, state="readonly", width=22)
+        self.dash_client_combo.pack(side="left", padx=5)
+        self.dash_client_combo.bind("<<ComboboxSelected>>",
+                                    lambda e: self._dashboard_refresh())
+
+        self.dash_refresh_btn = tk.Button(
+            top_bar, text="\u27f3 Refresh", command=self._dashboard_refresh)
+        self.dash_refresh_btn.pack(side="left", padx=10)
+
+        self.dash_last_updated_lbl = tk.Label(
+            top_bar, text="Not loaded yet", fg="gray")
+        self.dash_last_updated_lbl.pack(side="left")
+
+        # ── 4 Stat Cards row ─────────────────────────────────────────
+        cards_frame = tk.Frame(self.dashboard_tab)
+        cards_frame.pack(fill="x", padx=10, pady=4)
+        cards_frame.columnconfigure((0, 1, 2, 3), weight=1, uniform="dash_card")
+
+        self.dash_card_seeding = self._dash_make_card(cards_frame, "Seeding",  col=0)
+        self.dash_card_keepers = self._dash_make_card(cards_frame, "Keepers",  col=1)
+        self.dash_card_network = self._dash_make_card(cards_frame, "Network",  col=2)
+        self.dash_card_health  = self._dash_make_card(cards_frame, "Health",   col=3)
+
+        # ── Middle: charts (left) + activity feed (right) ────────────
+        mid_frame = tk.Frame(self.dashboard_tab)
+        mid_frame.pack(fill="both", expand=True, padx=10, pady=4)
+        mid_frame.columnconfigure(0, weight=3)
+        mid_frame.columnconfigure(1, weight=2)
+        mid_frame.rowconfigure(0, weight=1)
+        mid_frame.rowconfigure(1, weight=1)
+
+        # Category bar chart
+        cat_lf = tk.LabelFrame(mid_frame, text="Top Categories (by torrent count)")
+        cat_lf.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=(0, 4))
+        self.dash_cat_canvas = tk.Canvas(cat_lf, highlightthickness=0, height=160)
+        self.dash_cat_canvas.pack(fill="both", expand=True, padx=4, pady=4)
+        self.dash_cat_canvas.bind("<Configure>",
+                                  lambda e: self._dash_redraw_cat_chart())
+
+        # Storage bar chart
+        stor_lf = tk.LabelFrame(mid_frame, text="Storage Overview")
+        stor_lf.grid(row=1, column=0, sticky="nsew", padx=(0, 5), pady=0)
+        self.dash_stor_canvas = tk.Canvas(stor_lf, highlightthickness=0, height=130)
+        self.dash_stor_canvas.pack(fill="both", expand=True, padx=4, pady=4)
+        self.dash_stor_canvas.bind("<Configure>",
+                                   lambda e: self._dash_redraw_stor_chart())
+
+        # Recent Activity feed
+        act_lf = tk.LabelFrame(mid_frame, text="Recent Activity")
+        act_lf.grid(row=0, column=1, rowspan=2, sticky="nsew")
+        act_lf.rowconfigure(0, weight=1)
+        act_lf.columnconfigure(0, weight=1)
+        self.dash_activity_list = tk.Listbox(
+            act_lf, selectmode="none", activestyle="none",
+            relief="flat", highlightthickness=0, font=("Courier", 8))
+        act_scroll = ttk.Scrollbar(act_lf, orient="vertical",
+                                   command=self.dash_activity_list.yview)
+        self.dash_activity_list.configure(yscrollcommand=act_scroll.set)
+        self.dash_activity_list.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        act_scroll.grid(row=0, column=1, sticky="ns")
+
+    def _dash_make_card(self, parent, title, col):
+        """Create a stat card LabelFrame with 4 label lines. Returns {0: lbl, ...}."""
+        lf = tk.LabelFrame(parent, text=title, padx=8, pady=6)
+        lf.grid(row=0, column=col, sticky="nsew", padx=4)
+        lines = {}
+        for i in range(4):
+            lbl = tk.Label(lf, text="\u2014", anchor="w", justify="left")
+            lbl.pack(fill="x", pady=1)
+            lines[i] = lbl
+        return lines
+
+    def _dashboard_refresh(self):
+        """Spawn background thread to gather all dashboard data."""
+        if getattr(self, 'dashboard_refresh_active', False):
+            return
+        self.dashboard_refresh_active = True
+        self.dash_refresh_btn.config(state="disabled", text="Loading\u2026")
+
+        def _thread():
+            try:
+                data = self._dashboard_gather_data()
+                self.root.after(0, lambda: self._dashboard_apply_data(data))
+            except Exception as exc:
+                err = str(exc)
+                self.root.after(0, lambda: self.dash_last_updated_lbl.config(
+                    text=f"Error: {err}", fg="red"))
+            finally:
+                self.dashboard_refresh_active = False
+                self.root.after(0, lambda: self.dash_refresh_btn.config(
+                    state="normal", text="\u27f3 Refresh"))
+
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def _dashboard_gather_data(self):
+        """Collect all stats for the dashboard (runs in background thread)."""
+        data = {
+            "seeding":  {"active": 0, "paused": 0, "error": 0,
+                         "total_size": 0, "uploaded": 0},
+            "network":  {"up_speed": 0, "dl_speed": 0, "total_up": 0},
+            "keepers":  {"count": 0, "size": 0, "last_scan_ts": 0},
+            "health":   {"total_checked": 0, "ok": 0, "errors": 0,
+                         "last_check_ts": 0},
+            "categories": [],
+            "storage":  [],
+            "activity": [],
+            "as_of":    time.time(),
+        }
+
+        # ── DB stats (local, fast) ───────────────────────────────────
+        try:
+            kept_count, kept_size = self.db_manager.get_kept_stats()
+            data["keepers"]["count"] = kept_count
+            data["keepers"]["size"]  = kept_size or 0
+        except Exception:
+            pass
+
+        try:
+            recent = self.db_manager.get_recent_activity(1)
+            if recent:
+                ts_str = recent[0][0]
+                dt = datetime.datetime.fromisoformat(str(ts_str))
+                data["keepers"]["last_scan_ts"] = dt.timestamp()
+        except Exception:
+            pass
+
+        try:
+            bitrot = self.db_manager.get_bitrot_history()
+            ok_statuses = {"ok", "clean", "good"}
+            ok_count  = sum(1 for v in bitrot.values()
+                            if v.get("status", "").lower() in ok_statuses)
+            err_count = sum(1 for v in bitrot.values()
+                            if v.get("status", "").lower() not in ok_statuses | {""})
+            last_chk  = max((v.get("last_checked", 0)
+                             for v in bitrot.values()), default=0)
+            data["health"]["total_checked"] = len(bitrot)
+            data["health"]["ok"]            = ok_count
+            data["health"]["errors"]        = err_count
+            data["health"]["last_check_ts"] = last_chk
+        except Exception:
+            pass
+
+        # ── Unified activity feed ────────────────────────────────────
+        activity = []
+        try:
+            for row in self.db_manager.get_recent_activity(limit=10):
+                ts_str, cat_id, scanned, added = row
+                try:
+                    dt = datetime.datetime.fromisoformat(str(ts_str))
+                    ts = dt.timestamp()
+                except Exception:
+                    ts = 0
+                activity.append((ts, f"Keepers scan: +{added} added, {scanned} checked"))
+        except Exception:
+            pass
+
+        try:
+            with self.db_manager._get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT timestamp, from_disk, to_disk "
+                    "FROM mover_history ORDER BY rowid DESC LIMIT 10"
+                ).fetchall()
+                for row in rows:
+                    ts_raw, from_d, to_d = row
+                    activity.append((float(ts_raw or 0),
+                                     f"Moved: {from_d} \u2192 {to_d}"))
+        except Exception:
+            pass
+
+        activity.sort(key=lambda x: x[0], reverse=True)
+        data["activity"] = activity[:25]
+
+        # ── qBit stats (network) ─────────────────────────────────────
+        selected = self.dash_client_var.get() if hasattr(self, 'dash_client_var') else "All"
+        clients = self.config.get("clients", [])
+        if selected and selected != "All":
+            clients_to_query = [c for c in clients if c.get("name") == selected]
+        else:
+            clients_to_query = [c for c in clients if c.get("enabled", True)]
+
+        cat_counts = {}
+        disk_bases = {}
+
+        for client_conf in clients_to_query:
+            try:
+                torrents, _ts = self._cache_get(client_conf["name"])
+                if torrents is None:
+                    s = self._get_qbit_session(client_conf)
+                    if not s:
+                        continue
+                    resp = s.get(
+                        f"{client_conf['url'].rstrip('/')}/api/v2/torrents/info",
+                        timeout=10)
+                    if resp.status_code != 200:
+                        continue
+                    torrents = resp.json()
+                    self._cache_put(client_conf["name"], torrents)
+
+                # Transfer info for live speeds
+                try:
+                    s2 = self._get_qbit_session(client_conf)
+                    if s2:
+                        tresp = s2.get(
+                            f"{client_conf['url'].rstrip('/')}/api/v2/transfer/info",
+                            timeout=5)
+                        if tresp.status_code == 200:
+                            ti = tresp.json()
+                            data["network"]["up_speed"] += ti.get("up_info_speed", 0)
+                            data["network"]["dl_speed"] += ti.get("dl_info_speed", 0)
+                            data["network"]["total_up"] += ti.get("up_info_data", 0)
+                except Exception:
+                    pass
+
+                for torrent in torrents:
+                    state    = torrent.get("state", "")
+                    size     = torrent.get("size", 0) or 0
+                    uploaded = torrent.get("uploaded", 0) or 0
+                    cat      = torrent.get("category", "") or "Uncategorized"
+                    sp       = torrent.get("save_path", "") or ""
+
+                    data["seeding"]["total_size"] += size
+                    data["seeding"]["uploaded"]   += uploaded
+
+                    if state in ("uploading", "stalledUP", "forcedUP",
+                                 "queuedUP", "checkingUP"):
+                        data["seeding"]["active"] += 1
+                    elif state in ("pausedUP", "pausedDL",
+                                   "stoppedUP", "stoppedDL"):
+                        data["seeding"]["paused"] += 1
+                    elif state in ("error", "missingFiles", "unknown"):
+                        data["seeding"]["error"] += 1
+
+                    cat_counts[cat] = cat_counts.get(cat, 0) + 1
+
+                    if sp:
+                        base = self._mover_get_disk_base(sp.replace("\\", "/"))
+                        if base not in disk_bases:
+                            try:
+                                usage = shutil.disk_usage(base)
+                                disk_bases[base] = {
+                                    "total": usage.total, "free": usage.free}
+                            except Exception:
+                                disk_bases[base] = {"total": 0, "free": 0}
+
+            except Exception:
+                continue
+
+        if cat_counts:
+            sorted_cats = sorted(cat_counts.items(),
+                                 key=lambda x: x[1], reverse=True)[:10]
+            data["categories"] = sorted_cats
+
+        storage = []
+        for path, info in sorted(disk_bases.items()):
+            total = info["total"]
+            free  = info["free"]
+            if total > 0:
+                storage.append((path, total - free, total))
+        data["storage"] = storage
+
+        return data
+
+    def _dashboard_apply_data(self, data):
+        """Update all dashboard widgets from gathered data (main thread)."""
+        th = THEMES.get(self.config.get("theme", "Default"), THEMES["Default"])
+        fg = th["fg"]
+
+        # ── Seeding card ─────────────────────────────────────────────
+        s = data["seeding"]
+        self.dash_card_seeding[0].config(
+            text=f"Active:   {s['active']:,}", font=("", 11, "bold"), fg=fg)
+        self.dash_card_seeding[1].config(
+            text=f"Paused:   {s['paused']:,}", fg=fg)
+        err_col = "red" if s['error'] > 0 else fg
+        self.dash_card_seeding[2].config(
+            text=f"Errors:   {s['error']:,}", fg=err_col)
+        self.dash_card_seeding[3].config(
+            text=f"Size:     {format_size(s['total_size'])}", fg=fg)
+
+        # ── Keepers card ─────────────────────────────────────────────
+        k = data["keepers"]
+        self.dash_card_keepers[0].config(
+            text=f"Kept:     {k['count']:,}", font=("", 11, "bold"), fg=fg)
+        self.dash_card_keepers[1].config(
+            text=f"Total:    {format_size(k['size'])}", fg=fg)
+        if k["last_scan_ts"] > 0:
+            age_h = (time.time() - k["last_scan_ts"]) / 3600
+            if age_h < 1:
+                age_str = f"{int(age_h * 60)}m ago"
+            elif age_h < 24:
+                age_str = f"{age_h:.1f}h ago"
+            else:
+                age_str = f"{age_h / 24:.1f}d ago"
+            self.dash_card_keepers[2].config(text=f"Last scan: {age_str}", fg=fg)
+        else:
+            self.dash_card_keepers[2].config(text="Last scan: Never", fg="gray")
+        self.dash_card_keepers[3].config(text="", fg=fg)
+
+        # ── Network card ─────────────────────────────────────────────
+        n = data["network"]
+        self.dash_card_network[0].config(
+            text=f"\u2191  {format_size(n['up_speed'])}/s",
+            font=("", 11, "bold"), fg=fg)
+        self.dash_card_network[1].config(
+            text=f"\u2193  {format_size(n['dl_speed'])}/s", fg=fg)
+        self.dash_card_network[2].config(
+            text=f"\u2191 Total: {format_size(s['uploaded'])}", fg=fg)
+        self.dash_card_network[3].config(text="", fg=fg)
+
+        # ── Health card ──────────────────────────────────────────────
+        h = data["health"]
+        if h["errors"] > 0:
+            status_text  = f"\u26a0 {h['errors']} errors"
+            status_color = "red"
+        elif h["total_checked"] > 0:
+            status_text  = "\u2713 Clean"
+            status_color = "#28a745"
+        else:
+            status_text  = "Not scanned"
+            status_color = "gray"
+        self.dash_card_health[0].config(
+            text=status_text, fg=status_color, font=("", 11, "bold"))
+        self.dash_card_health[1].config(
+            text=f"Checked:  {h['total_checked']:,}", fg=fg)
+        if h["last_check_ts"] > 0:
+            dt_str = datetime.datetime.fromtimestamp(
+                h["last_check_ts"]).strftime("%Y-%m-%d")
+            self.dash_card_health[2].config(text=f"Last: {dt_str}", fg=fg)
+        else:
+            self.dash_card_health[2].config(text="Last: Never", fg="gray")
+        self.dash_card_health[3].config(text="", fg=fg)
+
+        # ── Charts ───────────────────────────────────────────────────
+        self._dash_cat_data  = data["categories"]
+        self._dash_stor_data = data["storage"]
+        self._dash_redraw_cat_chart()
+        self._dash_redraw_stor_chart()
+
+        # ── Activity feed ────────────────────────────────────────────
+        self.dash_activity_list.delete(0, tk.END)
+        for ts, desc in data["activity"]:
+            if ts > 0:
+                time_str = datetime.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
+            else:
+                time_str = "     ?    "
+            self.dash_activity_list.insert(tk.END, f" {time_str}  {desc}")
+
+        # ── Timestamp ────────────────────────────────────────────────
+        now_str = datetime.datetime.now().strftime("%H:%M:%S")
+        self.dash_last_updated_lbl.config(
+            text=f"Last updated: {now_str}", fg=fg)
+
+    def _dash_redraw_cat_chart(self):
+        """Draw horizontal bar chart for top categories on the canvas."""
+        if not hasattr(self, 'dash_cat_canvas'):
+            return
+        c = self.dash_cat_canvas
+        c.delete("all")
+        data = getattr(self, '_dash_cat_data', [])
+        th = THEMES.get(self.config.get("theme", "Default"), THEMES["Default"])
+        bg = th["bg"]
+        fg = th["fg"]
+        bar_color = th["select_bg"]
+        c.configure(bg=bg)
+
+        if not data:
+            c.create_text(10, 20, text="No data — click Refresh",
+                          anchor="nw", fill="gray")
+            return
+
+        w = c.winfo_width() or 400
+        h = c.winfo_height() or 160
+        rows = min(len(data), 8)
+        if rows == 0:
+            return
+        row_h = h / rows
+        label_w = min(int(w * 0.44), 220)
+        count_w = 48
+        bar_area_w = max(10, w - label_w - count_w - 12)
+        max_count = max(cnt for _, cnt in data[:rows])
+
+        for i, (name, count) in enumerate(data[:rows]):
+            y  = i * row_h
+            cy = y + row_h / 2
+
+            # Name label
+            display = (name[:30] + "\u2026") if len(name) > 30 else name
+            c.create_text(4, cy, text=display, anchor="w",
+                          fill=fg, font=("", 8))
+
+            # Bar
+            bar_x = label_w
+            if max_count > 0:
+                bar_w = max(2, int((count / max_count) * bar_area_w))
+            else:
+                bar_w = 2
+            c.create_rectangle(bar_x, y + 4, bar_x + bar_w, y + row_h - 4,
+                                fill=bar_color, outline="")
+
+            # Count text
+            c.create_text(bar_x + bar_area_w + 4, cy,
+                          text=f"{count:,}", anchor="w",
+                          fill=fg, font=("", 8))
+
+    def _dash_redraw_stor_chart(self):
+        """Draw horizontal disk-usage bars on the canvas."""
+        if not hasattr(self, 'dash_stor_canvas'):
+            return
+        c = self.dash_stor_canvas
+        c.delete("all")
+        data = getattr(self, '_dash_stor_data', [])
+        th = THEMES.get(self.config.get("theme", "Default"), THEMES["Default"])
+        bg       = th["bg"]
+        fg       = th["fg"]
+        ok_color = th["select_bg"]
+        bg_color = th.get("trough", "#c8c8c8")
+        c.configure(bg=bg)
+
+        if not data:
+            c.create_text(10, 20, text="No data — click Refresh",
+                          anchor="nw", fill="gray")
+            return
+
+        w = c.winfo_width() or 400
+        h = c.winfo_height() or 130
+        rows = len(data)
+        row_h = h / rows
+        label_w = 80
+        info_w  = 160
+        bar_area_w = max(10, w - label_w - info_w - 12)
+
+        for i, (path, used, total) in enumerate(data):
+            y  = i * row_h
+            cy = y + row_h / 2
+
+            # Drive label
+            display = path.rstrip("/\\")
+            c.create_text(4, cy, text=display, anchor="w",
+                          fill=fg, font=("", 8, "bold"))
+
+            # Background (total capacity)
+            bx = label_w
+            bar_end = bx + bar_area_w
+            c.create_rectangle(bx, y + 5, bar_end, y + row_h - 5,
+                                fill=bg_color, outline="gray")
+
+            # Used portion
+            if total > 0:
+                ratio = used / total
+                used_px = max(2, int(ratio * bar_area_w))
+                used_px = min(used_px, bar_area_w)
+                if ratio > 0.90:
+                    fill = "#e05555"
+                elif ratio > 0.75:
+                    fill = "#e0a000"
+                else:
+                    fill = ok_color
+                c.create_rectangle(bx, y + 5, bx + used_px, y + row_h - 5,
+                                   fill=fill, outline="")
+
+            # Info text
+            pct = f"{used / total * 100:.0f}%" if total > 0 else "?"
+            info = f"{format_size(used)} / {format_size(total)}  ({pct})"
+            c.create_text(bar_end + 5, cy, text=info, anchor="w",
+                          fill=fg, font=("", 8))
+
     # --- Adder Tab UI ---
     def create_adder_ui(self):
         # Target Selection
@@ -6758,6 +7259,11 @@ class QBitAdderApp:
         idx = self.config.get("last_selected_client_index", 0)
         if idx >= len(names): idx = 0
         self.client_selector.current(idx)
+
+        # Keep dashboard client combo in sync
+        if hasattr(self, 'dash_client_combo'):
+            all_names = ["All"] + [c["name"] for c in self.config.get("clients", [])]
+            self.dash_client_combo['values'] = all_names
 
     def toggle_custom_options(self):
         state = "normal" if self.use_custom_var.get() else "disabled"
@@ -7801,6 +8307,11 @@ class QBitAdderApp:
             return
         selected = self.notebook.select()
         tab_widget = self.root.nametowidget(selected)
+
+        # --- Dashboard: refresh on every visit ---
+        if tab_widget is self.dashboard_tab:
+            self._dashboard_refresh()
+            return
 
         # --- Update Torrents tab: auto-scan logic ---
         if tab_widget is self.updater_tab:

@@ -104,7 +104,8 @@ DEFAULT_CONFIG = {
         "skip_already_kept": True,
         "skip_zero_size": True,
         "create_cat_folder": True,
-        "create_id_folder": True
+        "create_id_folder": True,
+        "excluded_disks": {}
     }
 }
 
@@ -124,7 +125,7 @@ DATA_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_data.db")
 HASHES_DB_FILE = os.path.join(_DATA_DIR, "keepers_orchestrator_hashes.db")
 
 # App Version & Update Info
-APP_VERSION = "0.27.1"
+APP_VERSION = "0.27.3"
 GITHUB_REPO = "WIN365ru/Keepers-Orchestrator"
 
 # --- Theme Definitions ---
@@ -5637,6 +5638,8 @@ class QBitAdderApp:
                 if "theme" not in data: data["theme"] = "Default"
                 if "log_retention_days" not in data: data["log_retention_days"] = 14
                 if "auto_keeper" not in data: data["auto_keeper"] = DEFAULT_CONFIG["auto_keeper"]
+                if "excluded_disks" not in data.get("auto_keeper", {}):
+                    data.setdefault("auto_keeper", {})["excluded_disks"] = {}
 
                 return data
             except Exception as e:
@@ -13896,11 +13899,40 @@ class QBitAdderApp:
     def _ak_refresh_disk_space(self):
         threading.Thread(target=self._ak_refresh_disk_space_thread, daemon=True).start()
 
+    def _ak_read_free_space(self, session, url):
+        """Read free_space_on_disk from qBit maindata with cache-busting. Returns int or None."""
+        try:
+            resp = session.get(f"{url}/api/v2/sync/maindata",
+                               params={"rid": 0, "_": int(time.time() * 1000)},
+                               headers={"Cache-Control": "no-cache"},
+                               timeout=10)
+            if resp.status_code == 200:
+                return resp.json().get("server_state", {}).get("free_space_on_disk", None)
+        except Exception:
+            pass
+        return None
+
+    def _ak_verify_save_path(self, session, url, expected_path, max_wait=8):
+        """Verify qBit actually applied the save_path preference. Returns True if confirmed."""
+        expected_norm = expected_path.replace("\\", "/").rstrip("/").lower()
+        for _ in range(max_wait):
+            try:
+                resp = session.get(f"{url}/api/v2/app/preferences", timeout=10)
+                if resp.status_code == 200:
+                    current = resp.json().get("save_path", "").replace("\\", "/").rstrip("/").lower()
+                    if current == expected_norm:
+                        return True
+            except Exception:
+                pass
+            time.sleep(1)
+        return False
+
     def _ak_refresh_disk_space_thread(self):
         """Refresh per-disk free space for each target client.
         Strategy: detect drive letters from torrent save_paths, then temporarily
-        set qBit's default save path to each drive to read free_space_on_disk
-        from the API, then revert to original save path.
+        set qBit's default save path to each drive, verify the preference was applied,
+        then poll free_space_on_disk until it changes (confirming qBit recalculated),
+        then revert to the original save path.
         """
         self._ak_log("Refreshing disk space for target clients...")
         self.ak_client_space = {}
@@ -13955,37 +13987,52 @@ class QBitAdderApp:
                 except Exception as e:
                     self._ak_log(f"  {name}: Could not read preferences: {e}")
 
-                # Step 3: For each disk, temporarily set default save path → read free space
+                # Step 3: Read baseline free_space before probing
+                prev_free = self._ak_read_free_space(s, url)
+
+                # Step 4: For each disk, set save path → verify → poll until free_space changes
                 self._ak_log(f"  {name}: Probing {len(disk_bases)} disk(s)...")
                 for disk_path in sorted(disk_bases):
                     if self.ak_stop_event.is_set():
                         break
                     try:
-                        # Temporarily set default save path to this disk
+                        # Set default save path to this disk
                         set_resp = s.post(f"{url}/api/v2/app/setPreferences",
                             data={"json": json.dumps({"save_path": disk_path})}, timeout=10)
                         if set_resp.status_code != 200:
                             self._ak_log(f"  {name}: {disk_path} — setPreferences error {set_resp.status_code}")
                             continue
 
-                        time.sleep(0.3)  # Brief pause for qBit to update
+                        # Verify qBit actually applied the preference
+                        if not self._ak_verify_save_path(s, url, disk_path):
+                            self._ak_log(f"  {name}: {disk_path} — preference not confirmed, reading anyway")
 
-                        # Read free space (now reports for the new default save path disk)
-                        md_resp = s.get(f"{url}/api/v2/sync/maindata", timeout=10)
-                        if md_resp.status_code == 200:
-                            free_bytes = md_resp.json().get("server_state", {}).get("free_space_on_disk", 0)
-                            if free_bytes and free_bytes > 0:
-                                disk_info.append({"path": disk_path, "free": free_bytes})
-                                total_free += free_bytes
-                                self._ak_log(f"  {name}: {disk_path} — Free: {format_size(free_bytes)}")
-                            else:
-                                self._ak_log(f"  {name}: {disk_path} — Free: N/A")
+                        # Initial settle time after preference confirmed
+                        time.sleep(3)
+
+                        # Poll until free_space_on_disk changes (max ~90s)
+                        new_free = prev_free
+                        for attempt in range(30):
+                            if self.ak_stop_event.is_set():
+                                break
+                            new_free = self._ak_read_free_space(s, url)
+                            if new_free is not None and new_free != prev_free:
+                                break  # qBit updated — this is the real value
+                            time.sleep(3)
+
+                        if new_free is not None and new_free > 0:
+                            disk_info.append({"path": disk_path, "free": new_free})
+                            total_free += new_free
+                            self._ak_log(f"  {name}: {disk_path} — Free: {format_size(new_free)}")
                         else:
-                            self._ak_log(f"  {name}: {disk_path} — maindata error {md_resp.status_code}")
+                            self._ak_log(f"  {name}: {disk_path} — Free: N/A")
+
+                        prev_free = new_free  # Carry forward for next iteration
+
                     except Exception as e:
                         self._ak_log(f"  {name}: {disk_path} — error: {e}")
 
-                # Step 4: Revert to original save path
+                # Step 5: Revert to original save path
                 if original_save_path is not None:
                     try:
                         s.post(f"{url}/api/v2/app/setPreferences",
@@ -13997,8 +14044,14 @@ class QBitAdderApp:
             except Exception as e:
                 self._ak_log(f"  {name}: error: {e}")
 
+            # Deduplicate Linux subdirectories on the same mount
+            disk_info = self._ak_dedup_disk_info(disk_info)
+
             if not disk_info:
                 self._ak_log(f"  {name}: No disk info available.")
+
+            # Recalculate total_free after dedup
+            total_free = sum(d["free"] for d in disk_info)
 
             self.ak_client_space[name] = {
                 "free": total_free,
@@ -14007,13 +14060,53 @@ class QBitAdderApp:
             }
 
             disk_frame = info["disk_frame"]
-            self.root.after(0, lambda df=disk_frame, di=list(disk_info):
-                self._ak_update_disk_labels(df, di))
+            self.root.after(0, lambda df=disk_frame, di=list(disk_info), cn=name:
+                self._ak_update_disk_labels(df, di, cn))
 
         self._ak_log("Disk space refresh complete.")
 
-    def _ak_update_disk_labels(self, disk_frame, disk_info):
-        """Update the disk labels frame with per-disk free space info."""
+    def _ak_dedup_disk_info(self, disk_info):
+        """Merge Linux disk entries that are subdirectories on the same mount.
+        Groups non-Windows paths by first path component; if all entries in a group
+        report the same free space, merge them under the common root."""
+        if len(disk_info) <= 1:
+            return disk_info
+
+        windows = []
+        linux = []
+        for d in disk_info:
+            p = d["path"]
+            if len(p) >= 3 and p[1] == ':' and p[0].isalpha():
+                windows.append(d)
+            else:
+                linux.append(d)
+
+        if not linux:
+            return disk_info
+
+        # Group Linux paths by first component (e.g. /Tors, /mnt)
+        groups = {}
+        for d in linux:
+            p = d["path"].strip("/")
+            parts = p.split("/")
+            root = "/" + parts[0] if parts[0] else d["path"]
+            groups.setdefault(root, []).append(d)
+
+        merged = []
+        for root, entries in groups.items():
+            free_values = set(e["free"] for e in entries)
+            if len(entries) > 1 and len(free_values) == 1:
+                # All same free space → same physical disk, merge under root
+                merged.append({"path": root + "/", "free": entries[0]["free"]})
+            else:
+                # Different free spaces → different disks, keep separate
+                merged.extend(entries)
+
+        return windows + merged
+
+    def _ak_update_disk_labels(self, disk_frame, disk_info, client_name):
+        """Update the disk labels frame with clickable per-disk free space labels.
+        Clicking a label toggles it as excluded (red) or included (green/orange)."""
         for w in disk_frame.winfo_children():
             w.destroy()
 
@@ -14021,24 +14114,45 @@ class QBitAdderApp:
             tk.Label(disk_frame, text="Free: --", font=("Segoe UI", 9), fg="#666666").pack(side="left")
             return
 
+        excluded = self.config.get("auto_keeper", {}).get("excluded_disks", {}).get(client_name, [])
+
         for di in disk_info:
             path_short = di["path"].rstrip("/")
             free = di["free"]
-            total = di.get("total", 0)
-            if free > 0 and total > 0:
-                pct = int(free / total * 100)
-                text = f"{path_short}: {format_size(free)} ({pct}%)"
-                fg = "#55aa55" if pct > 20 else "#cc8800" if pct > 5 else "#cc3333"
+            is_excluded = di["path"] in excluded or path_short in excluded
+
+            if is_excluded:
+                text = f"{path_short}: {format_size(free)}"
+                fg = "#cc3333"
             elif free > 0:
                 text = f"{path_short}: {format_size(free)}"
                 fg = "#55aa55"
-            elif free == 0 and total > 0:
-                text = f"{path_short}: 0 B"
-                fg = "#cc3333"
             else:
                 text = f"{path_short}: N/A"
                 fg = "#888888"
-            tk.Label(disk_frame, text=text, font=("Segoe UI", 9), fg=fg).pack(side="left", padx=(0, 8))
+
+            lbl = tk.Label(disk_frame, text=text, font=("Segoe UI", 9), fg=fg,
+                           cursor="hand2", relief="groove", padx=4, pady=1)
+            lbl.pack(side="left", padx=(0, 4))
+            lbl.bind("<Button-1>", lambda e, dp=di["path"], cn=client_name, fr=disk_frame, di_list=disk_info:
+                     self._ak_toggle_disk_exclusion(dp, cn, fr, di_list))
+
+    def _ak_toggle_disk_exclusion(self, disk_path, client_name, disk_frame, disk_info):
+        """Toggle a disk as excluded/included for a client."""
+        ak_conf = self.config.setdefault("auto_keeper", {})
+        excluded = ak_conf.setdefault("excluded_disks", {}).setdefault(client_name, [])
+
+        path_norm = disk_path.rstrip("/")
+        if disk_path in excluded:
+            excluded.remove(disk_path)
+        elif path_norm in excluded:
+            excluded.remove(path_norm)
+        else:
+            excluded.append(disk_path)
+
+        self.save_config()
+        # Refresh labels to reflect new state
+        self._ak_update_disk_labels(disk_frame, disk_info, client_name)
 
     # --- Auto Keeper: Scan & Plan ---
 
@@ -14211,11 +14325,37 @@ class QBitAdderApp:
         max_total_bytes = self.ak_max_total_var.get() * (1024 ** 3)
         reserve_bytes = self.ak_reserve_var.get() * (1024 ** 3)
 
+        excluded_disks = self.config.get("auto_keeper", {}).get("excluded_disks", {})
+
         client_avail = {}
         for cname in target_client_names:
             cinfo = self.ak_client_space.get(cname)
             if cinfo:
-                avail = max(0, cinfo["free"] - reserve_bytes)
+                # Use free space on the base_save_path disk only (not total across all disks)
+                bp = cinfo.get("base_save_path", "").replace("\\", "/")
+                bp_disk = self._mover_get_disk_base(bp) if bp else ""
+
+                # Check if base_save_path disk is excluded
+                client_excluded = excluded_disks.get(cname, [])
+                bp_excluded = any(bp_disk.rstrip("/") == ex.rstrip("/") or bp_disk == ex
+                                  for ex in client_excluded) if bp_disk else False
+                if bp_excluded:
+                    self._ak_log(f"  {cname}: base disk {bp_disk} is excluded, skipping.")
+                    continue
+
+                disk_free = 0
+                for di in cinfo.get("disks", []):
+                    if di["path"] == bp_disk:
+                        disk_free = di["free"]
+                        break
+                    # Also match deduped Linux paths (e.g. bp_disk=/Tors/Apple/ matches /Tors/)
+                    if bp_disk.startswith(di["path"].rstrip("/") + "/"):
+                        disk_free = di["free"]
+                        break
+                if disk_free == 0:
+                    # Fallback: use total free if base_save_path disk not found
+                    disk_free = cinfo.get("free", 0)
+                avail = max(0, disk_free - reserve_bytes)
                 if avail > 0:
                     client_avail[cname] = avail
 
